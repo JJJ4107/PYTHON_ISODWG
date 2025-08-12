@@ -1,515 +1,405 @@
 import ezdxf
-import os
+import tkinter as tk
+from tkinter import filedialog
 import math
+import os
 from ezdxf.math import Vec2
-from tkinter import Tk, filedialog
+from ezdxf.entities import Circle, Line, Text, MText
+import numpy as np
 
-
-class TextBoxLineFinder:
-    """TEXT를 BOX화하여 가장 가까운 LINE을 찾는 유틸리티 클래스"""
-    
-    def __init__(self):
-        pass
-    
-    @staticmethod
-    def get_text_position(text):
-        """TEXT 엔티티의 위치를 Vec2로 반환"""
-        try:
-            if hasattr(text.dxf, "insert"):
-                ins = text.dxf.insert
-                if hasattr(ins, '__getitem__'):
-                    return Vec2(float(ins[0]), float(ins[1]))
-                elif hasattr(ins, 'x') and hasattr(ins, 'y'):
-                    return Vec2(float(ins.x), float(ins.y))
-                else:
-                    return Vec2(float(ins), 0)
-            
-            if hasattr(text.dxf, "location"):
-                loc = text.dxf.location
-                if hasattr(loc, '__getitem__') and len(loc) >= 2:
-                    return Vec2(float(loc[0]), float(loc[1]))
-                elif hasattr(loc, 'x') and hasattr(loc, 'y'):
-                    return Vec2(float(loc.x), float(loc.y))
-                    
-        except Exception as e:
-            print(f"   [경고] TEXT 위치 가져오기 오류: {e}")
-        
-        return Vec2(0.0, 0.0)
-    
-    @staticmethod
-    def get_text_bbox(text):
-        """
-        TEXT 엔티티의 경계 상자 계산
-        BOX 높이 = TEXT 높이 + 0.3 (2.2 + 0.3 = 2.5mm)
-        """
-        pos = TextBoxLineFinder.get_text_position(text)
-        # TEXT 높이 가져오기 (기본값 2.2mm)
-        height = getattr(text.dxf, 'height', 2.2)
-        # 텍스트 길이를 대략적으로 계산 (문자 수 * 높이 * 0.8)
-        text_len = len(text.dxf.text) * height * 0.8
-        
-        # BOX 높이는 TEXT 높이 + 0.3
-        box_height = height + 0.3
-        
-        # TEXT의 현재 회전 각도 가져오기
-        rotation = getattr(text.dxf, 'rotation', 0)
-        
-        # 회전되지 않은 상태의 BOX (TEXT 원점 기준)
-        return {
-            'min_x': pos.x,
-            'max_x': pos.x + text_len,
-            'min_y': pos.y - 0.15,  # 아래로 0.15
-            'max_y': pos.y + height + 0.15,  # 위로 height + 0.15
-            'rotation': rotation,  # TEXT의 회전 각도 포함
-            'pos': pos  # TEXT의 위치 (회전 중심점)
-        }
-    
-    @staticmethod
-    def get_text_reference_points(text, num_points=3):
-        """TEXT BOX의 참조점들을 계산"""
-        bbox = TextBoxLineFinder.get_text_bbox(text)
-        pos = bbox['pos']
-        
-        # 회전을 고려한 참조점 계산
-        rotation = bbox.get('rotation', 0)
-        rotation_rad = math.radians(rotation)
-        
-        if num_points == 3:
-            # 회전되지 않은 상태의 점들
-            points = [
-                Vec2(bbox['min_x'], pos.y),  # 좌측
-                Vec2((bbox['min_x'] + bbox['max_x']) / 2, pos.y),  # 중앙
-                Vec2(bbox['max_x'], pos.y)  # 우측
-            ]
-        else:
-            points = []
-            for i in range(num_points):
-                ratio = i / (num_points - 1) if num_points > 1 else 0
-                x = bbox['min_x'] + (bbox['max_x'] - bbox['min_x']) * ratio
-                points.append(Vec2(x, pos.y))
-        
-        # 회전 적용
-        if abs(rotation) > 0.01:
-            rotated_points = []
-            cos_r = math.cos(rotation_rad)
-            sin_r = math.sin(rotation_rad)
-            
-            for pt in points:
-                # pos를 중심으로 회전
-                dx = pt.x - pos.x
-                dy = pt.y - pos.y
-                rx = dx * cos_r - dy * sin_r + pos.x
-                ry = dx * sin_r + dy * cos_r + pos.y
-                rotated_points.append(Vec2(rx, ry))
-            
-            return rotated_points
-        else:
-            return points
-    
-    @staticmethod
-    def distance(p1, p2):
-        """두 점 사이의 거리 계산"""
-        return math.hypot(p2.x - p1.x, p2.y - p1.y)
-    
-    @staticmethod
-    def get_line_length(line):
-        """LINE의 길이 계산"""
-        if line.dxftype() == "LINE":
-            start = Vec2(line.dxf.start.x, line.dxf.start.y)
-            end = Vec2(line.dxf.end.x, line.dxf.end.y)
-            return TextBoxLineFinder.distance(start, end)
-        return 0
-    
-    @staticmethod
-    def find_closest_line_to_text(text, lines, exclude_entities=None, exclude_layers=None, 
-                                  min_length=None, max_distance=None, debug=False):
-        """TEXT BOX에서 가장 가까운 LINE 찾기"""
-        if exclude_entities is None:
-            exclude_entities = []
-        if exclude_layers is None:
-            exclude_layers = []
-        
-        exclude_layers_upper = [layer.upper() for layer in exclude_layers]
-        
-        # TEXT의 참조점들 계산
-        ref_points = TextBoxLineFinder.get_text_reference_points(text)
-        text_center = TextBoxLineFinder.get_text_position(text)
-        
-        if debug:
-            print(f"\n   [TEXT BOX 분석] TEXT: '{text.dxf.text}'")
-            print(f"   회전: {getattr(text.dxf, 'rotation', 0):.1f}°")
-            for i, pt in enumerate(ref_points):
-                print(f"   참조점{i+1}: ({pt.x:.2f}, {pt.y:.2f})")
-        
-        found_line = None
-        closest_point = None
-        farthest_point = None
-        min_dist = float("inf")
-        
-        lines_checked = 0
-        
-        for line in lines:
-            if line in exclude_entities:
-                continue
-                
-            if line.dxftype() != 'LINE':
-                continue
-                
-            if line.dxf.layer.upper() in exclude_layers_upper:
-                continue
-            
-            # 최대 거리 제한
-            if max_distance is not None:
-                line_center = Vec2((line.dxf.start.x + line.dxf.end.x) / 2,
-                                 (line.dxf.start.y + line.dxf.end.y) / 2)
-                if TextBoxLineFinder.distance(text_center, line_center) > max_distance:
-                    continue
-            
-            # 길이 확인
-            if min_length is not None:
-                line_len = TextBoxLineFinder.get_line_length(line)
-                if line_len < min_length:
-                    continue
-            
-            lines_checked += 1
-            
-            # LINE의 끝점들
-            start = Vec2(line.dxf.start.x, line.dxf.start.y)
-            end = Vec2(line.dxf.end.x, line.dxf.end.y)
-            
-            # 모든 참조점에서 LINE의 각 끝점까지 거리 계산
-            distances = []
-            for ref_point in ref_points:
-                distances.append(TextBoxLineFinder.distance(start, ref_point))
-                distances.append(TextBoxLineFinder.distance(end, ref_point))
-            
-            min_pt_dist = min(distances)
-            
-            if min_pt_dist < min_dist:
-                min_dist = min_pt_dist
-                found_line = line
-                
-                # 어느 점이 가장 가까운지 확인
-                min_idx = distances.index(min_pt_dist)
-                
-                if min_idx % 2 == 0:  # start점이 더 가까움
-                    closest_point = start
-                    farthest_point = end
-                else:  # end점이 더 가까움
-                    closest_point = end
-                    farthest_point = start
-        
-        if debug:
-            print(f"   검사한 LINE 수: {lines_checked}개")
-            if found_line:
-                print(f"   가장 가까운 LINE: (거리: {min_dist:.2f}mm)")
-                print(f"   가까운 점: ({closest_point.x:.2f}, {closest_point.y:.2f})")
-                print(f"   먼 점: ({farthest_point.x:.2f}, {farthest_point.y:.2f})")
-            else:
-                print(f"   결과: 적합한 LINE을 찾을 수 없음")
-        
-        return found_line, closest_point, farthest_point
-
-
-def select_files():
-    """파일 선택 대화상자"""
-    Tk().withdraw()
-    return filedialog.askopenfilenames(
-        title="DXF 파일 선택 (여러 개 가능)",
-        filetypes=[("DXF files", "*.dxf")])
-
-
-def distance(p1, p2):
+def get_distance(p1, p2):
     """두 점 사이의 거리 계산"""
-    return math.hypot(p2.x - p1.x, p2.y - p1.y)
+    return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
 
+def get_circle_diameter(circle):
+    """원의 지름 계산"""
+    return circle.dxf.radius * 2
 
-def get_text_position(text):
-    """TEXT 엔티티의 위치를 Vec2로 반환"""
-    return TextBoxLineFinder.get_text_position(text)
+def is_point_in_circle(point, circle):
+    """점이 원 안에 있는지 확인"""
+    center = (circle.dxf.center.x, circle.dxf.center.y)
+    return get_distance(point, center) < circle.dxf.radius
 
+def is_text_horizontal(text):
+    """텍스트가 수평(기울기 0)인지 확인"""
+    if hasattr(text.dxf, 'rotation'):
+        return abs(text.dxf.rotation) < 0.1 or abs(text.dxf.rotation - 360) < 0.1
+    return True
 
-def get_line_length(line):
-    """LINE의 길이 계산"""
-    return TextBoxLineFinder.get_line_length(line)
-
-
-def find_connected_lines(start_line, msp, exclude_layers, used_lines, tolerance=0.1, max_lines=10):
-    """시작 LINE에서 연결된 LINE들을 찾아 연속된 경로 구성"""
-    connected_lines = [start_line]
-    used_lines_set = set(used_lines)
-    used_lines_set.add(start_line)
+def find_line_near_circle(circle, lines, max_distance=1.0):
+    """원의 선분에서 max_distance 내에 접하는 라인 찾기"""
+    center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
+    radius = circle.dxf.radius
     
-    exclude_layers_upper = [layer.upper() for layer in exclude_layers]
-    
-    # 양쪽 방향으로 확장
-    for direction in ['forward', 'backward']:
-        current_line = start_line
-        
-        while len(connected_lines) < max_lines:
-            # 현재 LINE의 끝점 찾기
-            if direction == 'forward':
-                search_point = Vec2(current_line.dxf.end.x, current_line.dxf.end.y)
-            else:
-                search_point = Vec2(current_line.dxf.start.x, current_line.dxf.start.y)
-            
-            # 연결된 LINE 찾기
-            found_next = None
-            for line in msp.query('LINE'):
-                if line in used_lines_set:
-                    continue
-                    
-                if line.dxf.layer.upper() in exclude_layers_upper:
-                    continue
-                
-                start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                
-                # 연결점 확인 (tolerance 이내)
-                if distance(start, search_point) <= tolerance:
-                    found_next = line
-                    if direction == 'forward':
-                        connected_lines.append(line)
-                    else:
-                        connected_lines.insert(0, line)
-                    break
-                elif distance(end, search_point) <= tolerance:
-                    found_next = line
-                    if direction == 'forward':
-                        connected_lines.append(line)
-                    else:
-                        connected_lines.insert(0, line)
-                    break
-            
-            if found_next:
-                used_lines_set.add(found_next)
-                current_line = found_next
-            else:
-                break  # 더 이상 연결된 LINE이 없음
-    
-    return connected_lines
-
-
-def get_connected_line_endpoints(connected_lines, ref_center):
-    """연결된 LINE들에서 기준점에 가장 가까운 점(AP1)과 가장 먼 점(AP2) 찾기"""
-    all_points = []
-    
-    # 모든 LINE의 끝점 수집
-    for line in connected_lines:
+    for line in lines:
         start = Vec2(line.dxf.start.x, line.dxf.start.y)
         end = Vec2(line.dxf.end.x, line.dxf.end.y)
-        all_points.append(start)
-        all_points.append(end)
-    
-    if not all_points:
-        return None, None
-    
-    # 중복 제거 (매우 가까운 점들은 같은 점으로 처리)
-    unique_points = []
-    for pt in all_points:
-        is_duplicate = False
-        for upt in unique_points:
-            if distance(pt, upt) < 0.1:
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            unique_points.append(pt)
-    
-    # 기준점에서 가장 가까운 점과 가장 먼 점 찾기
-    min_dist = float('inf')
-    max_dist = 0
-    closest_point = None
-    farthest_point = None
-    
-    for pt in unique_points:
-        dist = distance(ref_center, pt)
-        if dist < min_dist:
-            min_dist = dist
-            closest_point = pt
-        if dist > max_dist:
-            max_dist = dist
-            farthest_point = pt
-    
-    return closest_point, farthest_point
-
-
-def process_dxf(file_path):
-    """DXF 파일 처리 메인 함수"""
-    try:
-        doc = ezdxf.readfile(file_path)
-    except Exception as e:
-        print(f"파일 열기 실패: {file_path} / {e}")
-        return
-
-    msp = doc.modelspace()
-    
-    # 삭제할 엔티티들을 저장할 리스트
-    entities_to_delete = []
-    
-    # 이미 사용된 A1 LINE들을 추적
-    used_a1_lines = []
-    
-    # 처리된 TRIM TEXT 개수
-    trim_count = 0
-
-    # 모든 TEXT에서 'TRIM'이 포함된 것 찾기
-    for tr_text in msp.query('TEXT'):
-        # TRIM이 포함되지 않으면 제외
-        if 'TRIM' not in tr_text.dxf.text.upper():
+        
+        # 라인과 원의 최단 거리 계산
+        line_vec = end - start
+        line_length = line_vec.magnitude
+        if line_length == 0:
             continue
             
-        tr_pos = get_text_position(tr_text)
-        print(f"\n[TRIM TEXT 발견] '{tr_text.dxf.text}' 위치: ({tr_pos.x:.2f}, {tr_pos.y:.2f})")
-        trim_count += 1
+        line_dir = line_vec / line_length
+        center_to_start = center - start
+        projection_length = center_to_start.dot(line_dir)
         
-        # TR TEXT를 삭제 목록에 추가
-        entities_to_delete.append(tr_text)
+        if projection_length < 0:
+            closest_point = start
+        elif projection_length > line_length:
+            closest_point = end
+        else:
+            closest_point = start + line_dir * projection_length
+            
+        distance_to_circle = (center - closest_point).magnitude - radius
+        
+        if abs(distance_to_circle) <= max_distance:
+            return line, start, end
+            
+    return None, None, None
 
-        # A1 찾기 - TR TEXT BOX 기준
-        print(f"   [A1 찾기] TRIM TEXT BOX에서 가장 가까운 LINE 검색 (35mm 이내)")
+def find_lines_near_point(point, lines, max_distance=0.2, max_length=None):
+    """점 근처의 라인들 찾기"""
+    found_lines = []
+    
+    for line in lines:
+        start = (line.dxf.start.x, line.dxf.start.y)
+        end = (line.dxf.end.x, line.dxf.end.y)
         
-        # A1이 될 수 없는 레이어들
-        exclude_layers_for_a1 = ['FRAME', 'DL', 'AD1', 'DIM', 'ITNO', 'ITEMPOS']
-        
-        # 제외할 엔티티 목록 (이미 선택된 A1들)
-        exclude_entities_for_a1 = used_a1_lines
-        
-        found_A1, AP1, AP2 = TextBoxLineFinder.find_closest_line_to_text(
-            text=tr_text,
-            lines=msp.query('LINE'),
-            exclude_entities=exclude_entities_for_a1,
-            exclude_layers=exclude_layers_for_a1,
-            min_length=None,
-            max_distance=35.0,
-            debug=True
-        )
-        
-        if not found_A1:
-            print(f"   [A1 없음] TRIM TEXT BOX에서 가장 가까운 LINE을 찾을 수 없습니다")
-            continue
-        
-        # 연속라인 찾기
-        print(f"   [연속라인 찾기] A1에서 연결된 LINE 검색")
-        connected_lines = find_connected_lines(
-            start_line=found_A1,
-            msp=msp,
-            exclude_layers=exclude_layers_for_a1,
-            used_lines=used_a1_lines,
-            tolerance=0.1,
-            max_lines=10
-        )
-        
-        print(f"   - 연결된 LINE 수: {len(connected_lines)}개")
-        
-        # 연결된 모든 LINE을 A1 그룹으로 처리
-        all_a1_lines = connected_lines
-        
-        # 연속된 LINE들에서 AP1, AP2 재계산
-        new_AP1, new_AP2 = get_connected_line_endpoints(all_a1_lines, tr_pos)
-        if new_AP1 and new_AP2:
-            AP1 = new_AP1
-            AP2 = new_AP2
-            print(f"   - 연속라인 전체 길이 기준 AP1: ({AP1.x:.2f}, {AP1.y:.2f})")
-            print(f"   - 연속라인 전체 길이 기준 AP2: ({AP2.x:.2f}, {AP2.y:.2f})")
-        
-        # 모든 연결된 LINE을 삭제 목록에 추가하고 사용된 목록에 추가
-        for line in all_a1_lines:
-            entities_to_delete.append(line)
-            if line not in used_a1_lines:
-                used_a1_lines.append(line)
-        
-        # 주 A1 LINE 정보 출력
-        line_len = get_line_length(found_A1)
-        total_a1_length = distance(AP1, AP2)
-        print(f"   [A1] 주 LINE (길이: {line_len:.2f}mm)")
-        print(f"   - 연속라인 전체 길이: {total_a1_length:.2f}mm (AP1~AP2)")
-        print(f"   - A1 LINE {len(all_a1_lines)}개를 삭제 목록에 추가")
-
-        # DEL1 찾기: 연속된 A1의 모든 끝점에서 2mm 이내 접하는 2mm 이하 LINE 3개
-        del1_lines = []
-        
-        # 연속된 A1의 모든 끝점 수집
-        all_endpoints = []
-        for line in all_a1_lines:
-            start = Vec2(line.dxf.start.x, line.dxf.start.y)
-            end = Vec2(line.dxf.end.x, line.dxf.end.y)
-            all_endpoints.append(start)
-            all_endpoints.append(end)
-        
-        # 중복 제거
-        unique_endpoints = []
-        for pt in all_endpoints:
-            is_duplicate = False
-            for upt in unique_endpoints:
-                if distance(pt, upt) < 0.1:
-                    is_duplicate = True
-                    break
-            if not is_duplicate:
-                unique_endpoints.append(pt)
-        
-        print(f"   [DEL1 찾기] A1 끝점 {len(unique_endpoints)}개에서 2mm 이내 LINE 검색")
-        
-        for line in msp.query('LINE'):
-            if line in all_a1_lines:
-                continue
-            if line.dxf.layer.upper() in ["FRAME", "ITNO", "ITEMPOS"]:
-                continue
+        # 점과 라인의 최단 거리 계산
+        if get_distance(point, start) <= max_distance or get_distance(point, end) <= max_distance:
+            if max_length is None or get_distance(start, end) <= max_length:
+                found_lines.append(line)
                 
-            line_len = get_line_length(line)
-            if line_len > 2.0:
+    return found_lines
+
+def get_line_angle(line):
+    """라인의 기울기(각도) 계산"""
+    dx = line.dxf.end.x - line.dxf.start.x
+    dy = line.dxf.end.y - line.dxf.start.y
+    return math.atan2(dy, dx)
+
+def move_entities(entities, dx, dy):
+    """엔티티들을 이동"""
+    for entity in entities:
+        if isinstance(entity, Circle):
+            entity.dxf.center = Vec2(entity.dxf.center.x + dx, entity.dxf.center.y + dy)
+        elif isinstance(entity, Line):
+            entity.dxf.start = Vec2(entity.dxf.start.x + dx, entity.dxf.start.y + dy)
+            entity.dxf.end = Vec2(entity.dxf.end.x + dx, entity.dxf.end.y + dy)
+        elif isinstance(entity, (Text, MText)):
+            if hasattr(entity.dxf, 'insert'):
+                entity.dxf.insert = Vec2(entity.dxf.insert[0] + dx, entity.dxf.insert[1] + dy)
+
+def extend_line_to_circle(line, point_to_extend, circle):
+    """라인을 원까지 확장"""
+    center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
+    radius = circle.dxf.radius
+    
+    # 라인의 방향 벡터 계산
+    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+    
+    if get_distance(point_to_extend, start) < 0.1:
+        # start 점을 확장
+        direction = (start - end).normalize()
+        # 원과 라인의 교점 계산
+        t = 2 * radius  # 충분히 긴 거리
+        new_point = start + direction * t
+        
+        # 실제 교점 찾기
+        for i in range(100):
+            test_point = start + direction * (t * i / 100)
+            if abs(get_distance((test_point.x, test_point.y), (center.x, center.y)) - radius) < 0.1:
+                line.dxf.start = test_point
+                break
+    else:
+        # end 점을 확장
+        direction = (end - start).normalize()
+        t = 2 * radius
+        new_point = end + direction * t
+        
+        for i in range(100):
+            test_point = end + direction * (t * i / 100)
+            if abs(get_distance((test_point.x, test_point.y), (center.x, center.y)) - radius) < 0.1:
+                line.dxf.end = test_point
+                break
+
+def process_dxf_file(filepath):
+    """DXF 파일 처리"""
+    try:
+        # DXF 파일 읽기
+        doc = ezdxf.readfile(filepath)
+        msp = doc.modelspace()
+        
+        # 1. ISOTEXT 레이어의 원 중 지름이 11-18mm인 원 찾기
+        inno_circles = []
+        for entity in msp:
+            if isinstance(entity, Circle) and entity.dxf.layer == 'ISOTEXT':
+                diameter = get_circle_diameter(entity)
+                if 11 <= diameter <= 18:
+                    inno_circles.append(entity)
+                    entity.dxf.layer = 'INNO'
+                    entity.dxf.color = 4  # CYAN
+        
+        if not inno_circles:
+            print(f"No circles with diameter 11-18mm found in ISOTEXT layer in {filepath}")
+            return
+        
+        # 각 INNO 원에 대해 처리
+        all_entities_to_modify = []
+        used_del2_circles = []  # 이미 사용된 DEL2 원들을 추적
+        
+        for inno in inno_circles:
+            inno_center = (inno.dxf.center.x, inno.dxf.center.y)
+            
+            # 2. INNO 원 안의 기울기 0인 텍스트 찾기 (ITAG)
+            itag_texts = []
+            for entity in msp:
+                if isinstance(entity, (Text, MText)):
+                    if hasattr(entity.dxf, 'insert'):
+                        text_pos = (entity.dxf.insert[0], entity.dxf.insert[1])
+                    else:
+                        continue
+                        
+                    if is_point_in_circle(text_pos, inno) and is_text_horizontal(entity):
+                        itag_texts.append(entity)
+                        entity.dxf.color = 2  # YELLOW
+            
+            # INSTNO = INNO + ITAG
+            instno_entities = [inno] + itag_texts
+            
+            # 3. 원의 선분에서 1mm 내에 접하는 ISOTEXT 레이어 LINE 찾기 (A1)
+            isotext_lines = [e for e in msp if isinstance(e, Line) and e.dxf.layer == 'ISOTEXT']
+            a1_line, ap1, ap2 = find_line_near_circle(inno, isotext_lines, 1.0)
+            
+            if not a1_line:
                 continue
             
-            start = Vec2(line.dxf.start.x, line.dxf.start.y)
-            end = Vec2(line.dxf.end.x, line.dxf.end.y)
+            a1_line.dxf.color = 4  # CYAN
             
-            for endpoint in unique_endpoints:
-                if distance(start, endpoint) <= 2.0 or distance(end, endpoint) <= 2.0:
-                    del1_lines.append(line)
+            # AP1은 INNO에 가까운 점, AP2는 먼 점
+            if get_distance(ap1, inno_center) > get_distance(ap2, inno_center):
+                ap1, ap2 = ap2, ap1
+            
+            # 4. AP2 점 0.2mm 내에서 길이 2mm 이하 LINE 2개와 추가 LINE 찾기 (DEL1)
+            all_lines = [e for e in msp if isinstance(e, Line)]
+            lines_near_ap2 = find_lines_near_point(ap2, all_lines, 0.2, 2.0)
+            
+            del1_lines = []
+            if len(lines_near_ap2) >= 2:
+                del1_lines.extend(lines_near_ap2[:2])
+                
+                # 추가 1mm 이하 LINE 찾기
+                for line in lines_near_ap2[:2]:
+                    start = (line.dxf.start.x, line.dxf.start.y)
+                    end = (line.dxf.end.x, line.dxf.end.y)
+                    
+                    additional_lines = find_lines_near_point(start, all_lines, 0.2, 1.0)
+                    additional_lines.extend(find_lines_near_point(end, all_lines, 0.2, 1.0))
+                    
+                    for add_line in additional_lines:
+                        if add_line not in del1_lines and len(del1_lines) < 3:
+                            del1_lines.append(add_line)
+                            break
+                    
+                    if len(del1_lines) >= 3:
+                        break
+            
+            # DEL1이 찾아지지 않으면 추가 검색
+            if len(del1_lines) < 3:
+                # AP2에서 0.2mm 내에 접하는 A1과 동일한 방향의 LINE 찾기
+                for line in all_lines:
+                    if line == a1_line:
+                        continue
+                    
+                    start = (line.dxf.start.x, line.dxf.start.y)
+                    end = (line.dxf.end.x, line.dxf.end.y)
+                    
+                    # AP2와 가까운 점 찾기
+                    if get_distance(ap2, start) <= 0.2:
+                        # A1 라인 연장 (합치기)
+                        if get_distance(ap1, a1_line.dxf.start) < 0.1:
+                            a1_line.dxf.start = Vec2(end[0], end[1])
+                        else:
+                            a1_line.dxf.end = Vec2(end[0], end[1])
+                        ap2 = end
+                        
+                        # 새로운 AP2에서 다시 DEL1 찾기
+                        lines_near_ap2 = find_lines_near_point(ap2, all_lines, 0.2, 2.0)
+                        del1_lines = []
+                        if len(lines_near_ap2) >= 2:
+                            del1_lines.extend(lines_near_ap2[:2])
+                            
+                            for line2 in lines_near_ap2[:2]:
+                                start2 = (line2.dxf.start.x, line2.dxf.start.y)
+                                end2 = (line2.dxf.end.x, line2.dxf.end.y)
+                                
+                                additional_lines = find_lines_near_point(start2, all_lines, 0.2, 1.0)
+                                additional_lines.extend(find_lines_near_point(end2, all_lines, 0.2, 1.0))
+                                
+                                for add_line in additional_lines:
+                                    if add_line not in del1_lines and len(del1_lines) < 3:
+                                        del1_lines.append(add_line)
+                                        break
+                                
+                                if len(del1_lines) >= 3:
+                                    break
+                        break
+                    elif get_distance(ap2, end) <= 0.2:
+                        # A1 라인 연장 (합치기)
+                        if get_distance(ap1, a1_line.dxf.start) < 0.1:
+                            a1_line.dxf.start = Vec2(start[0], start[1])
+                        else:
+                            a1_line.dxf.end = Vec2(start[0], start[1])
+                        ap2 = start
+                        
+                        # 새로운 AP2에서 다시 DEL1 찾기
+                        lines_near_ap2 = find_lines_near_point(ap2, all_lines, 0.2, 2.0)
+                        del1_lines = []
+                        if len(lines_near_ap2) >= 2:
+                            del1_lines.extend(lines_near_ap2[:2])
+                            
+                            for line2 in lines_near_ap2[:2]:
+                                start2 = (line2.dxf.start.x, line2.dxf.start.y)
+                                end2 = (line2.dxf.end.x, line2.dxf.end.y)
+                                
+                                additional_lines = find_lines_near_point(start2, all_lines, 0.2, 1.0)
+                                additional_lines.extend(find_lines_near_point(end2, all_lines, 0.2, 1.0))
+                                
+                                for add_line in additional_lines:
+                                    if add_line not in del1_lines and len(del1_lines) < 3:
+                                        del1_lines.append(add_line)
+                                        break
+                                
+                                if len(del1_lines) >= 3:
+                                    break
+                        break
+            
+            # DEL1 라인들을 CYAN으로 변경
+            for line in del1_lines:
+                line.dxf.color = 4  # CYAN
+            
+            # 5. AP2에서 10mm 내의 FITTINGS 레이어 원 찾기 (TYPE1/DEL2)
+            del2_circle = None
+            for entity in msp:
+                if isinstance(entity, Circle) and entity.dxf.layer == 'FITTINGS':
+                    # 이미 사용된 DEL2인지 확인
+                    if entity in used_del2_circles:
+                        continue
+                        
+                    diameter = get_circle_diameter(entity)
+                    if 5 <= diameter <= 8:
+                        circle_center = (entity.dxf.center.x, entity.dxf.center.y)
+                        if get_distance(ap2, circle_center) <= 10:
+                            del2_circle = entity
+                            del2_circle.dxf.color = 4  # CYAN
+                            used_del2_circles.append(entity)  # 사용된 DEL2로 표시
+                            break
+            
+            if not del2_circle:
+                continue
+            
+            # 6. DEL2 원을 접하는 FITTINGS 레이어 LINE 찾기 (INLINE)
+            fittings_lines = [e for e in msp if isinstance(e, Line) and e.dxf.layer == 'FITTINGS']
+            inline = None
+            ap3 = None
+            ap4 = None
+            
+            for line in fittings_lines:
+                if line == a1_line or line in del1_lines:
+                    continue
+                    
+                start = (line.dxf.start.x, line.dxf.start.y)
+                end = (line.dxf.end.x, line.dxf.end.y)
+                del2_center = (del2_circle.dxf.center.x, del2_circle.dxf.center.y)
+                
+                # 라인이 DEL2 원을 접하는지 확인
+                dist_start = get_distance(start, del2_center)
+                dist_end = get_distance(end, del2_center)
+                
+                if abs(dist_start - del2_circle.dxf.radius) < 1.0 or abs(dist_end - del2_circle.dxf.radius) < 1.0:
+                    inline = line
+                    inline.dxf.color = 4  # CYAN
+                    if dist_start < dist_end:
+                        ap3 = start
+                        ap4 = end
+                    else:
+                        ap3 = end
+                        ap4 = start
                     break
             
-            if len(del1_lines) >= 3:
-                break
+            if not inline:
+                continue
+            
+            # 7. INSTNO를 INNO 중심에서 DEL2 중심으로 이동
+            dx = del2_circle.dxf.center.x - inno.dxf.center.x
+            dy = del2_circle.dxf.center.y - inno.dxf.center.y
+            move_entities(instno_entities, dx, dy)
+            
+            # 8. INLINE의 기울기로 INSTNO를 AP4에서 AP3 방향으로 15mm 이동
+            angle = get_line_angle(inline)
+            # AP4에서 AP3 방향 벡터
+            direction = Vec2(ap3[0] - ap4[0], ap3[1] - ap4[1]).normalize()
+            move_dx = direction.x * 15
+            move_dy = direction.y * 15
+            move_entities(instno_entities, move_dx, move_dy)
+            
+            # 9. INLINE의 AP3 점을 INNO 선분까지 확장
+            extend_line_to_circle(inline, ap3, inno)
+            
+            # 10. 모든 엔티티를 INSTNO 레이어로 변경하고 CYAN 색상으로
+            # DEL1, DEL2, A1은 삭제하고 나머지만 처리
+            entities_to_delete = del1_lines + [del2_circle, a1_line]
+            entities_to_modify = instno_entities + [inline, inno]
+            
+            # 삭제할 엔티티들 삭제
+            for entity in entities_to_delete:
+                if entity:
+                    try:
+                        msp.delete_entity(entity)
+                    except:
+                        pass
+            
+            # 나머지 엔티티들 처리
+            for entity in entities_to_modify:
+                if entity:
+                    entity.dxf.layer = 'INSTNO'
+                    if entity not in itag_texts:  # ITAG는 YELLOW 유지
+                        entity.dxf.color = 4  # CYAN
+                    all_entities_to_modify.append(entity)
         
-        # DEL1을 삭제 목록에 추가
-        for i, line in enumerate(del1_lines):
-            entities_to_delete.append(line)
-            print(f"   [DEL1-{i+1}] LINE 삭제 목록에 추가")
+        # 11. 파일 저장
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
+        output_path = os.path.join(os.path.dirname(filepath), f"{base_name}_INST.DXF")
+        doc.saveas(output_path)
+        print(f"Processed file saved as: {output_path}")
         
-        print(f"   [DEL1] {len(del1_lines)}개 LINE을 삭제 목록에 추가")
-
-    # 모든 엔티티 삭제 실행
-    if entities_to_delete:
-        print(f"\n========== 삭제 실행 ==========")
-        print(f"총 {len(entities_to_delete)}개 엔티티 삭제 중...")
-        
-        for entity in entities_to_delete:
-            try:
-                msp.delete_entity(entity)
-            except Exception as e:
-                print(f"삭제 오류: {e}")
-        
-        print(f"삭제 완료!")
-    else:
-        print(f"\n삭제할 엔티티가 없습니다.")
-
-    # 파일 저장
-    save_path = os.path.splitext(file_path)[0] + "TRIMDEL.dxf"
-    try:
-        doc.saveas(save_path)
-        print(f"\n[✔] 저장 완료: {os.path.basename(save_path)}")
-        print(f"[✔] 처리된 TRIM TEXT 수: {trim_count}개")
     except Exception as e:
-        print(f"[!] 저장 오류: {e}")
+        print(f"Error processing {filepath}: {str(e)}")
 
+def main():
+    """메인 함수 - 파일 선택 대화상자 표시"""
+    root = tk.Tk()
+    root.withdraw()  # 메인 윈도우 숨기기
+    
+    # 파일 선택 대화상자
+    file_paths = filedialog.askopenfilenames(
+        title="Select DXF files",
+        filetypes=[("DXF files", "*.dxf"), ("All files", "*.*")]
+    )
+    
+    if not file_paths:
+        print("No files selected.")
+        return
+    
+    # 선택된 모든 파일 처리
+    for filepath in file_paths:
+        print(f"\nProcessing: {filepath}")
+        process_dxf_file(filepath)
+    
+    print("\nAll files processed.")
 
 if __name__ == "__main__":
-    files = select_files()
-    if not files:
-        print("❗ DXF 파일을 선택하지 않았습니다.")
-    else:
-        for f in files:
-            print(f"\n{'='*60}")
-            print(f"파일 처리: {os.path.basename(f)}")
-            print(f"{'='*60}")
-            process_dxf(f)
-        print("\n▶ 모든 파일 처리 완료.")
+    main()

@@ -397,23 +397,24 @@ def process_dxf(file_path):
         print(f"   [FLBOX 정보] FL '{st1.dxf.text}' BOX 크기: 가로 {initial_box_width:.2f}mm × 세로 {initial_box_height:.2f}mm")
         print(f"   [FLBOX 정보] 회전: {initial_fl_bbox.get('rotation', 0):.1f}°")
         
-        # FL 텍스트 +Y 방향 5mm 내에 N-, N+, S-, S+ 포함 텍스트 확인
+        # FL 텍스트 위에서 N-, N+, S-, S+ 포함 텍스트 확인
+        # 수정된 범위: Y방향 0~4mm, X방향 ±0.5mm 이내
         skip_this_fl = False
         for text in msp.query('TEXT'):
             if text is st1:
                 continue
             text_pos = get_text_position(text)
             
-            # +Y 방향 5mm 내에 있는지 확인 (Y가 클수록 위쪽)
+            # Y 방향 0~4mm 범위 확인 (같은 높이 포함)
             dy = text_pos.y - st1_pos.y
             dx = abs(text_pos.x - st1_pos.x)
             
-            if 0 < dy <= 5:  # +Y 방향 5mm 이내
+            if 0 <= dy <= 4 and dx <= 0.5:  # 수정된 조건
                 text_upper = text.dxf.text.upper()
                 # N 또는 S 다음에 공백(선택) 그리고 + 또는 - 패턴 확인
                 pattern = r'[NS]\s*[+\-]'
                 if re.search(pattern, text_upper):
-                    print(f"   [제외] FL '{st1.dxf.text}' 위쪽에 '{text.dxf.text}' 발견 (+Y {dy:.2f}mm)")
+                    print(f"   [제외] FL '{st1.dxf.text}' 위쪽에 '{text.dxf.text}' 발견 (Y: +{dy:.2f}mm, X: ±{dx:.2f}mm)")
                     skip_this_fl = True
                     break
         
@@ -1294,4 +1295,4 @@ if __name__ == "__main__":
     else:
         for f in files:
             process_dxf(f)
-        print("▶ 모든 파일 처리 완료.")
+        print("▶ 모든 파일 처리 완료.")                        

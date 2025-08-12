@@ -1,19 +1,38 @@
 import os
 import re
-import sys
 import ezdxf
+import sys
 from datetime import datetime
+from collections import defaultdict
+import math
 
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 except ImportError:
-    print("openpyxl 라이브러리가 필요합니다.")
-    print("설치 명령: pip install openpyxl")
-    exit()
+    sys.exit()
+
+# ANSI 규격 파이프 두께 (mm) - Rating별
+ANSI_THICKNESS = {
+    '#150': {'default': 3.2},
+    '#300': {'default': 6.4},
+    '#600': {'default': 9.5},
+    '#900': {'default': 12.7},
+    '#1500': {'default': 19.0},
+    '#2500': {'default': 25.4},
+    '#3000': {'default': 25.4},
+    '#6000': {'default': 38.1}
+}
+
+# ANSI 피팅 종류 (계산 대상)
+ANSI_FITTINGS = [
+    'ELBO', 'ELBOW', 'FLANGE', 'FLNG', 'OLET', 'WELDOLET', 'SOCKOLET', 'THREADOLET',
+    'REDU', 'REDUCER', 'TEE', 'CAP', 'COUPLING', 'UNION', 'NIPPLE', 'STUB'
+]
 
 def get_xy(e): 
+    """엔티티의 X, Y 좌표 반환"""
     try:
         if hasattr(e, 'dxf') and hasattr(e.dxf, 'insert'):
             ins = e.dxf.insert
@@ -30,6 +49,7 @@ def get_xy(e):
     return 0.0, 0.0
 
 def get_text(e):
+    """엔티티에서 텍스트 추출"""
     try:
         if hasattr(e, 'dxf') and hasattr(e.dxf, 'text'):
             return e.dxf.text
@@ -39,416 +59,306 @@ def get_text(e):
         pass
     return ''
 
+def get_all_texts_including_blocks(msp, doc):
+    """블록 내부의 텍스트를 포함한 모든 텍스트 요소 반환 (개선된 버전)"""
+    all_texts = []
+    
+    # 1. 모델 스페이스의 직접적인 텍스트 (TEXT, MTEXT)
+    for e in msp.query('TEXT MTEXT'):
+        txt = get_text(e).strip()
+        x, y = get_xy(e)
+        if txt:
+            all_texts.append((x, y, txt, e, 'NORMAL'))  # 타입 추가
+    
+    # 2. INSERT(블록 참조)를 통한 텍스트
+    for insert in msp.query('INSERT'):
+        try:
+            block_name = insert.dxf.name
+            block = doc.blocks.get(block_name)
+            if block:
+                # 블록의 삽입점과 스케일, 회전 정보
+                insert_x, insert_y = get_xy(insert)
+                
+                # 스케일 팩터 가져오기
+                x_scale = getattr(insert.dxf, 'xscale', 1.0)
+                y_scale = getattr(insert.dxf, 'yscale', 1.0)
+                rotation = getattr(insert.dxf, 'rotation', 0.0)
+                
+                # 블록 내부의 텍스트 요소들
+                for e in block.query('TEXT MTEXT'):
+                    txt = get_text(e).strip()
+                    if txt:
+                        # 블록 내부 좌표를 실제 좌표로 변환
+                        block_x, block_y = get_xy(e)
+                        
+                        # 스케일 적용
+                        scaled_x = block_x * x_scale
+                        scaled_y = block_y * y_scale
+                        
+                        # 회전 적용 (라디안으로 변환)
+                        if rotation != 0:
+                            import math
+                            rad = math.radians(rotation)
+                            cos_r = math.cos(rad)
+                            sin_r = math.sin(rad)
+                            
+                            # 회전 변환
+                            rotated_x = scaled_x * cos_r - scaled_y * sin_r
+                            rotated_y = scaled_x * sin_r + scaled_y * cos_r
+                            
+                            actual_x = insert_x + rotated_x
+                            actual_y = insert_y + rotated_y
+                        else:
+                            actual_x = insert_x + scaled_x
+                            actual_y = insert_y + scaled_y
+                        
+                        all_texts.append((actual_x, actual_y, txt, e, 'BLOCK'))  # 타입 추가
+                
+                # 블록 내부의 속성(ATTRIB) 텍스트도 확인
+                if hasattr(insert, 'attribs'):
+                    for attrib in insert.attribs:
+                        txt = attrib.dxf.text.strip() if hasattr(attrib.dxf, 'text') else ''
+                        if txt:
+                            x, y = get_xy(attrib)
+                            all_texts.append((x, y, txt, attrib, 'ATTRIB'))
+        except Exception as e:
+            continue
+    
+    # 3. ATTDEF (속성 정의) 확인
+    for e in msp.query('ATTDEF'):
+        txt = e.dxf.default_value.strip() if hasattr(e.dxf, 'default_value') else ''
+        if txt:
+            x, y = get_xy(e)
+            all_texts.append((x, y, txt, e, 'ATTDEF'))
+    
+    return all_texts
+
 def clean_str(s):
     return ''.join(s.split())
 
-# 동일 재질 매핑 테이블 (ASME B31.1/B31.3 기준)
-MATERIAL_EQUIVALENCE = {
-    # 탄소강 (Carbon Steel) - Grade B
-    'A106-B': 'CS',
-    'A106B': 'CS',
-    'SA106-B': 'CS',
-    'SA106B': 'CS',
-    'A53-B': 'CS',
-    'A53B': 'CS',
-    'SA53-B': 'CS',
-    'SA53B': 'CS',
-    'A234-WPB': 'CS',
-    'A234WPB': 'CS',
-    'SA234-WPB': 'CS',
-    'SA234WPB': 'CS',
-    'A105': 'CS',
-    'SA105': 'CS',
+def extract_size(size_str):
+    """SIZE 문자열에서 직경 추출 (mm 단위로 반환)"""
+    if not size_str:
+        return 0
     
-    # 탄소강 (Carbon Steel) - Grade C
-    'A106-C': 'CS',
-    'A106C': 'CS',
-    'SA106-C': 'CS',
-    'SA106C': 'CS',
-    'A234-WPC': 'CS',
-    'A234WPC': 'CS',
-    'SA234-WPC': 'CS',
-    'SA234WPC': 'CS',
+    # 분수 처리 (예: 1/2, 3/4) - 인치로 가정
+    if '/' in size_str:
+        parts = size_str.split('/')
+        if len(parts) == 2:
+            try:
+                inch_value = float(parts[0]) / float(parts[1])
+                return inch_value * 25.4  # 인치를 mm로 변환
+            except:
+                pass
     
-    # 탄소강 (Carbon Steel) - Grade A
-    'A106-A': 'CS',
-    'A106A': 'CS',
-    'SA106-A': 'CS',
-    'SA106A': 'CS',
-    'A53-A': 'CS',
-    'A53A': 'CS',
-    'SA53-A': 'CS',
-    'SA53A': 'CS',
-    'A234-WPA': 'CS',
-    'A234WPA': 'CS',
-    'SA234-WPA': 'CS',
-    'SA234WPA': 'CS',
-    
-    # 저합금강 P1 (0.5Mo)
-    'A335-P1': 'P1',
-    'A335P1': 'P1',
-    'SA335-P1': 'P1',
-    'SA335P1': 'P1',
-    'A234-WP1': 'P1',
-    'A234WP1': 'P1',
-    'SA234-WP1': 'P1',
-    'SA234WP1': 'P1',
-    'A182-F1': 'P1',
-    'A182F1': 'P1',
-    'SA182-F1': 'P1',
-    'SA182F1': 'P1',
-    
-    # 저합금강 P5 (5Cr-0.5Mo)
-    'A335-P5': 'P5',
-    'A335P5': 'P5',
-    'SA335-P5': 'P5',
-    'SA335P5': 'P5',
-    'A234-WP5': 'P5',
-    'A234WP5': 'P5',
-    'SA234-WP5': 'P5',
-    'SA234WP5': 'P5',
-    'A182-F5': 'P5',
-    'A182F5': 'P5',
-    'SA182-F5': 'P5',
-    'SA182F5': 'P5',
-    
-    # 저합금강 P11 (1.25Cr-0.5Mo)
-    'A335-P11': 'P11',
-    'A335P11': 'P11',
-    'SA335-P11': 'P11',
-    'SA335P11': 'P11',
-    'A234-WP11': 'P11',
-    'A234WP11': 'P11',
-    'SA234-WP11': 'P11',
-    'SA234WP11': 'P11',
-    'A182-F11': 'P11',
-    'A182F11': 'P11',
-    'SA182-F11': 'P11',
-    'SA182F11': 'P11',
-    
-    # 저합금강 P22 (2.25Cr-1Mo)
-    'A335-P22': 'P22',
-    'A335P22': 'P22',
-    'SA335-P22': 'P22',
-    'SA335P22': 'P22',
-    'A234-WP22': 'P22',
-    'A234WP22': 'P22',
-    'SA234-WP22': 'P22',
-    'SA234WP22': 'P22',
-    'A182-F22': 'P22',
-    'A182F22': 'P22',
-    'SA182-F22': 'P22',
-    'SA182F22': 'P22',
-    
-    # 고합금강 P91 (9Cr-1Mo-V)
-    'A335-P91': 'P91',
-    'A335P91': 'P91',
-    'SA335-P91': 'P91',
-    'SA335P91': 'P91',
-    'A234-WP91': 'P91',
-    'A234WP91': 'P91',
-    'SA234-WP91': 'P91',
-    'SA234WP91': 'P91',
-    'A182-F91': 'P91',
-    'A182F91': 'P91',
-    'SA182-F91': 'P91',
-    'SA182F91': 'P91',
-    
-    # 고합금강 P92 (9Cr-0.5Mo-1.8W-V-Nb)
-    'A335-P92': 'P92',
-    'A335P92': 'P92',
-    'SA335-P92': 'P92',
-    'SA335P92': 'P92',
-    'A234-WP92': 'P92',
-    'A234WP92': 'P92',
-    'SA234-WP92': 'P92',
-    'SA234WP92': 'P92',
-    'A182-F92': 'P92',
-    'A182F92': 'P92',
-    'SA182-F92': 'P92',
-    'SA182F92': 'P92',
-    
-    # 스테인리스 304
-    'A312-TP304': 'SS304',
-    'A312TP304': 'SS304',
-    'SA312-TP304': 'SS304',
-    'SA312TP304': 'SS304',
-    'A403-WP304': 'SS304',
-    'A403WP304': 'SS304',
-    'SA403-WP304': 'SS304',
-    'SA403WP304': 'SS304',
-    'A182-F304': 'SS304',
-    'A182F304': 'SS304',
-    'SA182-F304': 'SS304',
-    'SA182F304': 'SS304',
-    
-    # 스테인리스 304L
-    'A312-TP304L': 'SS304L',
-    'A312TP304L': 'SS304L',
-    'SA312-TP304L': 'SS304L',
-    'SA312TP304L': 'SS304L',
-    'A403-WP304L': 'SS304L',
-    'A403WP304L': 'SS304L',
-    'SA403-WP304L': 'SS304L',
-    'SA403WP304L': 'SS304L',
-    'A182-F304L': 'SS304L',
-    'A182F304L': 'SS304L',
-    'SA182-F304L': 'SS304L',
-    'SA182F304L': 'SS304L',
-    
-    # 스테인리스 316
-    'A312-TP316': 'SS316',
-    'A312TP316': 'SS316',
-    'SA312-TP316': 'SS316',
-    'SA312TP316': 'SS316',
-    'A403-WP316': 'SS316',
-    'A403WP316': 'SS316',
-    'SA403-WP316': 'SS316',
-    'SA403WP316': 'SS316',
-    'A182-F316': 'SS316',
-    'A182F316': 'SS316',
-    'SA182-F316': 'SS316',
-    'SA182F316': 'SS316',
-    
-    # 스테인리스 316L
-    'A312-TP316L': 'SS316L',
-    'A312TP316L': 'SS316L',
-    'SA312-TP316L': 'SS316L',
-    'SA312TP316L': 'SS316L',
-    'A403-WP316L': 'SS316L',
-    'A403WP316L': 'SS316L',
-    'SA403-WP316L': 'SS316L',
-    'SA403WP316L': 'SS316L',
-    'A182-F316L': 'SS316L',
-    'A182F316L': 'SS316L',
-    'SA182-F316L': 'SS316L',
-    'SA182F316L': 'SS316L',
-    
-    # 스테인리스 321
-    'A312-TP321': 'SS321',
-    'A312TP321': 'SS321',
-    'SA312-TP321': 'SS321',
-    'SA312TP321': 'SS321',
-    'A403-WP321': 'SS321',
-    'A403WP321': 'SS321',
-    'SA403-WP321': 'SS321',
-    'SA403WP321': 'SS321',
-    'A182-F321': 'SS321',
-    'A182F321': 'SS321',
-    'SA182-F321': 'SS321',
-    'SA182F321': 'SS321',
-    
-    # 스테인리스 347
-    'A312-TP347': 'SS347',
-    'A312TP347': 'SS347',
-    'SA312-TP347': 'SS347',
-    'SA312TP347': 'SS347',
-    'A403-WP347': 'SS347',
-    'A403WP347': 'SS347',
-    'SA403-WP347': 'SS347',
-    'SA403WP347': 'SS347',
-    'A182-F347': 'SS347',
-    'A182F347': 'SS347',
-    'SA182-F347': 'SS347',
-    'SA182F347': 'SS347',
-}
-
-def get_mat_group(mat_value):
-    """MAT 값에서 그룹명 추출 (ASME B31.1/B31.3 동일 재질 규정 적용)"""
-    if not mat_value:
-        return 'UNKNOWN'
-    
-    # 공백 제거 및 대문자 변환
-    clean_mat = mat_value.strip().upper()
-    
-    # 동일 재질 매핑 테이블에서 찾기
-    for mat_pattern, group in MATERIAL_EQUIVALENCE.items():
-        if mat_pattern in clean_mat:
-            return group
-    
-    # 매핑 테이블에 없으면 P 패턴으로 시도
-    import re
-    match = re.search(r'-P(\d+)', clean_mat)
+    # 일반 숫자 추출
+    match = re.search(r'(\d+(?:\.\d+)?)', size_str)
     if match:
-        return f"P{match.group(1)}"
-    
-    # 그 외의 경우 원래 재질명을 정리하여 사용
-    # 특수문자 제거 (시트명에 사용 불가)
-    clean_mat = re.sub(r'[^\w\s-]', '', mat_value)
-    return clean_mat[:20]  # Excel 시트명 길이 제한
-
-# DN to 인치 변환 테이블
-DN_TO_INCH = {
-    '15': '0.5',
-    '20': '0.75',
-    '25': '1',
-    '32': '1.25',
-    '40': '1.5',
-    '50': '2',
-    '65': '2.5',
-    '80': '3',
-    '100': '4',
-    '125': '5',
-    '150': '6',
-    '200': '8',
-    '250': '10',
-    '300': '12',
-    '350': '14',
-    '400': '16',
-    '450': '18',
-    '500': '20',
-    '600': '24',
-    '700': '28',
-    '750': '30',
-    '800': '32',
-    '900': '36',
-    '1000': '40',
-    '1200': '48'
-}
-
-def should_append_text(existing_text, new_text):
-    """두 번째 줄 텍스트를 추가할지 결정하는 함수"""
-    if not new_text or not existing_text:
-        return True
-    
-    # 완전히 같으면 추가하지 않음
-    if new_text == existing_text:
-        return False
-    
-    # new_text가 existing_text에 완전히 포함되면 추가하지 않음
-    if new_text in existing_text:
-        return False
-    
-    # new_text의 모든 단어가 existing_text에 있으면 추가하지 않음
-    new_words = new_text.split()
-    existing_words = existing_text.split()
-    
-    # 모든 새 단어가 기존 텍스트에 있는지 확인
-    all_words_exist = all(word in existing_words for word in new_words)
-    
-    return not all_words_exist
-
-def update_size_mapping(size, new_mat, new_thk, size_mat_thk_mapping):
-    """SIZE 매핑 업데이트 함수 - 포함 관계 확인하여 더 긴 텍스트 선택"""
-    if size in size_mat_thk_mapping:
-        existing_mat = size_mat_thk_mapping[size]['MAT']
-        existing_thk = size_mat_thk_mapping[size]['THK']
-        update_mat = False
-        update_thk = False
-        
-        # MAT 포함 관계 확인
-        if new_mat and existing_mat:
-            if new_mat in existing_mat or existing_mat in new_mat:
-                if len(new_mat) > len(existing_mat):
-                    update_mat = True
-        
-        # THK 포함 관계 확인
-        if new_thk and existing_thk:
-            if new_thk in existing_thk or existing_thk in new_thk:
-                if len(new_thk) > len(existing_thk):
-                    update_thk = True
-        
-        # 업데이트 필요한 경우만 수정
-        if update_mat or update_thk:
-            final_mat = new_mat if update_mat else existing_mat
-            final_thk = new_thk if update_thk else existing_thk
-            size_mat_thk_mapping[size] = {'MAT': final_mat, 'THK': final_thk}
-    else:
-        size_mat_thk_mapping[size] = {'MAT': new_mat if new_mat else '', 'THK': new_thk if new_thk else ''}
-
-def process_weld_type_data(fld_value, dn_value, type_value):
-    """WELD 데이터에서 /FLD, DN, TYPE 값을 정리하는 함수
-    특히 "FW 350 350" 같은 패턴을 처리
-    """
-    # TYPE에 DN 값(숫자)이 들어간 경우 처리
-    if type_value and type_value.replace('.', '').replace('-', '').isdigit():
-        # TYPE에 숫자가 있으면 DN이 잘못 들어간 것
-        if not dn_value or dn_value == type_value:
-            dn_value = type_value
-            type_value = 'BW'  # 기본값으로 BW 설정
-    
-    # /FLD 값에 여러 값이 합쳐진 경우 처리 (예: "FW 350 350")
-    if fld_value:
-        parts = fld_value.split()
-        if len(parts) >= 2:
-            # 첫 번째 부분이 FW/SW인지 확인
-            if parts[0].upper() in ['FW', 'SW', 'F', 'S']:
-                fld_value = parts[0].upper()
-                # 두 번째 부분이 숫자면 DN으로
-                if len(parts) >= 2 and parts[1].replace('.', '').replace('-', '').isdigit():
-                    if not dn_value:
-                        dn_value = parts[1]
-                    # 세 번째 부분 처리
-                    if len(parts) >= 3:
-                        # 세 번째도 숫자면 무시하고 BW로 설정
-                        if parts[2].replace('.', '').replace('-', '').isdigit():
-                            type_value = 'BW'
-                        else:
-                            type_value = parts[2].upper()
-                    else:
-                        # 세 번째 부분이 없으면 BW로 설정
-                        type_value = 'BW'
-    
-    # DN 값에 여러 값이 합쳐진 경우 처리
-    if dn_value and ' ' in dn_value:
-        parts = dn_value.split()
-        if len(parts) >= 2:
-            # 첫 번째가 FW/SW면 /FLD로
-            if parts[0].upper() in ['FW', 'SW', 'F', 'S'] and not fld_value:
-                fld_value = parts[0].upper()
-                if len(parts) >= 2:
-                    dn_value = parts[1]
-                if len(parts) >= 3 and not type_value:
-                    type_value = parts[2].upper() if not parts[2].isdigit() else 'BW'
-            # 첫 번째가 숫자면 DN으로
-            elif parts[0].replace('.', '').replace('-', '').isdigit():
-                dn_value = parts[0]
-                if len(parts) >= 2 and not type_value:
-                    type_value = parts[1].upper() if not parts[1].isdigit() else 'BW'
-    
-    # TYPE 값에 여러 값이 합쳐진 경우 처리
-    if type_value and ' ' in type_value:
-        parts = type_value.split()
-        # 마지막 부분을 TYPE으로
-        for part in reversed(parts):
-            if part.upper() in ['BW', 'SW', 'FW', 'TH']:
-                type_value = part.upper()
-                break
+        value = float(match.group(1))
+        # 50 이하는 인치로 가정, 50 초과는 mm로 가정
+        if value <= 50:
+            return value * 25.4  # 인치를 mm로 변환
         else:
-            # 적절한 TYPE이 없으면 BW로 설정
-            type_value = 'BW'
+            return value  # 이미 mm 단위
     
-    # TYPE이 여전히 숫자면 BW로 변경
-    if type_value and type_value.replace('.', '').replace('-', '').isdigit():
-        type_value = 'BW'
-    
-    # TYPE이 비어있으면 BW로 설정
-    if not type_value:
-        type_value = 'BW'
-    
-    return fld_value, dn_value, type_value
+    return 0
 
-# Command line 인자 확인
+def extract_thickness(description):
+    """DESCRIPTION에서 두께 추출"""
+    # AWT.48 형태에서 두께 추출
+    awt_match = re.search(r'AWT\.(\d+(?:\.\d+)?)', description)
+    if awt_match:
+        return float(awt_match.group(1))
+    
+    # WT48 형태에서 두께 추출
+    wt_match = re.search(r'WT(\d+(?:\.\d+)?)', description)
+    if wt_match:
+        return float(wt_match.group(1))
+    
+    # #3000, #6000 등의 Rating에서 두께 추출
+    rating_match = re.search(r'#(\d+)', description)
+    if rating_match:
+        rating = f"#{rating_match.group(1)}"
+        if rating in ANSI_THICKNESS:
+            return ANSI_THICKNESS[rating]['default']
+    
+    # SCH40, SCH80 등에서 표준 두께 사용
+    if 'SCH40' in description.upper():
+        return 6.0  # 표준 두께
+    elif 'SCH80' in description.upper():
+        return 9.0  # 표준 두께
+    elif 'SCH160' in description.upper():
+        return 15.0  # 표준 두께
+    
+    # BW (Butt Weld) 표준 두께
+    if 'BW' in description.upper():
+        return 7.0  # BW 표준 두께
+    
+    return 5.0  # 기본 두께 5mm
+
+def calculate_paint_area(item, size, description, qty, mmea):
+    """내면적과 외면적 계산"""
+    try:
+        # 수량을 float로 변환
+        quantity = float(qty) if qty else 0
+        if quantity == 0:
+            return 0, 0
+        
+        # SIZE에서 직경 추출 (mm 단위로 반환됨)
+        outer_diameter = extract_size(size)
+        if outer_diameter == 0:
+            return 0, 0
+        
+        # 두께 추출
+        thickness = extract_thickness(description)
+        inner_diameter = outer_diameter - (2 * thickness)
+        
+        # 내경이 0 이하인 경우 처리
+        if inner_diameter <= 0:
+            inner_diameter = 0
+        
+        item_upper = item.upper()
+        desc_upper = description.upper()
+        
+        # PIPE인 경우
+        if 'PIPE' in item_upper:
+            # 길이는 수량 (mm 단위)
+            length = quantity  # PIPE는 항상 MM 단위
+            
+            # 내면적 = π × 내경 × 길이 (m²로 변환)
+            inner_area = math.pi * inner_diameter * length / 1000000
+            # 외면적 = π × 외경 × 길이 (m²로 변환)
+            outer_area = math.pi * outer_diameter * length / 1000000
+            
+            return round(inner_area, 2), round(outer_area, 2)
+        
+        # ANSI FITTING인지 확인
+        is_ansi_fitting = False
+        for fitting in ANSI_FITTINGS:
+            if fitting in item_upper or fitting in desc_upper:
+                is_ansi_fitting = True
+                break
+        
+        # ANSI FITTING이 아니면 계산하지 않음
+        if not is_ansi_fitting:
+            return 0, 0
+        
+        # ELBO/ELBOW 특별 처리
+        if 'ELBO' in item_upper or 'ELBOW' in item_upper or 'ELBO' in desc_upper or 'ELBOW' in desc_upper:
+            # 각도 확인 (기본값 90도)
+            angle = 90
+            if '45' in desc_upper:
+                angle = 45
+            elif '30' in desc_upper:
+                angle = 30
+            elif '60' in desc_upper:
+                angle = 60
+            
+            # 곡률반경 R = 1.5 × 직경
+            bend_radius = outer_diameter * 1.5
+            
+            # 토러스(도넛) 표면적 계산
+            # 외면적 = (angle/360) × 2π² × R × r
+            # R: 곡률반경, r: 파이프 반경
+            angle_ratio = angle / 360
+            outer_surface = angle_ratio * 2 * math.pi * math.pi * bend_radius * (outer_diameter / 2)
+            inner_surface = angle_ratio * 2 * math.pi * math.pi * bend_radius * (inner_diameter / 2)
+            
+            # m²로 변환 후 수량 곱하기
+            outer_area = outer_surface * quantity / 1000000
+            inner_area = inner_surface * quantity / 1000000
+            
+            return round(inner_area, 2), round(outer_area, 2)
+        
+        # FLANGE 처리
+        elif 'FLANGE' in item_upper or 'FLNG' in item_upper or 'FLANGE' in desc_upper or 'FLNG' in desc_upper:
+            # 플랜지는 원판 형태 (두께 20mm 가정)
+            flange_thickness = 20
+            # 외경은 파이프 외경의 2배 정도
+            flange_outer_dia = outer_diameter * 2
+            
+            # 원판 양면 + 원주면
+            outer_area = (2 * math.pi * (flange_outer_dia/2)**2 + math.pi * flange_outer_dia * flange_thickness) * quantity / 1000000
+            # 내면적은 구멍 부분
+            inner_area = math.pi * inner_diameter * flange_thickness * quantity / 1000000
+            
+            return round(inner_area, 2), round(outer_area, 2)
+        
+        # TEE 처리
+        elif 'TEE' in item_upper or 'TEE' in desc_upper:
+            # TEE는 파이프 3개 연결 (본관 2D + 분기관 1D)
+            pipe_length = outer_diameter * 3
+            
+            outer_area = math.pi * outer_diameter * pipe_length * quantity / 1000000
+            inner_area = math.pi * inner_diameter * pipe_length * quantity / 1000000
+            
+            return round(inner_area, 2), round(outer_area, 2)
+        
+        # REDUCER 처리
+        elif 'REDU' in item_upper or 'REDUCER' in item_upper or 'REDU' in desc_upper or 'REDUCER' in desc_upper:
+            # 리듀서는 원뿔대 형태 (길이는 큰 직경의 2배)
+            reducer_length = outer_diameter * 2
+            
+            # 간단히 평균 직경으로 계산
+            outer_area = math.pi * outer_diameter * reducer_length * quantity / 1000000
+            inner_area = math.pi * inner_diameter * reducer_length * quantity / 1000000
+            
+            return round(inner_area, 2), round(outer_area, 2)
+        
+        # CAP 처리
+        elif 'CAP' in item_upper or 'CAP' in desc_upper:
+            # 캡은 반구 + 원판
+            outer_area = (2 * math.pi * (outer_diameter/2)**2) * quantity / 1000000
+            # 내면적은 반구만
+            inner_area = (2 * math.pi * (inner_diameter/2)**2) * quantity / 1000000
+            
+            return round(inner_area, 2), round(outer_area, 2)
+        
+        # OLET 류 처리
+        elif 'OLET' in item_upper or 'OLET' in desc_upper:
+            # OLET은 작은 원통형 (높이는 직경과 동일)
+            olet_height = outer_diameter
+            
+            outer_area = (math.pi * outer_diameter * olet_height + math.pi * (outer_diameter/2)**2) * quantity / 1000000
+            inner_area = math.pi * inner_diameter * olet_height * quantity / 1000000
+            
+            return round(inner_area, 2), round(outer_area, 2)
+        
+        # 기타 ANSI FITTING (COUPLING, UNION, NIPPLE 등)
+        else:
+            # 기본적으로 짧은 파이프로 계산 (길이 = 직경)
+            fitting_length = outer_diameter
+            
+            outer_area = math.pi * outer_diameter * fitting_length * quantity / 1000000
+            inner_area = math.pi * inner_diameter * fitting_length * quantity / 1000000
+            
+            return round(inner_area, 2), round(outer_area, 2)
+        
+    except Exception as e:
+        return 0, 0
+
+# 커맨드 라인 인자 처리
 if len(sys.argv) < 2:
-    print("사용법: python PLOTNEWLINE.PY file1.dxf file2.dxf ...")
-    exit()
+    sys.exit()
 
-# DXF 파일 경로들
 file_paths = sys.argv[1:]
 
-# Excel 파일명 생성 (날짜시간 포함)
-now = datetime.now()
-datetime_str = now.strftime("%Y%m%d_%H%M%S")
-excel_filename = f"TOTALWELD_{datetime_str}.xlsx"
-excel_path = os.path.join(os.path.dirname(file_paths[0]), excel_filename)
-
 # 전체 데이터를 저장할 리스트
-all_weld_data = []
+all_data = []
+
+# 시트별 데이터를 저장할 딕셔너리 추가 (BOLT/NUT을 BOLT-NUT으로 변경)
+sheet_data = {
+    'FAB MAT': [],
+    'ELEC MAT': [],
+    'PIPE': [],
+    'BOLT-NUT': [],  # '/' 제거
+    'INST': [],
+    'FITTING': []
+}
 
 # 각 DXF 파일 처리
 for file_path in file_paths:
-    # 파일별로 SIZE 매핑 초기화 (각 도면마다 새로운 매핑)
-    size_mat_thk_mapping = {}
+    file_data = []  # 현재 파일의 데이터를 임시 저장
     
     try:
         doc = ezdxf.readfile(file_path)
@@ -456,11 +366,11 @@ for file_path in file_paths:
     except Exception as e:
         continue
     
-    # 1. LINENO 찾기
+    # 1. LINENO 찾기 (블록 포함)
     lineno = None
-    for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e).strip()
-        x, y = get_xy(e)
+    all_texts = get_all_texts_including_blocks(msp, doc)
+    
+    for x, y, txt, e, txt_type in all_texts:
         if 0 <= x <= 150 and 0 <= y <= 85 and '-' in txt and len(txt) >= 10:
             lineno = clean_str(txt)
             break
@@ -468,940 +378,848 @@ for file_path in file_paths:
     if not lineno:
         lineno = '-'
     
-    # 2. ISODWGNO 찾기
+    # 2. FABRICATION MATERIALS 섹션에서 ISODWGNO 찾기
     isodwgno = None
+    iso_description = '-'  # ISO DESCRIPTION 초기값
     fab_mat_e = None
     fab_x, fab_y = None, None
+    iso_x, iso_y = None, None  # ISO DWG NO의 위치 저장
     
-    for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e)
+    for x, y, txt, e, txt_type in all_texts:
         if "FABRICATION MATERIALS" in txt.upper():
             fab_mat_e = e
-            fab_x, fab_y = get_xy(e)
+            fab_x, fab_y = x, y
             break
     
     if fab_mat_e:
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip()
-            x, y = get_xy(e)
+        for x, y, txt, e, txt_type in all_texts:
             if fab_x is not None and fab_y is not None:
                 if (x > fab_x) and (0 <= y <= 20) and ('-' in txt):
                     isodwgno = txt
+                    iso_x, iso_y = x, y  # ISO DWG NO의 위치 저장
                     break
+    
+    # ISODWGNO가 'unset' 또는 '-'인 경우 대체 위치에서 찾기
+    if not isodwgno or isodwgno == '-' or isodwgno.lower() == 'unset':
+        # X: 700-820, Y: 5-25 범위의 모든 텍스트 수집
+        iso_texts = []
+        
+        for x, y, txt, e, txt_type in all_texts:
+            if 700 <= x <= 820 and 5 <= y <= 25 and txt:  # X 범위를 요청사항대로 820으로 설정
+                iso_texts.append((x, y, txt, txt_type))
+        
+        if iso_texts:
+            # Y값으로 그룹화 (같은 줄의 텍스트들끼리 그룹화)
+            y_groups = defaultdict(list)
+            for x, y, txt, txt_type in iso_texts:
+                # Y값을 2단위로 그룹화 (더 정밀하게)
+                y_group = round(y / 2) * 2
+                y_groups[y_group].append((x, y, txt, txt_type))
+            
+            # 가장 텍스트가 많은 Y 그룹 찾기
+            max_group_y = max(y_groups.keys(), key=lambda k: len(y_groups[k]))
+            selected_texts = y_groups[max_group_y]
+            
+            # X 좌표로 정렬
+            selected_texts.sort(key=lambda t: t[0])
+            
+            # 모든 텍스트를 공백 없이 연결
+            isodwgno = ''
+            for i, (x, y, txt, txt_type) in enumerate(selected_texts):
+                isodwgno += txt
+            
+            # 위치는 첫 번째 텍스트의 위치 사용
+            if selected_texts:
+                iso_x, iso_y = selected_texts[0][0], selected_texts[0][1]
+    
+    # 2-1단계: X: 770-780, Y: 5-20 범위의 추가 텍스트 읽기
+    # ★★★ 중요한 수정: ISODWGNO가 있든 없든 항상 실행되도록 변경 ★★★
+    additional_texts = []
+    
+    for x, y, txt, e, txt_type in all_texts:
+        if 770 <= x <= 780 and 5 <= y <= 20 and txt:
+            additional_texts.append((x, y, txt, txt_type))
+    
+    if additional_texts:
+        # Y값으로 정렬 (위에서 아래로)
+        additional_texts.sort(key=lambda t: t[1])
+        
+        # ISODWGNO가 없으면 빈 문자열로 초기화
+        if not isodwgno or isodwgno == '-':
+            isodwgno = ''
+        
+        # 추가 텍스트를 ISODWGNO에 연결
+        for x, y, txt, txt_type in additional_texts:
+            prev_isodwgno = isodwgno
+            isodwgno += txt
+    
+    # ISODWGNO가 여전히 없다면 더 넓은 범위에서 재검색
+    if not isodwgno or isodwgno == '-' or isodwgno.lower() == 'unset':
+        # X: 690-950, Y: 0-30 범위로 확대하여 검색
+        iso_texts_wide = []
+        
+        for x, y, txt, e, txt_type in all_texts:
+            if 690 <= x <= 950 and 0 <= y <= 30 and txt:
+                # 모든 텍스트를 일단 수집 (필터링 제거)
+                iso_texts_wide.append((x, y, txt, txt_type))
+        
+        if iso_texts_wide:
+            # Y값으로 그룹화 (비슷한 Y값끼리)
+            y_groups = defaultdict(list)
+            for x, y, txt, txt_type in iso_texts_wide:
+                y_group = round(y / 2) * 2  # 2단위로 그룹화 (더 정밀하게)
+                y_groups[y_group].append((x, y, txt, txt_type))
+            
+            # '-'를 포함하거나 'JCP'로 시작하는 텍스트가 있는 Y 그룹 우선 선택
+            best_group = None
+            for y_val, texts in y_groups.items():
+                for x, y, txt, txt_type in texts:
+                    if 'JCP' in txt or '-' in txt:
+                        best_group = texts
+                        break
+                if best_group:
+                    break
+            
+            # 없으면 가장 많은 텍스트가 있는 그룹 선택
+            if not best_group:
+                best_group = max(y_groups.values(), key=len)
+            
+            # X로 정렬
+            best_group.sort(key=lambda t: t[0])
+            
+            # 텍스트 조합 (모든 텍스트를 공백 없이 연결)
+            isodwgno = ''
+            for i, (x, y, txt, txt_type) in enumerate(best_group):
+                isodwgno += txt
+            
+            if best_group:
+                iso_x, iso_y = best_group[0][0], best_group[0][1]
+        
+        # 다시 X: 770-780, Y: 5-20 범위 확인 (확장 검색 후에도)
+        additional_texts = []
+        for x, y, txt, e, txt_type in all_texts:
+            if 770 <= x <= 780 and 5 <= y <= 20 and txt:
+                additional_texts.append((x, y, txt, txt_type))
+        
+        if additional_texts:
+            additional_texts.sort(key=lambda t: t[1])
+            if not isodwgno:
+                isodwgno = ''
+            for x, y, txt, txt_type in additional_texts:
+                isodwgno += txt
     
     if not isodwgno:
         isodwgno = '-'
+    else:
+        # 최종 ISODWGNO 정리 (불필요한 공백 제거)
+        isodwgno = isodwgno.strip()
     
-    # 3. PT 테이블에서 SIZE-MAT-THK 매핑 구축
-    # PT 헤더 찾기
+    # 2.1. ISO DESCRIPTION 찾기
+    if iso_x is not None and iso_y is not None:
+        # 지정된 범위에서 텍스트 찾기
+        for x, y, txt, e, txt_type in all_texts:
+            # X 좌표: iso_x-50부터 iso_x+50까지, Y 좌표: iso_y+10부터 iso_y+45까지
+            if (iso_x - 50 <= x <= iso_x + 50) and (iso_y + 10 <= y <= iso_y + 45) and txt:
+                iso_description = txt
+                break  # 첫 번째 텍스트만 사용
+    
+    # ISO DESCRIPTION이 'unset' 또는 '-'인 경우 대체 위치에서 찾기
+    if iso_description == '-' or iso_description.lower() == 'unset':
+        desc_texts = []
+        
+        for x, y, txt, e, txt_type in all_texts:
+            if 700 <= x <= 950 and 20 <= y <= 40 and txt:  # X 범위 확대, Y 범위도 조정
+                desc_texts.append((x, y, txt, txt_type))
+        
+        if desc_texts:
+            # Y값으로 그룹화
+            y_groups = defaultdict(list)
+            for x, y, txt, txt_type in desc_texts:
+                y_group = round(y / 2) * 2  # 2단위로 그룹화
+                y_groups[y_group].append((x, y, txt))
+            
+            # 가장 많은 텍스트가 있는 Y 그룹 선택
+            if y_groups:
+                best_y = max(y_groups.keys(), key=lambda k: len(y_groups[k]))
+                best_group = y_groups[best_y]
+                
+                # X로 정렬
+                best_group.sort(key=lambda t: t[0])
+                
+                # 모든 텍스트를 공백으로 연결
+                iso_description = ' '.join(t[2] for t in best_group)
+    
+    # 2.5. INSU 값 찾기 (X: 185-200, Y: 60-70 영역)
+    insu_value = '-'
+    
+    # 해당 영역의 모든 텍스트 확인
+    area_texts = []
+    for x, y, txt, e, txt_type in all_texts:
+        if 185 <= x <= 200 and 60 <= y <= 70:
+            area_texts.append((x, y, txt))
+    
+    # 숫자 텍스트 찾기
+    for x, y, txt in area_texts:
+        # 숫자인지 확인 (소수점 포함)
+        try:
+            float(txt)  # 숫자 변환 시도
+            insu_value = txt
+            break
+        except ValueError:
+            # 숫자가 아니면 계속 검색
+            continue
+    
+    # INSU 값이 'unset' 또는 '-'인 경우 대체 위치에서 찾기
+    if insu_value == '-' or insu_value.lower() == 'unset':
+        for x, y, txt, e, txt_type in all_texts:
+            if 260 <= x <= 280 and 30 <= y <= 75:
+                try:
+                    float(txt)  # 숫자인지 확인
+                    insu_value = txt
+                    break
+                except ValueError:
+                    continue
+    
+    # 3. PT 헤더 찾기 (블록 포함)
+    headers = ['PT', 'ITEM', 'MATERIAL', 'SIZE', 'DESCRIPTION', 'QTY', 'UNIT', 'TOTAL', 'REMARK']
+    
+    # 모든 PT 헤더 찾기
     pt_headers = []
-    for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e).strip().upper()
-        x, y = get_xy(e)
-        if txt == 'PT' or (txt.startswith('PT') and len(txt) <= 5):
-            pt_headers.append((x, y, txt))
+    for x, y, txt, e, txt_type in all_texts:
+        txt_upper = txt.upper()
+        # PT가 포함되고, 다른 긴 텍스트가 아닌 경우
+        if txt_upper == 'PT' or (txt_upper.startswith('PT') and len(txt_upper) <= 5):
+            pt_headers.append((x, y, txt_upper))
     
-    # 각 PT 테이블 처리
+    if not pt_headers:
+        continue
+    
+    # 각 PT 헤더에 대해 처리
+    file_processed_pts = {}  # 파일 전체에서 처리된 PT 추적 - 각 파일마다 초기화
+    
     for pt_idx, (pt_x, pt_y, pt_txt) in enumerate(pt_headers):
+        
         # 현재 PT 헤더 주변의 다른 헤더들 찾기
         header_positions = {'PT': pt_x}
         
-        # PT와 같은 Y 좌표 근처에서 다른 헤더 찾기
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip().upper()
-            x, y = get_xy(e)
+        # PT와 같은 Y 좌표 근처(±5)에서 다른 헤더 찾기
+        for x, y, txt, e, txt_type in all_texts:
+            txt_upper = txt.upper()
             
-            if abs(y - pt_y) <= 8:
-                if 'SIZE' in txt:
-                    header_positions['SIZE'] = x
-                elif 'MATERIAL' in txt:
-                    header_positions['MATERIAL'] = x
-                elif 'DESC' in txt:
-                    header_positions['DESCRIPTION'] = x
+            # PT와 비슷한 Y 좌표에 있는 헤더들 찾기
+            if abs(y - pt_y) <= 5:
+                for header in headers:
+                    if header != 'PT':
+                        # 헤더 텍스트 정확히 매칭 또는 포함 확인
+                        if (header == txt_upper) or (header in txt_upper and len(txt_upper) <= len(header) + 10):
+                            header_positions[header] = x
+                            break
         
-        # 필요한 헤더가 없으면 스킵
-        if 'SIZE' not in header_positions:
-            continue
+        # DESCRIPTION 헤더 특별 처리 (다양한 변형 확인)
+        if 'DESCRIPTION' not in header_positions:
+            for x, y, txt, e, txt_type in all_texts:
+                txt_upper = txt.upper()
+                if abs(y - pt_y) <= 5:
+                    if 'DESC' in txt_upper or 'DESCRIPT' in txt_upper:
+                        header_positions['DESCRIPTION'] = x
+                        break
         
-        # 모든 텍스트를 Y좌표로 정렬
-        all_texts = []
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip()
-            x, y = get_xy(e)
-            if txt:
-                all_texts.append((x, y, txt))
+        # 4. PT 아래의 데이터 추출
+        data_rows = []
         
-        all_texts.sort(key=lambda t: -t[1])  # Y좌표 내림차순 정렬
+        # Y좌표로 정렬 (블록 텍스트 포함)
+        all_texts_sorted = sorted(all_texts, key=lambda t: -t[1])  # Y좌표 내림차순 정렬
         
-        # PT 데이터 읽기
-        for x, y, txt in all_texts:
+        # PT 숫자 찾기
+        current_row = None
+        last_pt_y = None
+        pt_count = 0
+        processed_pts = {}  # PT 번호별로 처리 여부 추적 {pt_number: row_data}
+        
+        for x, y, txt, e, txt_type in all_texts_sorted:
             # PT 헤더 아래에서만 검색
             if y >= pt_y:
                 continue
             
+            # PT 열 위치 확인
+            is_pt_column = abs(x - pt_x) <= 2
+            
             # PT 열에서 숫자 찾기
-            if abs(x - pt_x) <= 4 and txt.isdigit():
-                # 현재 행의 SIZE, MATERIAL, DESCRIPTION 읽기
-                size_value = None
-                mat_value = None
-                desc_value = None
+            if is_pt_column and txt.isdigit():
+                # 파일 전체에서 이미 처리된 PT인지 확인 (PT 번호만으로 체크)
+                if txt in file_processed_pts:
+                    continue
                 
-                # 첫 번째 줄 데이터 읽기
+                # 현재 테이블에서 중복 PT 처리
+                if txt in processed_pts:
+                    # 중복 PT가 발견되면 완전히 건너뛰기
+                    continue
+                
+                # 이전 행 저장 (중복 체크)
+                if current_row and current_row.get('ITEM NO') not in processed_pts:
+                    processed_pts[current_row.get('ITEM NO')] = current_row
+                    data_rows.append(current_row)
+                
+                pt_count += 1
+                
+                # 새로운 행 시작
+                current_row = {'ITEM NO': txt, '_y_pos': y, '_pt_header_index': pt_idx}  # PT 헤더 인덱스 추가
+                last_pt_y = y
+                
+                # 첫 번째 줄 데이터 수집
                 for hdr, hdr_x in header_positions.items():
-                    if hdr == 'SIZE':
-                        for x2, y2, txt2 in all_texts:
-                            if abs(x2 - hdr_x) <= 4 and abs(y2 - y) <= 4 and txt2:
-                                size_value = txt2
-                                break
-                    elif hdr == 'MATERIAL':
-                        for x2, y2, txt2 in all_texts:
-                            if abs(x2 - hdr_x) <= 4 and abs(y2 - y) <= 4 and txt2:
-                                mat_value = txt2
-                                break
-                    elif hdr == 'DESCRIPTION':
-                        for x2, y2, txt2 in all_texts:
-                            if abs(x2 - hdr_x) <= 4 and abs(y2 - y) <= 4 and txt2:
-                                desc_value = txt2
+                    if hdr != 'PT':
+                        for x2, y2, txt2, e2, txt_type2 in all_texts_sorted:
+                            if abs(x2 - hdr_x) <= 2 and abs(y2 - y) <= 2:
+                                if txt2:  # 빈 텍스트가 아닌 경우만
+                                    current_row[hdr] = txt2
                                 break
                 
-                # 두 번째 줄 확인 - 모든 필드에 대해 2줄 데이터 처리
-                for check_y in range(int(y-10), int(y-3)):
-                    # PT 열에 숫자가 없는 경우만 (다음 PT 항목이 아닌 경우)
-                    pt_exists = False
-                    for x3, y3, txt3 in all_texts:
-                        if abs(x3 - pt_x) <= 4 and abs(y3 - check_y) <= 2 and txt3.isdigit():
-                            pt_exists = True
-                            break
+                # 다음 줄 데이터 확인 (PT 열이 비어있는 경우에만)
+                # 현재 PT 아래 2-6mm 범위에서 확인
+                for next_y in range(int(y-6), int(y-2)):
+                    next_y_float = float(next_y)
                     
-                    if not pt_exists:
-                        # SIZE 2줄 처리
-                        if size_value and 'SIZE' in header_positions:
-                            size_x = header_positions['SIZE']
-                            for x2, y2, txt2 in all_texts:
-                                if abs(x2 - size_x) <= 4 and abs(y2 - check_y) <= 2 and txt2:
-                                    if should_append_text(size_value, txt2):
-                                        size_value = size_value + ' ' + txt2
+                    # 먼저 이 Y 위치의 PT 열 확인
+                    has_pt_at_next = False
+                    for x2, y2, txt2, e2, txt_type2 in all_texts_sorted:
+                        if abs(x2 - pt_x) <= 2 and abs(y2 - next_y_float) <= 1:
+                            if txt2 and txt2.strip():  # 공백이 아닌 텍스트가 있으면
+                                if txt2.isdigit():  # PT 번호가 있으면
+                                    has_pt_at_next = True
                                     break
-                        
-                        # MATERIAL 2줄 처리
-                        if mat_value and 'MATERIAL' in header_positions:
-                            mat_x = header_positions['MATERIAL']
-                            for x2, y2, txt2 in all_texts:
-                                if abs(x2 - mat_x) <= 4 and abs(y2 - check_y) <= 2 and txt2:
-                                    if should_append_text(mat_value, txt2):
-                                        mat_value = mat_value + ' ' + txt2
-                                    break
-                        
-                        # DESCRIPTION 2줄 처리
-                        if desc_value and 'DESCRIPTION' in header_positions:
-                            desc_x = header_positions['DESCRIPTION']
-                            for x2, y2, txt2 in all_texts:
-                                if abs(x2 - desc_x) <= 4 and abs(y2 - check_y) <= 2 and txt2:
-                                    if should_append_text(desc_value, txt2):
-                                        desc_value = desc_value + ' ' + txt2
-                                    break
+                    
+                    # PT 열에 숫자가 있으면 다음 PT이므로 중단
+                    if has_pt_at_next:
                         break
-                
-                # SIZE가 있으면 매핑 구축
-                if size_value and size_value.strip():
-                    # SIZE에 x가 있는 경우 처리
-                    if 'x' in size_value.lower():
-                        # x로 분리
-                        parts = re.split(r'[xX]', size_value)
-                        if len(parts) == 2:
-                            size1 = parts[0].strip()
-                            size2 = parts[1].strip()
-                            
-                            # 빈 값 체크
-                            if not size1 or not size2:
-                                continue
-                            
-                            # DESCRIPTION에서도 x로 분리
-                            if desc_value and 'x' in desc_value.lower():
-                                desc_parts = re.split(r'[xX]', desc_value)
-                                if len(desc_parts) == 2:
-                                    thk1 = desc_parts[0].strip()
-                                    thk2 = desc_parts[1].strip()
-                                    
-                                    # 각 SIZE별로 매핑 저장 (포함 관계 확인)
-                                    update_size_mapping(size1, mat_value, thk1, size_mat_thk_mapping)
-                                    update_size_mapping(size2, mat_value, thk2, size_mat_thk_mapping)
+                    
+                    # PT 열이 비어있으면 다른 열의 데이터 확인
+                    next_line_data = {}
+                    has_data_at_next = False
+                    
+                    for hdr, hdr_x in header_positions.items():
+                        if hdr != 'PT':
+                            for x2, y2, txt2, e2, txt_type2 in all_texts_sorted:
+                                if abs(x2 - hdr_x) <= 2 and abs(y2 - next_y_float) <= 1 and txt2:
+                                    next_line_data[hdr] = txt2
+                                    has_data_at_next = True
+                                    break
+                    
+                    # 데이터가 있으면 현재 행에 병합
+                    if has_data_at_next:
+                        for hdr, txt2 in next_line_data.items():
+                            if current_row.get(hdr):
+                                # 숫자 필드는 대체, 텍스트 필드는 공백 포함 연결
+                                if hdr in ['UNIT', 'TOTAL', 'QTY']:
+                                    current_row[hdr] = txt2  # 숫자는 대체
                                 else:
-                                    # x가 없으면 전체 DESCRIPTION을 THK로 사용 (포함 관계 확인)
-                                    update_size_mapping(size1, mat_value, desc_value, size_mat_thk_mapping)
-                                    update_size_mapping(size2, mat_value, desc_value, size_mat_thk_mapping)
+                                    # 텍스트는 공백으로 연결
+                                    current_row[hdr] = current_row[hdr] + ' ' + txt2
                             else:
-                                # DESCRIPTION에 x가 없으면 전체를 THK로 (포함 관계 확인)
-                                update_size_mapping(size1, mat_value, desc_value, size_mat_thk_mapping)
-                                update_size_mapping(size2, mat_value, desc_value, size_mat_thk_mapping)
-                    else:
-                        # x가 없는 경우 (포함 관계 확인)
-                        update_size_mapping(size_value, mat_value, desc_value, size_mat_thk_mapping)
-    
-    # 4. NO/FLD/DN/TYPE 테이블 찾기
-    weld_headers = ['NO', '/FLD', 'DN', 'TYPE']
-    
-    # NO 헤더 찾기 (다양한 형태 인식)
-    no_headers = []
-    for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e).strip().upper()
-        x, y = get_xy(e)
-        # NO, WELD NO, JT NO, JOINT NO 등 다양한 형태 인식
-        if (txt == 'NO' or 
-            (txt.startswith('NO') and len(txt) <= 5) or
-            txt == 'WELD NO' or txt == 'WELDNO' or
-            txt == 'JT NO' or txt == 'JTNO' or
-            txt == 'JOINT NO' or txt == 'JOINTNO' or
-            (txt.endswith('NO') and len(txt) <= 10)):
+                                current_row[hdr] = txt2
+                        break  # 한 줄만 병합
             
-            # NO 오른쪽에서 /FLD, DN, TYPE 헤더 모두 확인
-            found_headers = {'NO': True, '/FLD': False, 'DN': False, 'TYPE': False}
-            
-            for e2 in msp.query('TEXT MTEXT'):
-                txt2 = get_text(e2).strip().upper()
-                x2, y2 = get_xy(e2)
-                # NO와 같은 높이(±20mm)이고 NO 오른쪽에 있는 헤더 확인
-                if abs(y2 - y) <= 20 and x2 > x:
-                    # /FLD 관련
-                    if not found_headers['/FLD'] and ('FLD' in txt2 or txt2 in ['S', 'F', 'S/F']):
-                        found_headers['/FLD'] = True
-                    # DN 관련
-                    elif not found_headers['DN'] and ('DN' in txt2 or 'SIZE' in txt2):
-                        found_headers['DN'] = True
-                    # TYPE 관련
-                    elif not found_headers['TYPE'] and ('TYPE' in txt2 or 'WLD' in txt2 or 'WELD' in txt2):
-                        found_headers['TYPE'] = True
-            
-            # 4개 헤더가 모두 있는 경우만 유효한 테이블로 인식
-            if all(found_headers.values()):
-                no_headers.append((x, y, txt))
-    
-    # 각 NO 테이블 처리
-    for no_idx, (no_x, no_y, no_txt) in enumerate(no_headers):
-        # 현재 NO 헤더 주변의 다른 헤더들 찾기
-        weld_header_positions = {'NO': no_x}
-        
-        # NO와 같은 Y 좌표 근처에서 다른 헤더 찾기 (NO 오른쪽에서만 검색)
-        # 먼저 NO와 비슷한 Y 좌표의 모든 텍스트를 수집
-        header_candidates = []
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip()
-            txt_upper = txt.upper()
-            x, y = get_xy(e)
-            
-            # NO와 같은 높이(±20mm)이고 NO보다 오른쪽(+X)에 있는 텍스트
-            if abs(y - no_y) <= 20 and x > no_x:
-                header_candidates.append((x, y, txt, txt_upper))
-        
-        # X 좌표로 정렬
-        header_candidates.sort(key=lambda t: t[0])
-        
-        # 헤더를 순서대로 찾기 (X 좌표 순서대로)
-        for x, y, txt, txt_upper in header_candidates:
-            # /FLD 또는 FLD 찾기 (S, F, S/F도 포함)
-            if '/FLD' not in weld_header_positions:
-                if '/FLD' in txt_upper or txt_upper == 'FLD' or txt_upper in ['S/F', 'SHOP', 'FIELD']:
-                    # 단독 S, F는 다른 헤더가 있을 때만 /FLD로 인식
-                    if txt_upper in ['S', 'F']:
-                        # 주변에 다른 WELD 헤더가 있는지 확인
-                        if any(h in weld_header_positions for h in ['NO', 'DN', 'TYPE']):
-                            weld_header_positions['/FLD'] = x
-                    else:
-                        weld_header_positions['/FLD'] = x
-                    continue
-            
-            # DN 찾기 (숫자가 주로 오는 열)
-            if 'DN' not in weld_header_positions:
-                if txt_upper == 'DN' or txt_upper == 'SIZE' or txt_upper == 'BORE':
-                    weld_header_positions['DN'] = x
-                    continue
-            
-            # TYPE 찾기 (BW, SW 등이 오는 열) - 엄격한 매칭
-            if 'TYPE' not in weld_header_positions:
-                # DN과 동일한 X 위치가 아닌 경우에만 TYPE으로 인식
-                if 'DN' in weld_header_positions and abs(x - weld_header_positions['DN']) < 5:
-                    # DN과 너무 가까우면 TYPE이 아닐 가능성이 높음
-                    continue
-                    
-                if txt_upper == 'TYPE' or txt_upper == 'WLD TYPE' or txt_upper == 'WELD TYPE':
-                    weld_header_positions['TYPE'] = x
-                    continue
-                elif txt_upper in ['WLD', 'WELD', 'CONNECTION', 'JOINT TYPE', 'WELD JOINT']:
-                    weld_header_positions['TYPE'] = x
-                    continue
-        
-        # 4개 헤더를 모두 찾지 못한 경우 이 테이블 건너뛰기
-        required_headers = ['NO', '/FLD', 'DN', 'TYPE']
-        missing_headers = [h for h in required_headers if h not in weld_header_positions]
-        
-        if missing_headers:
-            continue
-        
-        # 헤더를 못 찾은 경우 디버깅 정보 출력 및 추가 시도
-        if len(weld_header_positions) < 4:
-            nearby_texts = []
-            for e in msp.query('TEXT MTEXT'):
-                txt = get_text(e).strip()
-                x, y = get_xy(e)
-                # NO 헤더와 같은 높이(±25mm)이고 NO보다 오른쪽에 있는 텍스트만
-                if abs(y - no_y) <= 25 and x > no_x and txt:
-                    nearby_texts.append((x, y, txt))
-            
-            # X 좌표로 정렬하여 출력
-            nearby_texts.sort(key=lambda t: t[0])
-            
-            # /FLD 헤더가 없는 경우 S, F 패턴으로 위치 추정
-            if '/FLD' not in weld_header_positions:
-                fld_x_candidates = {}
-                sample_count = 0
-                
-                for x, y, txt in all_texts:
-                    if y < no_y and abs(x - no_x) <= 8 and txt.isdigit() and sample_count < 5:
-                        sample_count += 1
-                        for x2, y2, txt2 in all_texts:
-                            if abs(y2 - y) <= 4 and x2 > no_x + 5 and txt2.upper() in ['S', 'F', 'S/F', 'SW', 'FW']:
-                                x_rounded = round(x2 / 5) * 5
-                                fld_x_candidates[x_rounded] = fld_x_candidates.get(x_rounded, 0) + 1
-                
-                if fld_x_candidates:
-                    best_x = max(fld_x_candidates.items(), key=lambda item: item[1])[0]
-                    weld_header_positions['/FLD'] = best_x
-            
-            # TYPE 헤더가 없는 경우 BW, SW 패턴으로 위치 추정
-            if 'TYPE' not in weld_header_positions:
-                type_x_candidates = {}
-                sample_count = 0
-                
-                for x, y, txt in all_texts:
-                    if y < no_y and abs(x - no_x) <= 8 and txt.isdigit() and sample_count < 5:
-                        sample_count += 1
-                        for x2, y2, txt2 in all_texts:
-                            if abs(y2 - y) <= 4 and x2 > no_x + 10 and txt2.upper() in ['BW', 'SW', 'FW', 'TH']:
-                                # DN 위치와 다른 X 위치인 경우에만 TYPE 후보로 고려
-                                if 'DN' in weld_header_positions and abs(x2 - weld_header_positions['DN']) < 10:
-                                    continue
-                                x_rounded = round(x2 / 5) * 5
-                                type_x_candidates[x_rounded] = type_x_candidates.get(x_rounded, 0) + 1
-                
-                if type_x_candidates:
-                    # DN 위치와 가장 멀리 떨어진 후보를 선택
-                    if 'DN' in weld_header_positions:
-                        dn_x = weld_header_positions['DN']
-                        best_x = max(type_x_candidates.items(), 
-                                   key=lambda item: (item[1], abs(item[0] - dn_x)))[0]
-                    else:
-                        best_x = max(type_x_candidates.items(), key=lambda item: item[1])[0]
-                    weld_header_positions['TYPE'] = best_x
-            
-            # DN 헤더가 없는 경우 NO 오른쪽의 숫자 패턴으로 DN 위치 추정
-            if 'DN' not in weld_header_positions:
-                # NO 아래의 첫 몇 개 행에서 숫자 패턴 분석
-                dn_x_candidates = {}
-                sample_count = 0
-                
-                for x, y, txt in all_texts:
-                    # NO 헤더 아래이고 NO 열에서 숫자인 경우
-                    if y < no_y and abs(x - no_x) <= 8 and txt.isdigit() and sample_count < 5:
-                        sample_count += 1
-                        # 이 NO와 같은 Y에서 오른쪽의 숫자 찾기
-                        for x2, y2, txt2 in all_texts:
-                            if abs(y2 - y) <= 4 and x2 > no_x + 10 and txt2.replace('.', '').replace('-', '').isdigit():
-                                x_rounded = round(x2 / 5) * 5  # 5mm 단위로 그룹화
-                                dn_x_candidates[x_rounded] = dn_x_candidates.get(x_rounded, 0) + 1
-                
-                if dn_x_candidates:
-                    # 가장 많이 나타나는 X 위치를 DN으로 추정
-                    best_x = max(dn_x_candidates.items(), key=lambda item: item[1])[0]
-                    weld_header_positions['DN'] = best_x
-            # DN과 TYPE 헤더 위치 검증 - 데이터 패턴으로 확인
-            if 'DN' in weld_header_positions and 'TYPE' in weld_header_positions:
-                dn_x = weld_header_positions['DN']
-                type_x = weld_header_positions['TYPE']
-                
-                # DN과 TYPE의 X 위치가 동일하거나 너무 가까운 경우
-                if abs(dn_x - type_x) < 10:
-                    # TYPE 위치를 다시 찾기 - DN보다 오른쪽에서 BW/SW 패턴 찾기
-                    type_x_candidates = {}
-                    sample_count = 0
-                    
-                    for x, y, txt in all_texts:
-                        if y < no_y and abs(x - no_x) <= 8 and txt.isdigit() and sample_count < 5:
-                            sample_count += 1
-                            for x2, y2, txt2 in all_texts:
-                                if (abs(y2 - y) <= 4 and x2 > dn_x + 10 and 
-                                    txt2.upper() in ['BW', 'SW', 'FW', 'TH', 'BUTT', 'SOCKET']):
-                                    x_rounded = round(x2 / 5) * 5
-                                    type_x_candidates[x_rounded] = type_x_candidates.get(x_rounded, 0) + 1
-                    
-                    if type_x_candidates:
-                        best_x = max(type_x_candidates.items(), key=lambda item: item[1])[0]
-                        weld_header_positions['TYPE'] = best_x
-                        type_x = best_x
-                
-                # 각 위치의 데이터 샘플 수집
-                dn_samples = []
-                type_samples = []
-                sample_count = 0
-                
-                for x, y, txt in all_texts:
-                    if y < no_y and abs(x - no_x) <= 8 and txt.isdigit() and sample_count < 3:
-                        sample_count += 1
-                        # DN 위치의 데이터
-                        for x2, y2, txt2 in all_texts:
-                            if abs(y2 - y) <= 4 and abs(x2 - dn_x) <= 8 and txt2:
-                                dn_samples.append(txt2.upper())
+            # PT 열이 비어있는 경우 - 추가 데이터 수집
+            elif is_pt_column and current_row and abs(y - current_row['_y_pos']) < 10:
+                # 현재 행의 PT 위치에서 10mm 이내인 경우만 처리
+                # 다른 열에 데이터가 있는지 확인
+                for hdr, hdr_x in header_positions.items():
+                    if hdr != 'PT':
+                        for x2, y2, txt2, e2, txt_type2 in all_texts_sorted:
+                            if abs(x2 - hdr_x) <= 2 and abs(y2 - y) <= 2 and txt2:
+                                if current_row.get(hdr):
+                                    # 숫자 필드는 대체, 텍스트 필드는 공백 포함 연결
+                                    if hdr in ['UNIT', 'TOTAL', 'QTY']:
+                                        current_row[hdr] = txt2
+                                    else:
+                                        current_row[hdr] = current_row[hdr] + ' ' + txt2
+                                else:
+                                    current_row[hdr] = txt2
                                 break
-                        # TYPE 위치의 데이터
-                        for x2, y2, txt2 in all_texts:
-                            if abs(y2 - y) <= 4 and abs(x2 - type_x) <= 8 and txt2:
-                                type_samples.append(txt2.upper())
-                                break
-                
-                # DN 위치에 타입 값(BW, SW 등)이 있고, TYPE 위치에 숫자가 있으면 바꾸기
-                dn_has_types = any(s in ['BW', 'SW', 'FW', 'TH'] for s in dn_samples if s)
-                type_has_numbers = any(s.replace('.', '').replace('-', '').isdigit() for s in type_samples if s)
-                
-                if dn_has_types and type_has_numbers:
-                    weld_header_positions['DN'], weld_header_positions['TYPE'] = weld_header_positions['TYPE'], weld_header_positions['DN']
             
-            # /FLD와 TYPE 위치 검증 - /FLD에 타입 값이 있는지 확인
-            if '/FLD' in weld_header_positions and 'TYPE' in weld_header_positions:
-                fld_x = weld_header_positions['/FLD']
-                type_x = weld_header_positions['TYPE']
-                
-                # 각 위치의 데이터 샘플 수집
-                fld_samples = []
-                type_samples = []
-                sample_count = 0
-                
-                for x, y, txt in all_texts:
-                    if y < no_y and abs(x - no_x) <= 8 and txt.isdigit() and sample_count < 3:
-                        sample_count += 1
-                        # /FLD 위치의 데이터
-                        for x2, y2, txt2 in all_texts:
-                            if abs(y2 - y) <= 4 and abs(x2 - fld_x) <= 8 and txt2:
-                                fld_samples.append(txt2.upper())
-                                break
-                        # TYPE 위치의 데이터
-                        for x2, y2, txt2 in all_texts:
-                            if abs(y2 - y) <= 4 and abs(x2 - type_x) <= 8 and txt2:
-                                type_samples.append(txt2.upper())
-                                break
-                
-                # /FLD 위치에 타입 값(BW, SW 등)이 있고, TYPE 위치에 S/F가 있으면 바꾸기
-                fld_has_types = any(s in ['BW', 'SW', 'FW', 'TH'] for s in fld_samples if s)
-                type_has_sf = any(s in ['S', 'F', 'SW', 'FW', 'SHOP', 'FIELD'] for s in type_samples if s)
-                
-                if fld_has_types and type_has_sf:
-                    weld_header_positions['/FLD'], weld_header_positions['TYPE'] = weld_header_positions['TYPE'], weld_header_positions['/FLD']
+            # 다른 PT 헤더 영역 도달 시 중단
+            if y < pt_y - 100:  # PT 헤더에서 100mm 이상 떨어지면 중단
+                break
+            for other_idx, (other_pt_x, other_pt_y, _) in enumerate(pt_headers):
+                if other_idx != pt_idx and other_pt_y < pt_y and abs(y - other_pt_y) <= 5:
+                    break
         
-        # 최종적으로 4개 헤더를 모두 찾지 못한 경우 이 테이블 건너뛰기
-        required_headers = ['NO', '/FLD', 'DN', 'TYPE']
-        missing_headers = [h for h in required_headers if h not in weld_header_positions]
+        # 마지막 행 추가 (중복 체크)
+        if current_row and current_row.get('ITEM NO') not in processed_pts:
+            processed_pts[current_row.get('ITEM NO')] = current_row
+            data_rows.append(current_row)
         
-        if missing_headers:
-            continue
+        # data_rows를 processed_pts 기준으로 재구성 (중복 제거)
+        unique_data_rows = []
+        seen_pts = set()
+        for row in data_rows:
+            pt_no = row.get('ITEM NO')
+            if pt_no and pt_no not in seen_pts:
+                seen_pts.add(pt_no)
+                unique_data_rows.append(row)
+        data_rows = unique_data_rows
         
-        # 모든 텍스트를 Y좌표로 정렬
-        all_texts = []
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip()
-            x, y = get_xy(e)
-            if txt:
-                all_texts.append((x, y, txt))
+        # 5. UNIT 결정 및 Excel 데이터 생성
+        table_data_count = 0
         
-        all_texts.sort(key=lambda t: -t[1])  # Y좌표 내림차순 정렬
-        
-        # NO 아래의 데이터 읽기
-        weld_rows = []
-        processed_nos = {}  # 처리된 NO 추적
-        
-        for x, y, txt in all_texts:
-            # NO 헤더 아래에서만 검색
-            if y >= no_y:
+        for row in data_rows:
+            # 같은 파일 내에서 이미 처리된 PT는 건너뛰기
+            if row.get('ITEM NO') in file_processed_pts:
                 continue
             
-            # NO 열에서 숫자 찾기 (X 허용 범위 확대: ±8)
-            if abs(x - no_x) <= 8 and txt.isdigit():  # X 범위를 ±5에서 ±8로 확대
-                # 이미 처리된 NO는 스킵
-                if txt in processed_nos:
-                    continue
+            # PT 헤더 인덱스 보존
+            pt_header_index = row.get('_pt_header_index', -1)
+            
+            # _y_pos 제거 (내부 사용 필드)
+            if '_y_pos' in row:
+                del row['_y_pos']
                 
-                # 현재 행의 데이터 읽기
-                row_data = {'NO': txt}
-                
-                # 첫 번째 줄 데이터 수집 - NO의 Y 좌표와 각 헤더의 X 좌표 교차점에서 데이터 찾기
-                for hdr, hdr_x in weld_header_positions.items():
-                    if hdr != 'NO':
-                        found = False
-                        # 해당 헤더의 X 위치와 NO의 Y 위치가 교차하는 지점의 텍스트 찾기
-                        for x2, y2, txt2 in all_texts:
-                            # NO와 같은 Y 좌표(±4mm)이고 헤더의 X 좌표(±8mm)에 있는 텍스트
-                            if abs(y2 - y) <= 4 and abs(x2 - hdr_x) <= 8 and txt2:
-                                row_data[hdr] = txt2
-                                found = True
-                                break
-                        if not found:
-                            # 범위를 넓혀서 다시 시도
-                            for x2, y2, txt2 in all_texts:
-                                if abs(y2 - y) <= 8 and abs(x2 - hdr_x) <= 15 and txt2:
-                                    row_data[hdr] = txt2
-                                    break
-                
-                # WELD TYPE 데이터 정리 - "FW 350 350" → "FW", "350", "BW" 처리
-                fld_value = row_data.get('/FLD', '')
-                dn_value = row_data.get('DN', '')
-                type_value = row_data.get('TYPE', '')
-                
-                # process_weld_type_data 함수를 사용하여 데이터 정리
-                fld_value, dn_value, type_value = process_weld_type_data(fld_value, dn_value, type_value)
-                
-                # 정리된 값을 다시 저장
-                row_data['/FLD'] = fld_value
-                row_data['DN'] = dn_value
-                row_data['TYPE'] = type_value
-                
-                processed_nos[txt] = True
-                
-                # DN 값으로 MAT와 THK 찾기
-                weld_dia = ''
-                
-                # DN을 인치로 변환
-                if dn_value:
-                    weld_dia = DN_TO_INCH.get(dn_value, '')
-                    if not weld_dia:
-                        # 테이블에 없으면 직접 계산 시도
-                        try:
-                            dn_num = float(dn_value)
-                            weld_dia = f"{dn_num / 25.4:.2f}"  # mm to inch
-                        except:
-                            weld_dia = ''
-                
-                if dn_value and dn_value in size_mat_thk_mapping:
-                    row_data['MAT'] = size_mat_thk_mapping[dn_value]['MAT']
-                    row_data['THK'] = size_mat_thk_mapping[dn_value]['THK']
+            item = row.get('ITEM', '')
+            mmea = 'MM' if 'PIPE' in item.upper() else 'EA'
+            
+            # UNIT와 TOTAL 값 반올림 처리
+            unit_value = row.get('UNIT', '')
+            total_value = row.get('TOTAL', '')
+            
+            # UNIT 반올림
+            try:
+                unit_float = float(unit_value)
+                # 정수인지 확인
+                if unit_float.is_integer():
+                    unit_value = str(int(unit_float))
                 else:
-                    row_data['MAT'] = ''
-                    row_data['THK'] = ''
-                
-                # Excel 데이터 생성 (DXF 헤더 → Excel 헤더 매핑)
-                excel_row = {
-                    'ISO DWG NO': isodwgno if isodwgno else '-',
-                    'LINE NO': lineno if lineno else '-',
-                    'WELD NO': row_data.get('NO', '') if row_data.get('NO', '') else '-',
-                    'SHOP/FLD': row_data.get('/FLD', '') if row_data.get('/FLD', '') else '-',
-                    'WELD BORE': row_data.get('DN', '') if row_data.get('DN', '') else '-',
-                    'WELD TYPE': row_data.get('TYPE', '') if row_data.get('TYPE', '') else '-',
-                    'WELD MATERIAL': row_data.get('MAT', '-'),
-                    'WELD THK': row_data.get('THK', '-'),
-                    'WELDING DIA': weld_dia if weld_dia else '-'
-                }
-                
-                all_weld_data.append(excel_row)
+                    unit_value = str(round(unit_float, 1))
+            except (ValueError, TypeError):
+                unit_value = unit_value  # 숫자가 아니면 그대로 사용
+            
+            # TOTAL 반올림
+            try:
+                total_float = float(total_value)
+                # 정수인지 확인
+                if total_float.is_integer():
+                    total_value = str(int(total_float))
+                else:
+                    total_value = str(round(total_float, 1))
+            except (ValueError, TypeError):
+                total_value = total_value  # 숫자가 아니면 그대로 사용
+            
+            # PAINT 면적 계산
+            inner_area, outer_area = calculate_paint_area(
+                item, 
+                row.get('SIZE', ''), 
+                row.get('DESCRIPTION', ''), 
+                row.get('QTY', ''),
+                mmea
+            )
+            
+            csv_row = {
+                'ISO DWG NO': isodwgno,
+                'LINE NO': lineno,
+                'ISO DESCRIPTION': iso_description,  # LINE NO 뒤로 이동
+                'ITEM NO': row.get('ITEM NO', ''),  # PT를 ITEM NO로
+                'ITEM': item,
+                'SIZE': row.get('SIZE', ''),
+                'MATERIAL': row.get('MATERIAL', ''),
+                'DESCRIPTION': row.get('DESCRIPTION', ''),
+                'Q\'TY': row.get('QTY', ''),
+                '(mm/ea)': mmea,
+                'U.WT': unit_value,  # 반올림된 UNIT 값
+                'T.WT': total_value,  # 반올림된 TOTAL 값
+                'INSU. T\'HK': insu_value,  # INSU 값 추가
+                'PAINT 내면적(m²)': str(inner_area) if inner_area > 0 else '-',
+                'PAINT 외면적(m²)': str(outer_area) if outer_area > 0 else '-',
+                'REMARK': row.get('REMARK', ''),
+                '_pt_header_index': pt_header_index  # PT 헤더 인덱스 추가
+            }
+            
+            # 모든 'unset' 값을 '-'로 변경
+            for key, value in csv_row.items():
+                if isinstance(value, str) and value.lower() == 'unset':
+                    csv_row[key] = '-'
+            
+            file_data.append(csv_row)  # 파일별 임시 리스트에 저장
+            table_data_count += 1
+            
+            # 파일 전체 PT 추적에 추가 (PT 번호만으로 추적)
+            file_processed_pts[row.get('ITEM NO')] = True
+            
+            # 디버깅: 생성된 행 확인
+            desc_preview = csv_row['DESCRIPTION'][:30] + '...' if len(csv_row['DESCRIPTION']) > 30 else csv_row['DESCRIPTION']
+    
+    # 현재 파일의 데이터를 PT 번호로 정렬
+    if file_data:
+        # PT를 숫자로 변환하여 정렬 (빈 값은 맨 뒤로)
+        def sort_key(row):
+            try:
+                return int(row['ITEM NO'])
+            except (ValueError, KeyError):
+                return 9999  # ITEM NO가 없거나 숫자가 아닌 경우 맨 뒤로
+        
+        # 중복 제거
+        unique_file_data = {}
+        duplicate_count = 0
+        for row in file_data:
+            item_no = row.get('ITEM NO')
+            if item_no:
+                if item_no not in unique_file_data:
+                    unique_file_data[item_no] = row
+                else:
+                    duplicate_count += 1
+        
+        file_data_sorted = sorted(unique_file_data.values(), key=sort_key)
+        
+        # 정렬된 데이터를 전체 리스트에 추가
+        all_data.extend(file_data_sorted)
+        
+        # 시트별로 데이터 분류
+        for row in file_data_sorted:
+            pt_header_idx = row.get('_pt_header_index', -1)
+            item_upper = row.get('ITEM', '').upper()
+            
+            # _pt_header_index 제거 (시트별 데이터에는 필요 없음)
+            row_copy = row.copy()
+            if '_pt_header_index' in row_copy:
+                del row_copy['_pt_header_index']
+            
+            # PT 헤더 인덱스에 따라 분류
+            if pt_header_idx == 0:  # 첫 번째 PT 헤더
+                sheet_data['FAB MAT'].append(row_copy)
+            elif pt_header_idx == 1:  # 두 번째 PT 헤더
+                sheet_data['ELEC MAT'].append(row_copy)
+            
+            # ITEM 내용에 따라 분류
+            if 'PIPE' in item_upper and 'SUPPORT' not in item_upper:
+                sheet_data['PIPE'].append(row_copy)
+            elif 'BOLT' in item_upper or 'NUT' in item_upper or 'GASKET' in item_upper or 'GASK' in item_upper:
+                sheet_data['BOLT-NUT'].append(row_copy)  # '/' 제거
+            elif 'VALV' in item_upper or 'INST' in item_upper or 'V/V' in item_upper or 'MOV' in item_upper or 'PCV' in item_upper or 'NRV' in item_upper:
+                sheet_data['INST'].append(row_copy)
+            else:
+                sheet_data['FITTING'].append(row_copy)
 
-# 5. Excel 파일 저장
-if all_weld_data:
+# 6. Excel 파일 저장
+if all_data:
+    # Excel 파일명 생성
+    today = datetime.now().strftime("%Y%m%d_%H%M%S")
+    excel_filename = f"TOTALBOM_{today}.xlsx"
+    excel_path = os.path.join(os.path.dirname(file_paths[0]), excel_filename)
+    
     # Excel 워크북 생성
     wb = Workbook()
     
-    # 기본 시트 제거
-    if 'Sheet' in wb.sheetnames:
-        wb.remove(wb['Sheet'])
+    # 헤더 정의 (PAINT 면적 추가)
+    headers = ['ISO DWG NO', 'LINE NO', 'ISO DESCRIPTION', 'ITEM NO', 'ITEM', 'SIZE', 'MATERIAL', 
+               'DESCRIPTION', 'Q\'TY', '(mm/ea)', 'U.WT', 'T.WT', 'INSU. T\'HK', 
+               'PAINT 내면적(m²)', 'PAINT 외면적(m²)', 'REMARK']
     
-    # 헤더 정의 (WELDING DIA를 맨 뒤로 이동)
-    headers = ['ISO DWG NO', 'LINE NO', 'WELD NO', 'SHOP/FLD', 
-               'WELD BORE', 'WELD TYPE', 'WELD MATERIAL', 'WELD THK', 'WELDING DIA']
+    # INST, BOLT-NUT 시트용 헤더 (PAINT 면적 제외)
+    headers_without_paint = ['ISO DWG NO', 'LINE NO', 'ISO DESCRIPTION', 'ITEM NO', 'ITEM', 'SIZE', 'MATERIAL', 
+                           'DESCRIPTION', 'Q\'TY', '(mm/ea)', 'U.WT', 'T.WT', 'INSU. T\'HK', 'REMARK']
     
     # 헤더 스타일 (크기 12, 굵게, 중앙 정렬, 굵은 테두리)
     header_font = Font(size=12, bold=True)
     header_alignment = Alignment(horizontal='center', vertical='center')
-    thick_border = Border(
+    header_border = Border(
         left=Side(style='thick'),
         right=Side(style='thick'),
         top=Side(style='thick'),
         bottom=Side(style='thick')
     )
     
-    # 데이터 스타일 (크기 11, 중앙 정렬, 얇은 테두리)
+    # 데이터 스타일 (크기 11, 중앙 정렬, 일반 테두리)
     data_font = Font(size=11)
     data_alignment = Alignment(horizontal='center', vertical='center')
-    thin_border = Border(
+    data_border = Border(
         left=Side(style='thin'),
         right=Side(style='thin'),
         top=Side(style='thin'),
         bottom=Side(style='thin')
     )
     
-    # 1. 전체 데이터 시트
-    ws_all = wb.create_sheet("ALL_WELD")
+    # 첫 번째 시트: 전체 데이터 (MTO Data) - PAINT 면적 포함
+    ws = wb.active
+    ws.title = "MTO Data"
     
     # 헤더 작성
     for col, header in enumerate(headers, 1):
-        cell = ws_all.cell(row=1, column=col, value=header)
+        cell = ws.cell(row=1, column=col, value=header)
         cell.font = header_font
         cell.alignment = header_alignment
-        cell.border = thick_border
+        cell.border = header_border
     
-    # 데이터 작성
-    for row_idx, data in enumerate(all_weld_data, 2):
+    # 데이터 작성 (_pt_header_index 제외)
+    for row_idx, data in enumerate(all_data, 2):
         for col_idx, header in enumerate(headers, 1):
             value = data.get(header, '')
-            # 빈 값이면 '-'로 표시
-            if value == '' or value is None:
-                value = '-'
-            cell = ws_all.cell(row=row_idx, column=col_idx, value=value)
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.font = data_font
             cell.alignment = data_alignment
-            cell.border = thin_border
+            cell.border = data_border
     
-    # 2. SHOP/FLD별 시트 (FW, SW) - 기존 상세 데이터
-    fw_data = [d for d in all_weld_data if d.get('SHOP/FLD', '').upper() in ['F', 'FW', 'FIELD']]
-    sw_data = [d for d in all_weld_data if d.get('SHOP/FLD', '').upper() in ['S', 'SW', 'SHOP']]
+    # 컬럼 너비 자동 조정
+    for column in ws.columns:
+        max_length = 0
+        column_letter = get_column_letter(column[0].column)
+        
+        for cell in column:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except:
+                pass
+        
+        adjusted_width = (max_length + 2) * 1.2
+        ws.column_dimensions[column_letter].width = adjusted_width
     
-    # FW 시트 (기존 상세 데이터)
-    if fw_data:
-        ws_fw = wb.create_sheet("FW")
-        # 헤더
-        for col, header in enumerate(headers, 1):
-            cell = ws_fw.cell(row=1, column=col, value=header)
-            cell.font = header_font
-            cell.alignment = header_alignment
-            cell.border = thick_border
-        # 데이터
-        for row_idx, data in enumerate(fw_data, 2):
-            for col_idx, header in enumerate(headers, 1):
-                value = data.get(header, '')
-                # 빈 값이면 '-'로 표시
-                if value == '' or value is None:
-                    value = '-'
-                cell = ws_fw.cell(row=row_idx, column=col_idx, value=value)
-                cell.font = data_font
-                cell.alignment = data_alignment
-                cell.border = thin_border
+    # 추가 시트 생성 및 데이터 입력
+    sheet_names = ['FAB MAT', 'ELEC MAT', 'PIPE', 'BOLT-NUT', 'FITTING', 'INST']  # '/' 제거
     
-    # SW 시트 (기존 상세 데이터)
-    if sw_data:
-        ws_sw = wb.create_sheet("SW")
-        # 헤더
-        for col, header in enumerate(headers, 1):
-            cell = ws_sw.cell(row=1, column=col, value=header)
-            cell.font = header_font
-            cell.alignment = header_alignment
-            cell.border = thick_border
-        # 데이터
-        for row_idx, data in enumerate(sw_data, 2):
-            for col_idx, header in enumerate(headers, 1):
-                value = data.get(header, '')
-                # 빈 값이면 '-'로 표시
-                if value == '' or value is None:
-                    value = '-'
-                cell = ws_sw.cell(row=row_idx, column=col_idx, value=value)
-                cell.font = data_font
-                cell.alignment = data_alignment
-                cell.border = thin_border
+    # TOTAL BOM 시트 생성을 위한 데이터 그룹화
+    total_bom_data = defaultdict(lambda: {
+        'Q\'TY': 0,
+        '(mm/ea)': '',
+        'U.WT': '',
+        'count': 0,
+        'inner_area': 0,
+        'outer_area': 0
+    })
     
-    # 2-1. SW TOTAL 시트 (그룹화된 데이터)
-    if sw_data:
-        ws_sw_total = wb.create_sheet("SW TOTAL")
+    # 전체 데이터를 그룹화하여 합산
+    for row in all_data:
+        # 그룹화 키: ITEM + SIZE + MATERIAL + DESCRIPTION
+        key = (
+            row.get('ITEM', ''),
+            row.get('SIZE', ''),
+            row.get('MATERIAL', ''),
+            row.get('DESCRIPTION', '')
+        )
         
-        # SW 데이터 그룹화
-        sw_groups = {}
-        for data in sw_data:
-            # 그룹 키 생성 (SHOP/FLD, WELD BORE, WELD TYPE, WELD MATERIAL, WELD THK)
-            group_key = (
-                data.get('SHOP/FLD', ''),
-                data.get('WELD BORE', ''),
-                data.get('WELD TYPE', ''),
-                data.get('WELD MATERIAL', ''),
-                data.get('WELD THK', '')
-            )
-            
-            if group_key not in sw_groups:
-                sw_groups[group_key] = {
-                    'count': 0,
-                    'welding_dia_sum': 0.0,
-                    'items': []
-                }
-            
-            sw_groups[group_key]['count'] += 1
-            sw_groups[group_key]['items'].append(data)
-            
-            # WELDING DIA 합산 (인치 값을 float로 변환)
-            welding_dia = data.get('WELDING DIA', '')
-            if welding_dia and welding_dia != '-':
-                try:
-                    # " 기호 제거하고 float로 변환
-                    dia_value = float(welding_dia.replace('"', '').strip())
-                    sw_groups[group_key]['welding_dia_sum'] += dia_value
-                except:
-                    pass
+        # 수량 합산
+        try:
+            qty = float(row.get('Q\'TY', 0) or 0)
+        except (ValueError, TypeError):
+            qty = 0
         
-        # SW TOTAL 헤더
-        sw_total_headers = ['SHOP/FLD', 'WELD BORE', 'WELD TYPE', 'WELD MATERIAL', 
-                           'WELD THK', 'WELDING DIA', 'WELD POINT']
+        # 면적 합산
+        try:
+            inner = float(row.get('PAINT 내면적(m²)', 0) if row.get('PAINT 내면적(m²)') != '-' else 0)
+            outer = float(row.get('PAINT 외면적(m²)', 0) if row.get('PAINT 외면적(m²)') != '-' else 0)
+        except (ValueError, TypeError):
+            inner = 0
+            outer = 0
         
-        # 헤더 작성
-        for col, header in enumerate(sw_total_headers, 1):
-            cell = ws_sw_total.cell(row=1, column=col, value=header)
-            cell.font = header_font
-            cell.alignment = header_alignment
-            cell.border = thick_border
-        
-        # 그룹화된 데이터 작성
-        row_idx = 2
-        total_welding_dia = 0.0
-        total_weld_point = 0
-        
-        for group_key, group_info in sorted(sw_groups.items()):
-            # 각 컬럼 데이터
-            shop_fld, weld_bore, weld_type, weld_material, weld_thk = group_key
-            
-            # WELDING DIA 포맷팅
-            welding_dia_str = f"{group_info['welding_dia_sum']:.2f}" if group_info['welding_dia_sum'] > 0 else "-"
-            
-            # 데이터 행 작성
-            row_data = [
-                shop_fld if shop_fld else '-',
-                weld_bore if weld_bore else '-',
-                weld_type if weld_type else '-',
-                weld_material if weld_material else '-',
-                weld_thk if weld_thk else '-',
-                welding_dia_str,
-                group_info['count']  # WELD POINT
-            ]
-            
-            for col_idx, value in enumerate(row_data, 1):
-                cell = ws_sw_total.cell(row=row_idx, column=col_idx, value=value)
-                cell.font = data_font
-                cell.alignment = data_alignment
-                cell.border = thin_border
-            
-            # 합계 누적
-            total_welding_dia += group_info['welding_dia_sum']
-            total_weld_point += group_info['count']
-            
-            row_idx += 1
-        
-        # 합계 행 추가
-        cell = ws_sw_total.cell(row=row_idx, column=1, value="TOTAL")
-        cell.font = Font(size=12, bold=True)
-        cell.alignment = header_alignment
-        cell.border = thick_border
-        
-        # 빈 셀들
-        for col in range(2, 6):
-            cell = ws_sw_total.cell(row=row_idx, column=col, value="-")
-            cell.border = thick_border
-        
-        # WELDING DIA 합계
-        cell = ws_sw_total.cell(row=row_idx, column=6, value=f"{total_welding_dia:.2f}")
-        cell.font = Font(size=12, bold=True)
-        cell.alignment = header_alignment
-        cell.border = thick_border
-        
-        # WELD POINT 합계
-        cell = ws_sw_total.cell(row=row_idx, column=7, value=total_weld_point)
-        cell.font = Font(size=12, bold=True)
-        cell.alignment = header_alignment
-        cell.border = thick_border
+        total_bom_data[key]['Q\'TY'] += qty
+        total_bom_data[key]['(mm/ea)'] = row.get('(mm/ea)', '')
+        total_bom_data[key]['U.WT'] = row.get('U.WT', '')
+        total_bom_data[key]['inner_area'] += inner
+        total_bom_data[key]['outer_area'] += outer
+        total_bom_data[key]['count'] += 1
     
-    # 2-2. FW TOTAL 시트 (그룹화된 데이터)
-    if fw_data:
-        ws_fw_total = wb.create_sheet("FW TOTAL")
-        
-        # FW 데이터 그룹화
-        fw_groups = {}
-        for data in fw_data:
-            # 그룹 키 생성 (SHOP/FLD, WELD BORE, WELD TYPE, WELD MATERIAL, WELD THK)
-            group_key = (
-                data.get('SHOP/FLD', ''),
-                data.get('WELD BORE', ''),
-                data.get('WELD TYPE', ''),
-                data.get('WELD MATERIAL', ''),
-                data.get('WELD THK', '')
-            )
+    # TOTAL BOM 시트 데이터 생성
+    total_bom_rows = []
+    for (item, size, material, description), data in total_bom_data.items():
+        # T.WT 계산 (Q'TY × U.WT)
+        try:
+            unit_weight = float(data['U.WT'] or 0)
+            total_qty = data['Q\'TY']
+            total_weight = unit_weight * total_qty
             
-            if group_key not in fw_groups:
-                fw_groups[group_key] = {
-                    'count': 0,
-                    'welding_dia_sum': 0.0,
-                    'items': []
-                }
+            # (mm/ea) 값이 MM인 경우 1000으로 나누기
+            if data['(mm/ea)'] == 'MM':
+                total_weight = total_weight / 1000
             
-            fw_groups[group_key]['count'] += 1
-            fw_groups[group_key]['items'].append(data)
-            
-            # WELDING DIA 합산 (인치 값을 float로 변환)
-            welding_dia = data.get('WELDING DIA', '')
-            if welding_dia and welding_dia != '-':
-                try:
-                    # " 기호 제거하고 float로 변환
-                    dia_value = float(welding_dia.replace('"', '').strip())
-                    fw_groups[group_key]['welding_dia_sum'] += dia_value
-                except:
-                    pass
-        
-        # FW TOTAL 헤더
-        fw_total_headers = ['SHOP/FLD', 'WELD BORE', 'WELD TYPE', 'WELD MATERIAL', 
-                           'WELD THK', 'WELDING DIA', 'WELD POINT']
-        
-        # 헤더 작성
-        for col, header in enumerate(fw_total_headers, 1):
-            cell = ws_fw_total.cell(row=1, column=col, value=header)
-            cell.font = header_font
-            cell.alignment = header_alignment
-            cell.border = thick_border
-        
-        # 그룹화된 데이터 작성
-        row_idx = 2
-        total_welding_dia = 0.0
-        total_weld_point = 0
-        
-        for group_key, group_info in sorted(fw_groups.items()):
-            # 각 컬럼 데이터
-            shop_fld, weld_bore, weld_type, weld_material, weld_thk = group_key
-            
-            # WELDING DIA 포맷팅
-            welding_dia_str = f"{group_info['welding_dia_sum']:.2f}" if group_info['welding_dia_sum'] > 0 else "-"
-            
-            # 데이터 행 작성
-            row_data = [
-                shop_fld if shop_fld else '-',
-                weld_bore if weld_bore else '-',
-                weld_type if weld_type else '-',
-                weld_material if weld_material else '-',
-                weld_thk if weld_thk else '-',
-                welding_dia_str,
-                group_info['count']  # WELD POINT
-            ]
-            
-            for col_idx, value in enumerate(row_data, 1):
-                cell = ws_fw_total.cell(row=row_idx, column=col_idx, value=value)
-                cell.font = data_font
-                cell.alignment = data_alignment
-                cell.border = thin_border
-            
-            # 합계 누적
-            total_welding_dia += group_info['welding_dia_sum']
-            total_weld_point += group_info['count']
-            
-            row_idx += 1
-        
-        # 합계 행 추가
-        cell = ws_fw_total.cell(row=row_idx, column=1, value="TOTAL")
-        cell.font = Font(size=12, bold=True)
-        cell.alignment = header_alignment
-        cell.border = thick_border
-        
-        # 빈 셀들
-        for col in range(2, 6):
-            cell = ws_fw_total.cell(row=row_idx, column=col, value="-")
-            cell.border = thick_border
-        
-        # WELDING DIA 합계
-        cell = ws_fw_total.cell(row=row_idx, column=6, value=f"{total_welding_dia:.2f}")
-        cell.font = Font(size=12, bold=True)
-        cell.alignment = header_alignment
-        cell.border = thick_border
-        
-        # WELD POINT 합계
-        cell = ws_fw_total.cell(row=row_idx, column=7, value=total_weld_point)
-        cell.font = Font(size=12, bold=True)
-        cell.alignment = header_alignment
-        cell.border = thick_border
-    
-    # 3. MAT 그룹별 시트
-    mat_groups = {}
-    for data in all_weld_data:
-        mat_value = data.get('WELD MATERIAL', '')
-        if mat_value and mat_value != '-':
-            group_name = get_mat_group(mat_value)
-            if group_name not in mat_groups:
-                mat_groups[group_name] = []
-            mat_groups[group_name].append(data)
-    
-    # 각 MAT 그룹별로 시트 생성
-    for group_name, group_data in sorted(mat_groups.items()):
-        # 시트명 길이 제한 (31자)
-        sheet_name = f"MAT_{group_name}"[:31]
-        ws_mat = wb.create_sheet(sheet_name)
-        
-        # 헤더
-        for col, header in enumerate(headers, 1):
-            cell = ws_mat.cell(row=1, column=col, value=header)
-            cell.font = header_font
-            cell.alignment = header_alignment
-            cell.border = thick_border
-        
-        # 데이터 (SW/FW 순서로 정렬, 그 다음 MAT별로 정렬)
-        def sort_key(row):
-            # SHOP/FLD 값을 숫자로 변환 (SW=0, FW=1, 기타=2)
-            shop_fld = row.get('SHOP/FLD', '').upper()
-            if shop_fld in ['S', 'SW', 'SHOP']:
-                priority = 0
-            elif shop_fld in ['F', 'FW', 'FIELD']:
-                priority = 1
+            # 반올림 처리
+            if total_weight.is_integer():
+                total_weight_str = str(int(total_weight))
             else:
-                priority = 2
-            # (우선순위, MAT값)으로 정렬
-            return (priority, row.get('WELD MATERIAL', ''))
+                total_weight_str = str(round(total_weight, 1))
+        except (ValueError, TypeError):
+            total_weight_str = ''
         
-        sorted_data = sorted(group_data, key=sort_key)
+        # 수량 반올림 처리
+        if isinstance(data['Q\'TY'], (int, float)):
+            if float(data['Q\'TY']).is_integer():
+                qty_str = str(int(data['Q\'TY']))
+            else:
+                qty_str = str(round(data['Q\'TY'], 1))
+        else:
+            qty_str = str(data['Q\'TY'])
         
-        # SW/FW 구분선 찾기
-        sw_count = 0
-        fw_start_row = 2  # 헤더 다음 행
+        # 면적 문자열 처리
+        inner_area_str = str(round(data['inner_area'], 2)) if data['inner_area'] > 0 else '-'
+        outer_area_str = str(round(data['outer_area'], 2)) if data['outer_area'] > 0 else '-'
         
-        for row_idx, data in enumerate(sorted_data, 2):
-            shop_fld = data.get('SHOP/FLD', '').upper()
-            if shop_fld in ['S', 'SW', 'SHOP']:
-                sw_count += 1
-            elif sw_count > 0 and shop_fld in ['F', 'FW', 'FIELD']:
-                fw_start_row = row_idx
-                break
-            
-            for col_idx, header in enumerate(headers, 1):
-                value = data.get(header, '')
-                # 빈 값이면 '-'로 표시
-                if value == '' or value is None:
-                    value = '-'
-                cell = ws_mat.cell(row=row_idx, column=col_idx, value=value)
-                cell.font = data_font
-                cell.alignment = data_alignment
-                cell.border = thin_border
-        
-        # SW와 FW 사이에 빈 줄 추가 (선택사항)
-        if sw_count > 0 and fw_start_row > sw_count + 2:
-            # 빈 줄에 구분 표시
-            cell = ws_mat.cell(row=fw_start_row-1, column=1, value="--- Field Weld ---")
-            cell.font = Font(size=11, italic=True)
-            cell.alignment = Alignment(horizontal='center')
-            # 빈 줄에도 테두리 적용
-            for col in range(1, len(headers) + 1):
-                cell = ws_mat.cell(row=fw_start_row-1, column=col)
-                if col == 1:
-                    cell.border = thin_border
-                else:
-                    cell.border = thin_border
-                    cell.value = "-"
+        total_bom_rows.append({
+            'ITEM': item,
+            'SIZE': size,
+            'MATERIAL': material,
+            'DESCRIPTION': description,
+            'Q\'TY': qty_str,
+            '(mm/ea)': data['(mm/ea)'],
+            'U.WT': data['U.WT'],
+            'T.WT': total_weight_str,
+            'PAINT 내면적(m²)': inner_area_str,
+            'PAINT 외면적(m²)': outer_area_str
+        })
     
-    # 모든 시트의 컬럼 너비 자동 조정
-    for sheet in wb.worksheets:
-        for column in sheet.columns:
-            max_length = 0
-            column_letter = get_column_letter(column[0].column)
+    # TOTAL BOM 시트 생성 (PAINT 면적 포함)
+    ws_total_bom = wb.create_sheet(title="TOTAL BOM", index=1)  # MTO Data 다음에 위치
+    
+    # TOTAL BOM 헤더 정의 (PAINT 면적 포함)
+    total_bom_headers = ['ITEM', 'SIZE', 'MATERIAL', 'DESCRIPTION', 'Q\'TY', '(mm/ea)', 'U.WT', 'T.WT', 
+                        'PAINT 내면적(m²)', 'PAINT 외면적(m²)']
+    
+    # 헤더 작성
+    for col, header in enumerate(total_bom_headers, 1):
+        cell = ws_total_bom.cell(row=1, column=col, value=header)
+        cell.font = header_font
+        cell.alignment = header_alignment
+        cell.border = header_border
+    
+    # 데이터 작성 (ITEM으로 정렬)
+    total_bom_rows_sorted = sorted(total_bom_rows, key=lambda x: x['ITEM'])
+    
+    # T.WT, 면적 합계 계산을 위한 변수 초기화
+    total_weight_sum = 0
+    total_inner_area_sum = 0
+    total_outer_area_sum = 0
+    
+    for row_idx, data in enumerate(total_bom_rows_sorted, 2):
+        for col_idx, header in enumerate(total_bom_headers, 1):
+            value = data.get(header, '')
+            cell = ws_total_bom.cell(row=row_idx, column=col_idx, value=value)
+            cell.font = data_font
+            cell.alignment = data_alignment
+            cell.border = data_border
             
-            for cell in column:
+            # 합계 계산
+            if header == 'T.WT' and value and value != '-':
                 try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
+                    total_weight_sum += float(value)
+                except (ValueError, TypeError):
                     pass
+            elif header == 'PAINT 내면적(m²)' and value and value != '-':
+                try:
+                    total_inner_area_sum += float(value)
+                except (ValueError, TypeError):
+                    pass
+            elif header == 'PAINT 외면적(m²)' and value and value != '-':
+                try:
+                    total_outer_area_sum += float(value)
+                except (ValueError, TypeError):
+                    pass
+    
+    # 합계 행 추가
+    sum_row = len(total_bom_rows_sorted) + 2
+    
+    # "TOTAL" 텍스트를 DESCRIPTION 열에 표시
+    desc_col = total_bom_headers.index('DESCRIPTION') + 1
+    cell = ws_total_bom.cell(row=sum_row, column=desc_col, value='TOTAL')
+    cell.font = Font(size=12, bold=True)
+    cell.alignment = header_alignment
+    cell.border = header_border
+    
+    # T.WT 합계 표시
+    twt_col = total_bom_headers.index('T.WT') + 1
+    if total_weight_sum > 0:
+        if total_weight_sum.is_integer():
+            sum_value = str(int(total_weight_sum))
+        else:
+            sum_value = str(round(total_weight_sum, 1))
+    else:
+        sum_value = '0'
+    
+    cell = ws_total_bom.cell(row=sum_row, column=twt_col, value=sum_value)
+    cell.font = Font(size=12, bold=True)
+    cell.alignment = header_alignment
+    cell.border = header_border
+    
+    # PAINT 내면적 합계 표시
+    inner_col = total_bom_headers.index('PAINT 내면적(m²)') + 1
+    if total_inner_area_sum > 0:
+        inner_sum_value = str(round(total_inner_area_sum, 2))
+    else:
+        inner_sum_value = '0'
+    
+    cell = ws_total_bom.cell(row=sum_row, column=inner_col, value=inner_sum_value)
+    cell.font = Font(size=12, bold=True)
+    cell.alignment = header_alignment
+    cell.border = header_border
+    
+    # PAINT 외면적 합계 표시
+    outer_col = total_bom_headers.index('PAINT 외면적(m²)') + 1
+    if total_outer_area_sum > 0:
+        outer_sum_value = str(round(total_outer_area_sum, 2))
+    else:
+        outer_sum_value = '0'
+    
+    cell = ws_total_bom.cell(row=sum_row, column=outer_col, value=outer_sum_value)
+    cell.font = Font(size=12, bold=True)
+    cell.alignment = header_alignment
+    cell.border = header_border
+    
+    # 나머지 빈 셀에도 테두리 적용
+    for col_idx in range(1, len(total_bom_headers) + 1):
+        if col_idx not in [desc_col, twt_col, inner_col, outer_col]:
+            cell = ws_total_bom.cell(row=sum_row, column=col_idx, value='')
+            cell.border = header_border
+    
+    # 컬럼 너비 자동 조정
+    for column in ws_total_bom.columns:
+        max_length = 0
+        column_letter = get_column_letter(column[0].column)
+        
+        for cell in column:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except:
+                pass
+        
+        adjusted_width = (max_length + 2) * 1.2
+        ws_total_bom.column_dimensions[column_letter].width = adjusted_width
+    
+    # 나머지 시트들 생성
+    for sheet_name in sheet_names:
+        if sheet_data[sheet_name]:  # 데이터가 있는 경우만 시트 생성
+            ws = wb.create_sheet(title=sheet_name)
             
-            adjusted_width = (max_length + 2) * 1.2
-            sheet.column_dimensions[column_letter].width = adjusted_width
+            # INST, BOLT-NUT은 PAINT 면적 제외
+            if sheet_name in ['INST', 'BOLT-NUT']:  # '/' 제거
+                use_headers = headers_without_paint
+            else:
+                use_headers = headers
+            
+            # 헤더 작성
+            for col, header in enumerate(use_headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = header_font
+                cell.alignment = header_alignment
+                cell.border = header_border
+            
+            # 데이터 작성
+            for row_idx, data in enumerate(sheet_data[sheet_name], 2):
+                for col_idx, header in enumerate(use_headers, 1):
+                    value = data.get(header, '')
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell.font = data_font
+                    cell.alignment = data_alignment
+                    cell.border = data_border
+            
+            # 컬럼 너비 자동 조정
+            for column in ws.columns:
+                max_length = 0
+                column_letter = get_column_letter(column[0].column)
+                
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                
+                adjusted_width = (max_length + 2) * 1.2
+                ws.column_dimensions[column_letter].width = adjusted_width
     
     # 파일 저장
     wb.save(excel_path)
-else:
-    print("*** 추출된 WELD 데이터가 없습니다 ***")

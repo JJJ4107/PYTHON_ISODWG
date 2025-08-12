@@ -1,17 +1,17 @@
 import os
 import re
 import ezdxf
-import sys
 from datetime import datetime
 from collections import defaultdict
 import math
+import sys
 
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 except ImportError:
-    sys.exit()
+    exit()
 
 # ANSI 규격 파이프 두께 (mm) - Rating별
 ANSI_THICKNESS = {
@@ -32,6 +32,7 @@ ANSI_FITTINGS = [
 ]
 
 def get_xy(e): 
+    """엔티티의 X, Y 좌표 반환"""
     try:
         if hasattr(e, 'dxf') and hasattr(e.dxf, 'insert'):
             ins = e.dxf.insert
@@ -48,6 +49,7 @@ def get_xy(e):
     return 0.0, 0.0
 
 def get_text(e):
+    """엔티티에서 텍스트 추출"""
     try:
         if hasattr(e, 'dxf') and hasattr(e.dxf, 'text'):
             return e.dxf.text
@@ -56,6 +58,80 @@ def get_text(e):
     except Exception:
         pass
     return ''
+
+def get_all_texts_including_blocks(msp, doc):
+    """블록 내부의 텍스트를 포함한 모든 텍스트 요소 반환 (개선된 버전)"""
+    all_texts = []
+    
+    # 1. 모델 스페이스의 직접적인 텍스트 (TEXT, MTEXT)
+    for e in msp.query('TEXT MTEXT'):
+        txt = get_text(e).strip()
+        x, y = get_xy(e)
+        if txt:
+            all_texts.append((x, y, txt, e, 'NORMAL'))  # 타입 추가
+    
+    # 2. INSERT(블록 참조)를 통한 텍스트
+    for insert in msp.query('INSERT'):
+        try:
+            block_name = insert.dxf.name
+            block = doc.blocks.get(block_name)
+            if block:
+                # 블록의 삽입점과 스케일, 회전 정보
+                insert_x, insert_y = get_xy(insert)
+                
+                # 스케일 팩터 가져오기
+                x_scale = getattr(insert.dxf, 'xscale', 1.0)
+                y_scale = getattr(insert.dxf, 'yscale', 1.0)
+                rotation = getattr(insert.dxf, 'rotation', 0.0)
+                
+                # 블록 내부의 텍스트 요소들
+                for e in block.query('TEXT MTEXT'):
+                    txt = get_text(e).strip()
+                    if txt:
+                        # 블록 내부 좌표를 실제 좌표로 변환
+                        block_x, block_y = get_xy(e)
+                        
+                        # 스케일 적용
+                        scaled_x = block_x * x_scale
+                        scaled_y = block_y * y_scale
+                        
+                        # 회전 적용 (라디안으로 변환)
+                        if rotation != 0:
+                            import math
+                            rad = math.radians(rotation)
+                            cos_r = math.cos(rad)
+                            sin_r = math.sin(rad)
+                            
+                            # 회전 변환
+                            rotated_x = scaled_x * cos_r - scaled_y * sin_r
+                            rotated_y = scaled_x * sin_r + scaled_y * cos_r
+                            
+                            actual_x = insert_x + rotated_x
+                            actual_y = insert_y + rotated_y
+                        else:
+                            actual_x = insert_x + scaled_x
+                            actual_y = insert_y + scaled_y
+                        
+                        all_texts.append((actual_x, actual_y, txt, e, 'BLOCK'))  # 타입 추가
+                
+                # 블록 내부의 속성(ATTRIB) 텍스트도 확인
+                if hasattr(insert, 'attribs'):
+                    for attrib in insert.attribs:
+                        txt = attrib.dxf.text.strip() if hasattr(attrib.dxf, 'text') else ''
+                        if txt:
+                            x, y = get_xy(attrib)
+                            all_texts.append((x, y, txt, attrib, 'ATTRIB'))
+        except Exception as e:
+            continue
+    
+    # 3. ATTDEF (속성 정의) 확인
+    for e in msp.query('ATTDEF'):
+        txt = e.dxf.default_value.strip() if hasattr(e.dxf, 'default_value') else ''
+        if txt:
+            x, y = get_xy(e)
+            all_texts.append((x, y, txt, e, 'ATTDEF'))
+    
+    return all_texts
 
 def clean_str(s):
     return ''.join(s.split())
@@ -261,17 +337,11 @@ def calculate_paint_area(item, size, description, qty, mmea):
     except Exception as e:
         return 0, 0
 
-# Command line arguments로 파일 경로 받기
+# 명령줄 인자에서 파일 경로 가져오기
 if len(sys.argv) < 2:
-    sys.exit()
+    exit()
 
 file_paths = sys.argv[1:]
-
-# DXF 파일만 필터링
-file_paths = [f for f in file_paths if f.lower().endswith('.dxf') and os.path.isfile(f)]
-
-if not file_paths:
-    sys.exit()
 
 # Excel 파일명 생성
 today = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -281,12 +351,12 @@ excel_path = os.path.join(os.path.dirname(file_paths[0]), excel_filename)
 # 전체 데이터를 저장할 리스트
 all_data = []
 
-# 시트별 데이터를 저장할 딕셔너리 추가
+# 시트별 데이터를 저장할 딕셔너리 추가 (BOLT/NUT을 BOLT-NUT으로 변경)
 sheet_data = {
     'FAB MAT': [],
     'ELEC MAT': [],
     'PIPE': [],
-    'BOLT/NUT': [],
+    'BOLT-NUT': [],  # '/' 제거
     'INST': [],
     'FITTING': []
 }
@@ -301,11 +371,11 @@ for file_path in file_paths:
     except Exception as e:
         continue
     
-    # 1. LINENO 찾기 (기존 코드와 동일)
+    # 1. LINENO 찾기 (블록 포함)
     lineno = None
-    for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e).strip()
-        x, y = get_xy(e)
+    all_texts = get_all_texts_including_blocks(msp, doc)
+    
+    for x, y, txt, e, txt_type in all_texts:
         if 0 <= x <= 150 and 0 <= y <= 85 and '-' in txt and len(txt) >= 10:
             lineno = clean_str(txt)
             break
@@ -320,45 +390,158 @@ for file_path in file_paths:
     fab_x, fab_y = None, None
     iso_x, iso_y = None, None  # ISO DWG NO의 위치 저장
     
-    for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e)
+    for x, y, txt, e, txt_type in all_texts:
         if "FABRICATION MATERIALS" in txt.upper():
             fab_mat_e = e
-            fab_x, fab_y = get_xy(e)
+            fab_x, fab_y = x, y
             break
     
     if fab_mat_e:
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip()
-            x, y = get_xy(e)
+        for x, y, txt, e, txt_type in all_texts:
             if fab_x is not None and fab_y is not None:
                 if (x > fab_x) and (0 <= y <= 20) and ('-' in txt):
                     isodwgno = txt
                     iso_x, iso_y = x, y  # ISO DWG NO의 위치 저장
                     break
     
+    # ISODWGNO가 'unset' 또는 '-'인 경우 대체 위치에서 찾기
+    if not isodwgno or isodwgno == '-' or isodwgno.lower() == 'unset':
+        # X: 700-900, Y: 5-25 범위의 모든 텍스트 수집 (범위 확대)
+        iso_texts = []
+        
+        for x, y, txt, e, txt_type in all_texts:
+            if 700 <= x <= 900 and 5 <= y <= 25 and txt:  # X 범위를 900까지 확대
+                iso_texts.append((x, y, txt, txt_type))
+        
+        if iso_texts:
+            # Y값으로 그룹화 (같은 줄의 텍스트들끼리 그룹화)
+            y_groups = defaultdict(list)
+            for x, y, txt, txt_type in iso_texts:
+                # Y값을 2단위로 그룹화 (더 정밀하게)
+                y_group = round(y / 2) * 2
+                y_groups[y_group].append((x, y, txt, txt_type))
+            
+            # 가장 텍스트가 많은 Y 그룹 찾기
+            max_group_y = max(y_groups.keys(), key=lambda k: len(y_groups[k]))
+            selected_texts = y_groups[max_group_y]
+            
+            # X 좌표로 정렬
+            selected_texts.sort(key=lambda t: t[0])
+            
+            # 모든 텍스트를 공백 없이 연결
+            isodwgno = ''
+            for i, (x, y, txt, txt_type) in enumerate(selected_texts):
+                isodwgno += txt
+            
+            # 위치는 첫 번째 텍스트의 위치 사용
+            if selected_texts:
+                iso_x, iso_y = selected_texts[0][0], selected_texts[0][1]
+    
+    # ISODWGNO가 여전히 없다면 더 넓은 범위에서 재검색
+    if not isodwgno or isodwgno == '-' or isodwgno.lower() == 'unset':
+        # X: 690-950, Y: 0-30 범위로 확대하여 검색 (X 범위 더 확대)
+        iso_texts_wide = []
+        
+        for x, y, txt, e, txt_type in all_texts:
+            if 690 <= x <= 950 and 0 <= y <= 30 and txt:  # X 범위를 950까지 확대
+                # 모든 텍스트를 일단 수집 (필터링 제거)
+                iso_texts_wide.append((x, y, txt, txt_type))
+        
+        if iso_texts_wide:
+            # Y값으로 그룹화 (비슷한 Y값끼리)
+            y_groups = defaultdict(list)
+            for x, y, txt, txt_type in iso_texts_wide:
+                y_group = round(y / 2) * 2  # 2단위로 그룹화 (더 정밀하게)
+                y_groups[y_group].append((x, y, txt, txt_type))
+            
+            # '-'를 포함하거나 'JCP'로 시작하는 텍스트가 있는 Y 그룹 우선 선택
+            best_group = None
+            for y_val, texts in y_groups.items():
+                for x, y, txt, txt_type in texts:
+                    if 'JCP' in txt or '-' in txt:
+                        best_group = texts
+                        break
+                if best_group:
+                    break
+            
+            # 없으면 가장 많은 텍스트가 있는 그룹 선택
+            if not best_group:
+                best_group = max(y_groups.values(), key=len)
+            
+            # X로 정렬
+            best_group.sort(key=lambda t: t[0])
+            
+            # 텍스트 조합 (모든 텍스트를 공백 없이 연결)
+            isodwgno = ''
+            for i, (x, y, txt, txt_type) in enumerate(best_group):
+                isodwgno += txt
+            
+            if best_group:
+                iso_x, iso_y = best_group[0][0], best_group[0][1]
+    
+    # 2-1단계: X: 770-780, Y: 5-20 범위의 추가 텍스트 읽기
+    if isodwgno and isodwgno != '-':
+        additional_texts = []
+        
+        for x, y, txt, e, txt_type in all_texts:
+            if 770 <= x <= 780 and 5 <= y <= 20 and txt:
+                additional_texts.append((x, y, txt, txt_type))
+        
+        if additional_texts:
+            # Y값으로 정렬 (위에서 아래로)
+            additional_texts.sort(key=lambda t: t[1])
+            
+            # 추가 텍스트를 ISODWGNO에 연결
+            for x, y, txt, txt_type in additional_texts:
+                isodwgno += txt
+    
     if not isodwgno:
         isodwgno = '-'
+    else:
+        # 최종 ISODWGNO 정리 (불필요한 공백 제거)
+        isodwgno = isodwgno.strip()
     
     # 2.1. ISO DESCRIPTION 찾기
     if iso_x is not None and iso_y is not None:
         # 지정된 범위에서 텍스트 찾기
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip()
-            x, y = get_xy(e)
+        for x, y, txt, e, txt_type in all_texts:
             # X 좌표: iso_x-50부터 iso_x+50까지, Y 좌표: iso_y+10부터 iso_y+45까지
             if (iso_x - 50 <= x <= iso_x + 50) and (iso_y + 10 <= y <= iso_y + 45) and txt:
                 iso_description = txt
                 break  # 첫 번째 텍스트만 사용
+    
+    # ISO DESCRIPTION이 'unset' 또는 '-'인 경우 대체 위치에서 찾기
+    if iso_description == '-' or iso_description.lower() == 'unset':
+        desc_texts = []
+        
+        for x, y, txt, e, txt_type in all_texts:
+            if 700 <= x <= 950 and 20 <= y <= 40 and txt:  # X 범위 확대, Y 범위도 조정
+                desc_texts.append((x, y, txt, txt_type))
+        
+        if desc_texts:
+            # Y값으로 그룹화
+            y_groups = defaultdict(list)
+            for x, y, txt, txt_type in desc_texts:
+                y_group = round(y / 2) * 2  # 2단위로 그룹화
+                y_groups[y_group].append((x, y, txt))
+            
+            # 가장 많은 텍스트가 있는 Y 그룹 선택
+            if y_groups:
+                best_y = max(y_groups.keys(), key=lambda k: len(y_groups[k]))
+                best_group = y_groups[best_y]
+                
+                # X로 정렬
+                best_group.sort(key=lambda t: t[0])
+                
+                # 모든 텍스트를 공백으로 연결
+                iso_description = ' '.join(t[2] for t in best_group)
     
     # 2.5. INSU 값 찾기 (X: 185-200, Y: 60-70 영역)
     insu_value = '-'
     
     # 해당 영역의 모든 텍스트 확인
     area_texts = []
-    for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e).strip()
-        x, y = get_xy(e)
+    for x, y, txt, e, txt_type in all_texts:
         if 185 <= x <= 200 and 60 <= y <= 70:
             area_texts.append((x, y, txt))
     
@@ -373,17 +556,27 @@ for file_path in file_paths:
             # 숫자가 아니면 계속 검색
             continue
     
-    # 3. PT 헤더 찾기 (직접 검색)
+    # INSU 값이 'unset' 또는 '-'인 경우 대체 위치에서 찾기
+    if insu_value == '-' or insu_value.lower() == 'unset':
+        for x, y, txt, e, txt_type in all_texts:
+            if 260 <= x <= 280 and 30 <= y <= 75:
+                try:
+                    float(txt)  # 숫자인지 확인
+                    insu_value = txt
+                    break
+                except ValueError:
+                    continue
+    
+    # 3. PT 헤더 찾기 (블록 포함)
     headers = ['PT', 'ITEM', 'MATERIAL', 'SIZE', 'DESCRIPTION', 'QTY', 'UNIT', 'TOTAL', 'REMARK']
     
     # 모든 PT 헤더 찾기
     pt_headers = []
-    for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e).strip().upper()
-        x, y = get_xy(e)
+    for x, y, txt, e, txt_type in all_texts:
+        txt_upper = txt.upper()
         # PT가 포함되고, 다른 긴 텍스트가 아닌 경우
-        if txt == 'PT' or (txt.startswith('PT') and len(txt) <= 5):
-            pt_headers.append((x, y, txt))
+        if txt_upper == 'PT' or (txt_upper.startswith('PT') and len(txt_upper) <= 5):
+            pt_headers.append((x, y, txt_upper))
     
     if not pt_headers:
         continue
@@ -397,41 +590,32 @@ for file_path in file_paths:
         header_positions = {'PT': pt_x}
         
         # PT와 같은 Y 좌표 근처(±5)에서 다른 헤더 찾기
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip().upper()
-            x, y = get_xy(e)
+        for x, y, txt, e, txt_type in all_texts:
+            txt_upper = txt.upper()
             
             # PT와 비슷한 Y 좌표에 있는 헤더들 찾기
             if abs(y - pt_y) <= 5:
                 for header in headers:
                     if header != 'PT':
                         # 헤더 텍스트 정확히 매칭 또는 포함 확인
-                        if (header == txt) or (header in txt and len(txt) <= len(header) + 10):
+                        if (header == txt_upper) or (header in txt_upper and len(txt_upper) <= len(header) + 10):
                             header_positions[header] = x
                             break
         
         # DESCRIPTION 헤더 특별 처리 (다양한 변형 확인)
         if 'DESCRIPTION' not in header_positions:
-            for e in msp.query('TEXT MTEXT'):
-                txt = get_text(e).strip().upper()
-                x, y = get_xy(e)
+            for x, y, txt, e, txt_type in all_texts:
+                txt_upper = txt.upper()
                 if abs(y - pt_y) <= 5:
-                    if 'DESC' in txt or 'DESCRIPT' in txt:
+                    if 'DESC' in txt_upper or 'DESCRIPT' in txt_upper:
                         header_positions['DESCRIPTION'] = x
                         break
         
         # 4. PT 아래의 데이터 추출
         data_rows = []
         
-        # 모든 텍스트를 Y좌표로 정렬
-        all_texts = []
-        for e in msp.query('TEXT MTEXT'):
-            txt = get_text(e).strip()
-            x, y = get_xy(e)
-            if txt:  # 빈 텍스트는 제외
-                all_texts.append((x, y, txt))
-        
-        all_texts.sort(key=lambda t: -t[1])  # Y좌표 내림차순 정렬
+        # Y좌표로 정렬 (블록 텍스트 포함)
+        all_texts_sorted = sorted(all_texts, key=lambda t: -t[1])  # Y좌표 내림차순 정렬
         
         # PT 숫자 찾기
         current_row = None
@@ -439,7 +623,7 @@ for file_path in file_paths:
         pt_count = 0
         processed_pts = {}  # PT 번호별로 처리 여부 추적 {pt_number: row_data}
         
-        for x, y, txt in all_texts:
+        for x, y, txt, e, txt_type in all_texts_sorted:
             # PT 헤더 아래에서만 검색
             if y >= pt_y:
                 continue
@@ -472,7 +656,7 @@ for file_path in file_paths:
                 # 첫 번째 줄 데이터 수집
                 for hdr, hdr_x in header_positions.items():
                     if hdr != 'PT':
-                        for x2, y2, txt2 in all_texts:
+                        for x2, y2, txt2, e2, txt_type2 in all_texts_sorted:
                             if abs(x2 - hdr_x) <= 2 and abs(y2 - y) <= 2:
                                 if txt2:  # 빈 텍스트가 아닌 경우만
                                     current_row[hdr] = txt2
@@ -485,7 +669,7 @@ for file_path in file_paths:
                     
                     # 먼저 이 Y 위치의 PT 열 확인
                     has_pt_at_next = False
-                    for x2, y2, txt2 in all_texts:
+                    for x2, y2, txt2, e2, txt_type2 in all_texts_sorted:
                         if abs(x2 - pt_x) <= 2 and abs(y2 - next_y_float) <= 1:
                             if txt2 and txt2.strip():  # 공백이 아닌 텍스트가 있으면
                                 if txt2.isdigit():  # PT 번호가 있으면
@@ -502,7 +686,7 @@ for file_path in file_paths:
                     
                     for hdr, hdr_x in header_positions.items():
                         if hdr != 'PT':
-                            for x2, y2, txt2 in all_texts:
+                            for x2, y2, txt2, e2, txt_type2 in all_texts_sorted:
                                 if abs(x2 - hdr_x) <= 2 and abs(y2 - next_y_float) <= 1 and txt2:
                                     next_line_data[hdr] = txt2
                                     has_data_at_next = True
@@ -528,7 +712,7 @@ for file_path in file_paths:
                 # 다른 열에 데이터가 있는지 확인
                 for hdr, hdr_x in header_positions.items():
                     if hdr != 'PT':
-                        for x2, y2, txt2 in all_texts:
+                        for x2, y2, txt2, e2, txt_type2 in all_texts_sorted:
                             if abs(x2 - hdr_x) <= 2 and abs(y2 - y) <= 2 and txt2:
                                 if current_row.get(hdr):
                                     # 숫자 필드는 대체, 텍스트 필드는 공백 포함 연결
@@ -691,7 +875,7 @@ for file_path in file_paths:
             if 'PIPE' in item_upper and 'SUPPORT' not in item_upper:
                 sheet_data['PIPE'].append(row_copy)
             elif 'BOLT' in item_upper or 'NUT' in item_upper or 'GASKET' in item_upper or 'GASK' in item_upper:
-                sheet_data['BOLT/NUT'].append(row_copy)
+                sheet_data['BOLT-NUT'].append(row_copy)  # '/' 제거
             elif 'VALV' in item_upper or 'INST' in item_upper or 'V/V' in item_upper or 'MOV' in item_upper or 'PCV' in item_upper or 'NRV' in item_upper:
                 sheet_data['INST'].append(row_copy)
             else:
@@ -707,7 +891,7 @@ if all_data:
                'DESCRIPTION', 'Q\'TY', '(mm/ea)', 'U.WT', 'T.WT', 'INSU. T\'HK', 
                'PAINT 내면적(m²)', 'PAINT 외면적(m²)', 'REMARK']
     
-    # INST, BOLT/NUT 시트용 헤더 (PAINT 면적 제외)
+    # INST, BOLT-NUT 시트용 헤더 (PAINT 면적 제외)
     headers_without_paint = ['ISO DWG NO', 'LINE NO', 'ISO DESCRIPTION', 'ITEM NO', 'ITEM', 'SIZE', 'MATERIAL', 
                            'DESCRIPTION', 'Q\'TY', '(mm/ea)', 'U.WT', 'T.WT', 'INSU. T\'HK', 'REMARK']
     
@@ -767,7 +951,7 @@ if all_data:
         ws.column_dimensions[column_letter].width = adjusted_width
     
     # 추가 시트 생성 및 데이터 입력
-    sheet_names = ['FAB MAT', 'ELEC MAT', 'PIPE', 'BOLT/NUT', 'FITTING', 'INST']  # INST를 마지막으로
+    sheet_names = ['FAB MAT', 'ELEC MAT', 'PIPE', 'BOLT-NUT', 'FITTING', 'INST']  # '/' 제거
     
     # TOTAL BOM 시트 생성을 위한 데이터 그룹화
     total_bom_data = defaultdict(lambda: {
@@ -979,8 +1163,8 @@ if all_data:
         if sheet_data[sheet_name]:  # 데이터가 있는 경우만 시트 생성
             ws = wb.create_sheet(title=sheet_name)
             
-            # INST, BOLT/NUT은 PAINT 면적 제외
-            if sheet_name in ['INST', 'BOLT/NUT']:
+            # INST, BOLT-NUT은 PAINT 면적 제외
+            if sheet_name in ['INST', 'BOLT-NUT']:  # '/' 제거
                 use_headers = headers_without_paint
             else:
                 use_headers = headers
