@@ -3,7 +3,7 @@ import sys
 import ezdxf
 import math
 import numpy as np
-from ezdxf.entities import Line, LWPolyline, Polyline, Text
+from ezdxf.entities import Line, LWPolyline, Polyline, Text, Hatch
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
@@ -194,7 +194,7 @@ def point_to_line_distance(point, line_start, line_end):
 # ─────────────── 최적화된 엔티티 수집 함수 ───────────────
 def collect_dim_entities(msp):
     """
-    DIM이 포함된 레이어의 엔티티만 수집하는 최적화된 함수
+    DIM 또는 ISO가 포함된 레이어의 엔티티만 수집하는 최적화된 함수
     """
     dim_line_entities = []
     dim_text_entities = []
@@ -202,17 +202,20 @@ def collect_dim_entities(msp):
     # 모든 레이어 이름 수집
     dim_layers = set()
     for layer in msp.doc.layers:
-        if 'DIM' in layer.dxf.name.upper():
+        layer_name_upper = layer.dxf.name.upper()
+        if 'DIM' in layer_name_upper or 'ISO' in layer_name_upper:
             dim_layers.add(layer.dxf.name)
     
-    # DIM 레이어의 LINE 엔티티만 수집
+    # DIM 또는 ISO 레이어의 LINE 엔티티만 수집
     for entity in msp.query("LINE LWPOLYLINE POLYLINE"):
-        if entity.dxf.layer in dim_layers or 'DIM' in entity.dxf.layer.upper():
+        layer_upper = entity.dxf.layer.upper()
+        if entity.dxf.layer in dim_layers or 'DIM' in layer_upper or 'ISO' in layer_upper:
             dim_line_entities.append(entity)
     
-    # DIM 레이어의 TEXT 엔티티만 수집
+    # DIM 또는 ISO 레이어의 TEXT 엔티티만 수집
     for entity in msp.query("TEXT MTEXT"):
-        if entity.dxf.layer in dim_layers or 'DIM' in entity.dxf.layer.upper():
+        layer_upper = entity.dxf.layer.upper()
+        if entity.dxf.layer in dim_layers or 'DIM' in layer_upper or 'ISO' in layer_upper:
             dim_text_entities.append(entity)
     
     return dim_line_entities, dim_text_entities
@@ -297,7 +300,7 @@ def clear_tbox_cache():
 # ─────────────── 새로운 엔티티 찾기 함수들 ───────────────
 def find_dl_entities(dim_line_entities):
     """
-    DL 엔티티 찾기: 레이어가 DIMLINES인 LINE, 선가중치 0.3mm, 색상 흰색
+    DL 엔티티 찾기: 레이어가 DIMLINES인 LINE, 선가중치 0.3mm, 색상 흰색, 길이 3.5mm 초과
     """
     dl_entities = []
     
@@ -317,6 +320,18 @@ def find_dl_entities(dim_line_entities):
         if hasattr(ent.dxf, 'lineweight'):
             if ent.dxf.lineweight != 30:  # 0.3mm = 30
                 continue
+        
+        # 길이가 3.5mm를 초과하는지 확인
+        segments = extract_segments(ent)
+        if segments:
+            p0, p1 = segments[0]
+            v0, v1 = to2d(p0), to2d(p1)
+            line_length = distance(v0, v1)
+            
+            if line_length <= 2.5:
+                continue
+        else:
+            continue
         
         dl_entities.append(ent)
     
@@ -565,6 +580,164 @@ def find_del2_entities(dim_line_entities, del1_entities, tolerance=0.3):
     
     return del2_entities
 
+def get_hatch_area(hatch):
+    """
+    HATCH의 면적을 계산하는 함수
+    """
+    try:
+        # ezdxf의 내장 기능 사용 시도
+        if hasattr(hatch, 'area'):
+            return float(hatch.area)
+        
+        # 경계 점들을 수집하여 면적 계산
+        all_points = []
+        
+        # paths를 통해 경계 점들 수집
+        if hasattr(hatch, 'paths'):
+            for path in hatch.paths:
+                if hasattr(path, 'control_points'):
+                    # PolylinePath의 경우
+                    for point in path.control_points:
+                        all_points.append(to2d(point))
+                elif hasattr(path, 'vertices'):
+                    # 다른 경로 타입의 경우
+                    for vertex in path.vertices:
+                        all_points.append(to2d(vertex))
+                elif hasattr(path, 'edges'):
+                    # EdgePath의 경우
+                    for edge in path.edges:
+                        if hasattr(edge, 'start'):
+                            all_points.append(to2d(edge.start))
+        
+        # 경계 패스가 없으면 paths_to_entities 메서드 시도
+        if not all_points and hasattr(hatch, 'paths_to_entities'):
+            try:
+                entities = list(hatch.paths_to_entities())
+                for entity in entities:
+                    segments = extract_segments(entity)
+                    for segment in segments:
+                        all_points.append(to2d(segment[0]))
+            except:
+                pass
+        
+        # 점이 3개 이상 있어야 면적 계산 가능
+        if len(all_points) >= 3:
+            # 중복 점 제거
+            unique_points = []
+            for point in all_points:
+                is_duplicate = False
+                for unique_point in unique_points:
+                    if distance(point, unique_point) < 0.001:
+                        is_duplicate = True
+                        break
+                if not is_duplicate:
+                    unique_points.append(point)
+            
+            if len(unique_points) >= 3:
+                # Shoelace formula를 사용하여 면적 계산
+                area = 0.0
+                n = len(unique_points)
+                for i in range(n):
+                    j = (i + 1) % n
+                    area += unique_points[i][0] * unique_points[j][1]
+                    area -= unique_points[j][0] * unique_points[i][1]
+                return abs(area) / 2.0
+    except Exception as e:
+        pass
+    
+    return 0.0
+
+def get_hatch_center(hatch):
+    """
+    HATCH의 중심점을 계산하는 함수
+    """
+    try:
+        all_points = []
+        
+        # paths를 통해 경계 점들 수집
+        if hasattr(hatch, 'paths'):
+            for path in hatch.paths:
+                if hasattr(path, 'control_points'):
+                    # PolylinePath의 경우
+                    for point in path.control_points:
+                        all_points.append(to2d(point))
+                elif hasattr(path, 'vertices'):
+                    for vertex in path.vertices:
+                        all_points.append(to2d(vertex))
+                elif hasattr(path, 'edges'):
+                    for edge in path.edges:
+                        if hasattr(edge, 'start'):
+                            all_points.append(to2d(edge.start))
+        
+        # 경계 패스가 없으면 paths_to_entities 메서드 시도
+        if not all_points and hasattr(hatch, 'paths_to_entities'):
+            try:
+                entities = list(hatch.paths_to_entities())
+                for entity in entities:
+                    segments = extract_segments(entity)
+                    for segment in segments:
+                        all_points.append(to2d(segment[0]))
+            except:
+                pass
+        
+        if all_points:
+            # 중복 점 제거
+            unique_points = []
+            for point in all_points:
+                is_duplicate = False
+                for unique_point in unique_points:
+                    if distance(point, unique_point) < 0.001:
+                        is_duplicate = True
+                        break
+                if not is_duplicate:
+                    unique_points.append(point)
+            
+            if unique_points:
+                center_x = sum(p[0] for p in unique_points) / len(unique_points)
+                center_y = sum(p[1] for p in unique_points) / len(unique_points)
+                return np.array([center_x, center_y])
+        
+        # seed_points가 있으면 첫 번째 seed point 사용
+        if hasattr(hatch, 'seed_points') and hatch.seed_points:
+            return np.array([hatch.seed_points[0][0], hatch.seed_points[0][1]])
+    except Exception as e:
+        pass
+    
+    return None
+
+def find_del3_hatches(msp, ap1_point):
+    """
+    AP1에서 가장 가까운 면적이 0.6~0.9인 HATCH를 찾아 DEL3로 처리
+    """
+    del3_entities = []
+    candidates = []
+    
+    # 모든 HATCH 엔티티 검색
+    for hatch in msp.query("HATCH"):
+        # HATCH의 면적 계산
+        area = get_hatch_area(hatch)
+        
+        # 면적이 0.6~0.9 범위인지 확인
+        if 0.6 <= area <= 0.9:
+            # HATCH의 중심점 계산
+            center = get_hatch_center(hatch)
+            if center is not None:
+                # AP1에서 HATCH 중심까지의 거리 계산
+                dist = distance(ap1_point, center)
+                candidates.append((dist, hatch))
+    
+    # 거리순으로 정렬하여 가장 가까운 1개 선택
+    if candidates:
+        candidates.sort(key=lambda x: x[0])
+        closest_hatch = candidates[0][1]
+        
+        # DEL3 레이어로 설정하고 흰색으로 변경
+        closest_hatch.dxf.layer = "DEL3"
+        closest_hatch.dxf.color = 7  # WHITE
+        del3_entities.append(closest_hatch)
+    
+    return del3_entities
+
 def find_cp_texts(msp, g1_entities, dim_text_entities, used_cp_handles, dim_line_entities, search_radius=15.0):
     """
     CP 찾기: AP2 점에서 15mm 범위에서 가장 가까운 10 이상의 숫자 중에서 기울기가 0인 TEXT
@@ -798,6 +971,9 @@ def process_dimension_system(msp, dim_text_entities, dim_line_entities):
     all_processed_entities = []
     all_cp_texts = []
     
+    # 삭제할 DEL 및 G1 엔티티들을 별도로 추적
+    entities_to_delete = []
+    
     # 사용된 AD 엔티티 추적
     used_ad_handles = set()
     
@@ -848,6 +1024,7 @@ def process_dimension_system(msp, dim_text_entities, dim_line_entities):
             g1_ent.dxf.layer = "G1"
             g1_ent.dxf.color = 1  # RED
             all_processed_entities.append(g1_ent)
+            entities_to_delete.append(g1_ent)  # 나중에 삭제하기 위해 추가
             
             # G1에 연결된 추가 LINE 찾기 및 처리
             connected_lines = find_connected_g1_lines(dim_line_entities, g1_ent, v0, v1)
@@ -855,6 +1032,7 @@ def process_dimension_system(msp, dim_text_entities, dim_line_entities):
                 conn_ent.dxf.layer = "G1"
                 conn_ent.dxf.color = 1  # RED
                 all_processed_entities.append(conn_ent)
+                entities_to_delete.append(conn_ent)  # 나중에 삭제하기 위해 추가
             
             # DEL1 찾기 (AP1 기준)
             del1_entities = find_del1_entities(dim_line_entities, [(g1_ent, v0, v1, ap1, ap2)], dl_center)
@@ -863,6 +1041,7 @@ def process_dimension_system(msp, dim_text_entities, dim_line_entities):
                 del1.dxf.layer = "DEL1"
                 del1.dxf.color = 1  # RED
                 all_processed_entities.append(del1)
+                entities_to_delete.append(del1)  # 나중에 삭제하기 위해 추가
             
             # DEL2 찾기
             del2_entities = find_del2_entities(dim_line_entities, del1_entities)
@@ -871,6 +1050,12 @@ def process_dimension_system(msp, dim_text_entities, dim_line_entities):
                 del2.dxf.layer = "DEL2"
                 del2.dxf.color = 1  # RED
                 all_processed_entities.append(del2)
+                entities_to_delete.append(del2)  # 나중에 삭제하기 위해 추가
+            
+            # DEL3 (HATCH) 찾기 - AP1에서 가장 가까운 면적 0.6~0.9인 HATCH
+            del3_entities = find_del3_hatches(msp, ap1)
+            all_processed_entities.extend(del3_entities)
+            entities_to_delete.extend(del3_entities)  # 나중에 삭제하기 위해 추가
             
             # CP 찾기 (AP2 기준, 15mm 반경)
             cp_texts_with_ap1 = find_cp_texts(msp, [(g1_ent, v0, v1, ap1, ap2)], dim_text_entities, 
@@ -894,7 +1079,7 @@ def process_dimension_system(msp, dim_text_entities, dim_line_entities):
                     
                     all_cp_texts.append(cp)
     
-    return all_processed_entities, all_cp_texts
+    return all_processed_entities, all_cp_texts, entities_to_delete
 
 # ─────────────── 메인 파이프라인 ───────────────
 def auto_align_dxf(input_dxf, output_dxf):
@@ -911,11 +1096,18 @@ def auto_align_dxf(input_dxf, output_dxf):
         doc = ezdxf.readfile(input_dxf)
         msp = doc.modelspace()
 
-        # DIM 레이어 엔티티만 수집 (최적화)
+        # DIM 또는 ISO 레이어 엔티티만 수집 (최적화)
         dim_line_entities, dim_text_entities = collect_dim_entities(msp)
         
         # 치수선 시스템 처리
-        processed_entities, cp_texts = process_dimension_system(msp, dim_text_entities, dim_line_entities)
+        processed_entities, cp_texts, entities_to_delete = process_dimension_system(msp, dim_text_entities, dim_line_entities)
+
+        # 모든 처리가 완료된 후 DEL1, DEL2, DEL3, G1 엔티티 삭제
+        for entity in entities_to_delete:
+            try:
+                msp.delete_entity(entity)
+            except Exception as e:
+                print(f"Warning: Could not delete entity: {e}")
 
         # 저장
         doc.saveas(output_dxf)

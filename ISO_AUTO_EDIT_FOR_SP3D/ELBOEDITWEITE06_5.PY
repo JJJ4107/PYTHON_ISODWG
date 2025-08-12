@@ -30,35 +30,17 @@ def extract_polyline_points(e):
         return pts
     return []
 
-def is_elbo_arc(e):
-    """ELBO 레이어의 호(ARC) 엔티티인지 확인"""
-    if e.dxftype() != 'ARC':
+def is_elbo(e):
+    pts = extract_polyline_points(e)
+    if len(pts) != 2:
         return False
-    if not hasattr(e.dxf, 'layer'):
+    bulge = pts[0][4] if len(pts[0]) > 4 else 0
+    if bulge == 0:
         return False
-    return 'ELBO' in e.dxf.layer.upper()
-
-def get_arc_endpoints(arc):
-    """호(ARC)의 시작점과 끝점 좌표 반환"""
-    # 호의 중심점
-    center = (arc.dxf.center[0], arc.dxf.center[1])
-    radius = arc.dxf.radius
-    
-    # 시작각과 끝각 (라디안으로 변환)
-    start_angle = math.radians(arc.dxf.start_angle)
-    end_angle = math.radians(arc.dxf.end_angle)
-    
-    # 시작점과 끝점 계산
-    start_point = (
-        center[0] + radius * math.cos(start_angle),
-        center[1] + radius * math.sin(start_angle)
-    )
-    end_point = (
-        center[0] + radius * math.cos(end_angle),
-        center[1] + radius * math.sin(end_angle)
-    )
-    
-    return start_point, end_point
+    p1 = (pts[0][0], pts[0][1])
+    p2 = (pts[1][0], pts[1][1])
+    radius = calculate_radius(p1, p2, bulge)
+    return radius is not None and 0.5 <= radius <= 20
 
 def line_intersection(p1, p2, p3, p4):
     x1, y1 = p1
@@ -81,18 +63,18 @@ def set_poly_points(e, points):
         for pt in points:
             e.append_vertex((pt[0], pt[1], 0))
 
-def print_elbo_arc_info(arc):
-    """ELBO 호 정보 출력"""
-    start_pt, end_pt = get_arc_endpoints(arc)
+def print_elbo_info(e):
+    pts = extract_polyline_points(e)
+    p1 = (pts[0][0], pts[0][1])
+    p2 = (pts[1][0], pts[1][1])
+    bulge = pts[0][4] if len(pts[0]) > 4 else 0
+    radius = calculate_radius(p1, p2, bulge)
     print("="*40)
-    print("ELBO ARC Detected!")
-    print(f" - Layer      : {arc.dxf.layer}")
-    print(f" - Center     : ({arc.dxf.center[0]:.4f}, {arc.dxf.center[1]:.4f})")
-    print(f" - Radius     : {arc.dxf.radius:.4f}")
-    print(f" - Start Angle: {arc.dxf.start_angle:.2f}°")
-    print(f" - End Angle  : {arc.dxf.end_angle:.2f}°")
-    print(f" - Start Point: ({start_pt[0]:.4f}, {start_pt[1]:.4f})")
-    print(f" - End Point  : ({end_pt[0]:.4f}, {end_pt[1]:.4f})")
+    print("ELBO Detected!")
+    print(f" - Start Point: {p1}")
+    print(f" - End Point  : {p2}")
+    print(f" - Bulge      : {bulge}")
+    print(f" - Radius     : {radius:.4f}" if radius else " - Radius     : None")
     print("="*40)
 
 def extract_line_points(e):
@@ -103,27 +85,70 @@ def set_line_points(e, new_start, new_end):
     e.dxf.start = new_start
     e.dxf.end = new_end
 
+def find_pipe_text_entities(msp):
+    """PIPE TEXT를 포함하는 TEXT 엔티티들을 찾아 반환"""
+    pipe_text_entities = []
+    for e in msp:
+        if e.dxftype() in ["TEXT", "MTEXT"]:
+            text_content = e.dxf.text if hasattr(e.dxf, 'text') else ""
+            if "PIPE TEXT" in text_content.upper():
+                pipe_text_entities.append(e)
+                print(f"Found PIPE TEXT: '{text_content}' at {e.dxf.insert}")
+    return pipe_text_entities
+
+def find_nearby_entities(msp, text_entity, search_radius=10.0):
+    """TEXT 엔티티 근처의 LINE, POLYLINE을 찾아 반환"""
+    nearby_entities = []
+    text_pos = (text_entity.dxf.insert[0], text_entity.dxf.insert[1])
+    
+    for e in msp:
+        if e.dxftype() in ["LINE", "LWPOLYLINE", "POLYLINE"]:
+            # LINE의 경우
+            if e.dxftype() == "LINE":
+                start = (e.dxf.start[0], e.dxf.start[1])
+                end = (e.dxf.end[0], e.dxf.end[1])
+                if distance(text_pos, start) <= search_radius or distance(text_pos, end) <= search_radius:
+                    nearby_entities.append(e)
+            # POLYLINE의 경우
+            else:
+                pts = extract_polyline_points(e)
+                for pt in pts:
+                    if distance(text_pos, pt[:2]) <= search_radius:
+                        nearby_entities.append(e)
+                        break
+    
+    return nearby_entities
+
 def process_file(filepath):
     try:
         doc = ezdxf.readfile(filepath)
         msp = doc.modelspace()
         modified = False
-        elbo_arcs = []
+        elbos = []
+        
+        # PIPE TEXT 엔티티들 찾기
+        pipe_text_entities = find_pipe_text_entities(msp)
+        print(f"Found {len(pipe_text_entities)} PIPE TEXT entities")
+        
+        # PIPE TEXT 근처의 엔티티들을 저장
+        pipe_related_entities = set()
+        for text_entity in pipe_text_entities:
+            nearby = find_nearby_entities(msp, text_entity)
+            pipe_related_entities.update(nearby)
 
-        # 1. ELBO 레이어의 호(ARC) 찾기 (GREEN)
+        # 1. ELBO 찾기 (GREEN)
         for e in msp:
-            if is_elbo_arc(e):
+            if is_elbo(e):
                 e.dxf.color = 3  # GREEN
-                print_elbo_arc_info(e)
-                ep1, ep2 = get_arc_endpoints(e)
-                elbo_arcs.append((e, ep1, ep2))
+                print_elbo_info(e)
+                pts = extract_polyline_points(e)
+                ep1 = (pts[0][0], pts[0][1])
+                ep2 = (pts[1][0], pts[1][1])
+                elbos.append((e, ep1, ep2))
                 modified = True
 
-        # 2. ELBO 호 양쪽에 붙은 L1, L2 찾아서 교점 연장 처리
-        for elbo, ep1, ep2 in elbo_arcs:
-            # ELBO의 레이어 저장
-            elbo_layer = elbo.dxf.layer if hasattr(elbo.dxf, 'layer') else None
-            
+        # 2. ELBO 양쪽에 붙은 L1, L2 찾아서 교점 연장 처리
+        for elbo, ep1, ep2 in elbos:
             l1, l2 = None, None
             l1_type, l2_type = None, None  # 'PLINE' or 'LINE'
 
@@ -141,10 +166,11 @@ def process_file(filepath):
                         elif distance(ep2, pt_xy) <= 0.3 and l2 is None:
                             l2 = pl
                             l2_type = "PLINE"
-            # 2차: PIPE 또는 ELBO를 포함하는 레이어의 LINE (못 찾았을 때)
+            
+            # 2차: PIPE TEXT 근처의 LINE (못 찾았을 때)
             if l1 is None or l2 is None:
-                for line in msp:
-                    if line.dxftype() == "LINE" and hasattr(line, 'dxf') and hasattr(line.dxf, 'layer') and ("PIPE" in line.dxf.layer or "ELBO" in line.dxf.layer):
+                for line in pipe_related_entities:
+                    if line.dxftype() == "LINE":
                         start = (line.dxf.start[0], line.dxf.start[1])
                         end = (line.dxf.end[0], line.dxf.end[1])
                         if l1 is None and (distance(ep1, start) <= 0.3 or distance(ep1, end) <= 0.3):
@@ -180,8 +206,6 @@ def process_file(filepath):
                             l1_pts[-1] = (inter[0], inter[1], 0, 0, 0)
                         set_poly_points(l1, l1_pts)
                         l1.dxf.color = 3   # GREEN
-                        if elbo_layer:
-                            l1.dxf.layer = elbo_layer  # ELBO 레이어로 변경
                     else:  # LINE
                         s, e = extract_line_points(l1)
                         if distance(s, inter) < distance(e, inter):
@@ -189,8 +213,6 @@ def process_file(filepath):
                         else:
                             set_line_points(l1, s, inter)
                         l1.dxf.color = 3   # GREEN
-                        if elbo_layer:
-                            l1.dxf.layer = elbo_layer  # ELBO 레이어로 변경
 
                     # L2 끝점 이동
                     if l2_type == "PLINE":
@@ -200,8 +222,6 @@ def process_file(filepath):
                             l2_pts[-1] = (inter[0], inter[1], 0, 0, 0)
                         set_poly_points(l2, l2_pts)
                         l2.dxf.color = 7
-                        if elbo_layer:
-                            l2.dxf.layer = elbo_layer  # ELBO 레이어로 변경
                     else:  # LINE
                         s, e = extract_line_points(l2)
                         if distance(s, inter) < distance(e, inter):
@@ -209,10 +229,8 @@ def process_file(filepath):
                         else:
                             set_line_points(l2, s, inter)
                         l2.dxf.color = 7
-                        if elbo_layer:
-                            l2.dxf.layer = elbo_layer  # ELBO 레이어로 변경
 
-                    # ELBO 호 삭제
+                    # ELBO 삭제
                     msp.delete_entity(elbo)
                     modified = True
 
@@ -220,25 +238,37 @@ def process_file(filepath):
                     for r in [0.1, 0.2, 0.3]:
                         msp.add_circle(center=inter, radius=r, dxfattribs={"color": 7})
 
-        # 3. PIPE 또는 ELBO를 포함하는 레이어의 POLYLINE/LWPOLYLINE 처리: DP → P1,P2 연결선 그리기 → 삭제
-        for pl in list(msp):
-            if pl.dxftype() in ["LWPOLYLINE", "POLYLINE"] and hasattr(pl, 'dxf') and hasattr(pl.dxf, 'layer') and ("PIPE" in pl.dxf.layer or "ELBO" in pl.dxf.layer):
+        # 3. 모든 LWPOLYLINE, POLYLINE 일괄 WHITE 처리 (ELBO로 남아있는 경우 제외)
+        for e in msp:
+            if e.dxftype() in ["LWPOLYLINE", "POLYLINE"]:
+                if not is_elbo(e):
+                    e.dxf.color = 7
+                modified = True
+
+        # 4. PIPE TEXT 근처의 POLYLINE/LWPOLYLINE 처리: DP → P1,P2 연결선 그리기 → 삭제
+        for pl in list(pipe_related_entities):
+            if pl.dxftype() in ["LWPOLYLINE", "POLYLINE"]:
                 pts = extract_polyline_points(pl)
                 if len(pts) >= 2:
                     p1 = (pts[0][0], pts[0][1])
                     p2 = (pts[1][0], pts[1][1])
-                    # 녹색선 (GREEN=3), 원본과 같은 레이어에 추가
-                    msp.add_line(p1, p2, dxfattribs={'color': 3, 'layer': pl.dxf.layer})
+                    # 녹색선 (GREEN=3) 추가
+                    msp.add_line(p1, p2, dxfattribs={'color': 3})
                     # 원본 DP 삭제
-                    msp.delete_entity(pl)
-                    modified = True
-                    layer_name = pl.dxf.layer if hasattr(pl, 'dxf') and hasattr(pl.dxf, 'layer') else "Unknown"
-                    print(f"✔ PIPE/ELBO 레이어 변환: {layer_name}")
+                    try:
+                        msp.delete_entity(pl)
+                        modified = True
+                    except:
+                        pass
 
-        # PIPE 또는 ELBO를 포함하는 레이어 전체 GREEN 처리
-        for e in msp:
-            if hasattr(e, 'dxf') and hasattr(e.dxf, 'layer') and ("PIPE" in e.dxf.layer or "ELBO" in e.dxf.layer) and e.dxftype() in ["LINE", "LWPOLYLINE", "POLYLINE"]:
-                e.dxf.color = 3
+        # PIPE TEXT 근처의 모든 엔티티들을 GREEN 처리
+        for e in pipe_related_entities:
+            if e.dxftype() in ["LINE", "LWPOLYLINE", "POLYLINE"]:
+                try:
+                    e.dxf.color = 3
+                    modified = True
+                except:
+                    pass
 
         # 저장
         if modified:

@@ -127,9 +127,9 @@ class PipeLayerRenamer:
         candidate_pts = []
         
         print(f"     <> 텍스트 위치: ({bracket_pos[0]:.2f}, {bracket_pos[1]:.2f})")
-        print(f"     PT 번호 검색 범위: X[{bracket_pos[0]-2:.2f} ~ {bracket_pos[0]+10:.2f}], Y[{bracket_pos[1]-5:.2f} ~ {bracket_pos[1]+5:.2f}]")
+        print(f"     PT 번호 검색 범위: X[{bracket_pos[0]-5:.2f} ~ {bracket_pos[0]+20:.2f}], Y[{bracket_pos[1]-5:.2f} ~ {bracket_pos[1]+20:.2f}]")
         
-        # <> 텍스트 X좌표에서 -2mm ~ +10mm, Y좌표에서 ±5mm 범위 내에서 숫자 텍스트 찾기
+        # <> 텍스트 X좌표에서 -5mm ~ +20mm, Y좌표에서 -5mm ~ +20mm 범위 내에서 숫자 텍스트 찾기
         for entity in self.msp:
             if entity.dxftype() in ['TEXT', 'MTEXT']:
                 text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
@@ -141,9 +141,9 @@ class PipeLayerRenamer:
                     if 2 <= num_value <= 5:
                         pos = entity.dxf.insert
                         
-                        # 위치 확인: X는 <>에서 -2mm ~ +10mm 범위, Y는 ±5mm 범위
-                        x_in_range = (bracket_pos[0] - 2) <= pos[0] <= (bracket_pos[0] + 10)
-                        y_in_range = abs(pos[1] - bracket_pos[1]) <= 5
+                        # 위치 확인: X는 <>에서 -5mm ~ +20mm 범위, Y는 -5mm ~ +20mm 범위
+                        x_in_range = (bracket_pos[0] - 5) <= pos[0] <= (bracket_pos[0] + 20)
+                        y_in_range = (bracket_pos[1] - 5) <= pos[1] <= (bracket_pos[1] + 20)
                         
                         if x_in_range and y_in_range:
                             # 거리 계산
@@ -160,7 +160,8 @@ class PipeLayerRenamer:
                                     'entity': entity,
                                     'position': pos,
                                     'slope': slope,
-                                    'distance': distance
+                                    'distance': distance,
+                                    'bracket_pos': bracket_pos  # <> 텍스트 위치 추가
                                 })
                                 print(f"       → PT 배열에 있음!")
                             else:
@@ -197,6 +198,7 @@ class PipeLayerRenamer:
         pt_entity = pt_info['entity']
         pt_pos = pt_info['position']
         slope = pt_info['slope']
+        bracket_pos = pt_info.get('bracket_pos', pt_pos)  # <> 위치 가져오기
         
         # PT 번호에 해당하는 SIZE 찾기
         pt_index = None
@@ -214,8 +216,8 @@ class PipeLayerRenamer:
         print(f"     PT {pt_number}의 SIZE: {pipe_size}")
         
         if slope != 0:
-            # 기울기가 0이 아니면 3mm 내에서 PIPE 레이어 찾기
-            print(f"     기울기 ≠ 0: 3mm 반경 내에서 PIPE 레이어 검색...")
+            # 기울기가 0이 아니면 PT 위치에서 3mm 내에서 PIPE 레이어 찾기
+            print(f"     기울기 ≠ 0: PT 위치에서 3mm 반경 내에서 PIPE 레이어 검색...")
             pipe_entities = self.find_pipe_layer_entities_near_point(pt_pos, 3)
             
             if pipe_entities:
@@ -232,11 +234,12 @@ class PipeLayerRenamer:
             else:
                 print(f"     PIPE 레이어를 찾을 수 없음")
         else:
-            # 기울기가 0이면 G1 찾기
-            print(f"     기울기 = 0: 10mm 반경 내에서 G1 (2-3점 직선 폴리라인) 검색...")
+            # 기울기가 0이면 <> 텍스트 위치에서 G1 찾기
+            print(f"     기울기 = 0: <> 텍스트 위치에서 10mm 반경 내에서 G1 (2-3점 직선 폴리라인) 검색...")
+            print(f"     <> 텍스트 위치: ({bracket_pos[0]:.2f}, {bracket_pos[1]:.2f})")
             
             # 최대 2번 시도
-            max_attempts = 2
+            max_attempts = 1
             pipe_found = False
             exclude_entities = []
             
@@ -246,8 +249,8 @@ class PipeLayerRenamer:
                     
                 print(f"     G1 검색 시도 #{attempt+1}...")
                 
-                # 가장 가까운 G1 하나만 찾기
-                g1_polyline = self.find_nearest_polyline_near_point(pt_pos, 10, exclude_list=exclude_entities)
+                # <> 텍스트 위치에서 가장 가까운 G1 찾기
+                g1_polyline = self.find_nearest_polyline_near_point(bracket_pos, 15, exclude_list=exclude_entities)
                 
                 if not g1_polyline:
                     print(f"     G1 폴리라인을 찾을 수 없음 (곡선 폴리라인은 제외됨)")
@@ -833,6 +836,258 @@ class PipeLayerRenamer:
         # 점과 투영된 점 사이의 거리
         return self.distance_2d(point, projection)
     
+    def find_pipe_layer_polylines(self):
+        """PIPE 텍스트가 포함된 레이어를 가진 2점 폴리라인 찾기"""
+        pipe_polylines = []
+        
+        for entity in self.msp:
+            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
+                # 레이어 이름에 PIPE가 포함되어 있는지 확인
+                if 'PIPE' in entity.dxf.layer.upper():
+                    # 폴리라인의 점들 가져오기
+                    if entity.dxftype() == 'LWPOLYLINE':
+                        points = [(p[0], p[1]) for p in entity.get_points('xy')]
+                    else:
+                        points = []
+                        for vertex in entity.vertices:
+                            points.append((vertex.dxf.location.x, vertex.dxf.location.y))
+                    
+                    # 2점 폴리라인인지 확인
+                    if len(points) == 2:
+                        pipe_polylines.append((entity, points))
+        
+        return pipe_polylines
+    
+    def find_3way_intersections(self, pipe_polylines):
+        """3개의 폴리라인이 만나는 교차점 찾기"""
+        intersections = []
+        tolerance = 0.3  # 0.3mm 허용 오차
+        
+        # 모든 폴리라인의 끝점들을 수집
+        all_endpoints = []
+        for entity, points in pipe_polylines:
+            for point in points:
+                all_endpoints.append((point, entity))
+        
+        # 각 끝점에서 근처의 다른 끝점들을 찾기
+        for i, (point1, entity1) in enumerate(all_endpoints):
+            nearby_entities = set()
+            nearby_entities.add(entity1)
+            
+            for j, (point2, entity2) in enumerate(all_endpoints):
+                if i != j and self.distance_2d(point1, point2) <= tolerance:
+                    nearby_entities.add(entity2)
+            
+            # 정확히 3개의 서로 다른 폴리라인이 만나는 경우
+            if len(nearby_entities) == 3:
+                # 이미 찾은 교차점인지 확인
+                is_duplicate = False
+                for existing_intersection, _ in intersections:
+                    if self.distance_2d(point1, existing_intersection) <= tolerance:
+                        is_duplicate = True
+                        break
+                
+                if not is_duplicate:
+                    intersections.append((point1, list(nearby_entities)))
+        
+        return intersections
+    
+    def get_polyline_length(self, entity):
+        """폴리라인의 길이 계산"""
+        if entity.dxftype() == 'LWPOLYLINE':
+            points = [(p[0], p[1]) for p in entity.get_points('xy')]
+        else:
+            points = []
+            for vertex in entity.vertices:
+                points.append((vertex.dxf.location.x, vertex.dxf.location.y))
+        
+        if len(points) < 2:
+            return 0
+        
+        total_length = 0
+        for i in range(len(points) - 1):
+            total_length += self.distance_2d(points[i], points[i + 1])
+        
+        return total_length
+    
+    def find_pl2_polyline_near_point(self, point, radius=0.5):
+        """특정 점 근처의 PL2 레이어 폴리라인 찾기"""
+        for entity in self.msp:
+            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE'] and entity.dxf.layer == 'PL2':
+                # 폴리라인의 점들 가져오기
+                if entity.dxftype() == 'LWPOLYLINE':
+                    points = [(p[0], p[1]) for p in entity.get_points('xy')]
+                else:
+                    points = []
+                    for vertex in entity.vertices:
+                        points.append((vertex.dxf.location.x, vertex.dxf.location.y))
+                
+                # 각 점이 교차점 근처에 있는지 확인
+                for p in points:
+                    if self.distance_2d(point, p) <= radius:
+                        return entity, points
+        
+        return None, None
+    
+    def find_x_text_near_point(self, point, radius=20):
+        """특정 점 근처에서 'x'를 포함하는 텍스트 찾기"""
+        for entity in self.msp:
+            if entity.dxftype() in ['TEXT', 'MTEXT']:
+                text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
+                pos = entity.dxf.insert
+                
+                # 3D 좌표를 2D로 변환
+                if len(pos) > 2:
+                    pos = (pos[0], pos[1])
+                
+                if self.distance_2d(point, pos) <= radius and 'x' in text_content.lower():
+                    return entity, text_content
+        
+        return None, None
+    
+    def extract_numbers_from_x_text(self, text):
+        """'x'를 포함하는 텍스트에서 앞뒤 숫자 추출"""
+        # 소문자 x로 변환하여 처리
+        text = text.lower()
+        
+        if 'x' not in text:
+            return None, None
+        
+        # x를 기준으로 분리
+        parts = text.split('x')
+        
+        if len(parts) != 2:
+            return None, None
+        
+        # 앞부분에서 숫자 추출
+        t1 = None
+        for char in parts[0][::-1]:  # 뒤에서부터 검색
+            if char.isdigit():
+                if t1 is None:
+                    t1 = char
+                else:
+                    t1 = char + t1
+            elif t1 is not None:
+                break
+        
+        # 뒷부분에서 숫자 추출
+        t3 = None
+        for char in parts[1]:  # 앞에서부터 검색
+            if char.isdigit():
+                if t3 is None:
+                    t3 = char
+                else:
+                    t3 = t3 + char
+            elif t3 is not None:
+                break
+        
+        # 숫자로 변환
+        t1 = int(t1) if t1 else None
+        t3 = int(t3) if t3 else None
+        
+        return t1, t3
+    
+    def process_tee_connections(self):
+        """TEE 연결부 처리 - 3방향 교차점 찾기 및 레이어 변경"""
+        print("\n6. TEE 연결부 처리...")
+        
+        # PIPE 텍스트가 포함된 레이어의 2점 폴리라인 찾기
+        pipe_polylines = self.find_pipe_layer_polylines()
+        print(f"   PIPE 레이어의 2점 폴리라인: {len(pipe_polylines)}개")
+        
+        if not pipe_polylines:
+            print("   PIPE 레이어의 2점 폴리라인을 찾을 수 없음")
+            return
+        
+        # 3개의 폴리라인이 만나는 교차점 찾기
+        intersections = self.find_3way_intersections(pipe_polylines)
+        print(f"   3방향 교차점: {len(intersections)}개")
+        
+        for idx, (intersection_point, tee_entities) in enumerate(intersections):
+            print(f"\n   교차점 #{idx+1} at ({intersection_point[0]:.2f}, {intersection_point[1]:.2f})")
+            
+            # 3개의 폴리라인을 길이순으로 정렬
+            tee_lengths = []
+            for entity in tee_entities:
+                length = self.get_polyline_length(entity)
+                tee_lengths.append((entity, length))
+            
+            # 길이순으로 정렬 (내림차순)
+            tee_lengths.sort(key=lambda x: x[1], reverse=True)
+            
+            if len(tee_lengths) < 3:
+                print("     3개 미만의 폴리라인 - 건너뜀")
+                continue
+            
+            tee1_entity = tee_lengths[0][0]  # 가장 긴 것
+            tee2_entity = tee_lengths[1][0]  # 다음 긴 것
+            tee3_entity = tee_lengths[2][0]  # 가장 짧은 것
+            
+            print(f"     TEE1 길이: {tee_lengths[0][1]:.2f}mm")
+            print(f"     TEE2 길이: {tee_lengths[1][1]:.2f}mm")
+            print(f"     TEE3 길이: {tee_lengths[2][1]:.2f}mm")
+            
+            # 교차점에서 0.5mm 내의 PL2 레이어 폴리라인(G1) 찾기
+            g1_entity, g1_points = self.find_pl2_polyline_near_point(intersection_point, 0.5)
+            
+            if not g1_entity:
+                print("     PL2 레이어(G1)를 찾을 수 없음")
+                continue
+            
+            print(f"     G1(PL2) 폴리라인 찾음: {len(g1_points)}점")
+            
+            # G1의 교차점에서 먼 쪽 끝점 찾기
+            if len(g1_points) >= 2:
+                dist1 = self.distance_2d(intersection_point, g1_points[0])
+                dist2 = self.distance_2d(intersection_point, g1_points[-1])
+                far_point = g1_points[0] if dist1 > dist2 else g1_points[-1]
+                print(f"     G1의 먼 쪽 끝점: ({far_point[0]:.2f}, {far_point[1]:.2f})")
+                
+                # 먼 쪽 끝점에서 20mm 내의 'x' 포함 텍스트 찾기
+                x_entity, x_text = self.find_x_text_near_point(far_point, 20)
+                
+                if x_entity:
+                    print(f"     'x' 텍스트 찾음: '{x_text}'")
+                    
+                    # x 앞뒤의 숫자 추출
+                    t1, t3 = self.extract_numbers_from_x_text(x_text)
+                    
+                    if t1 is not None and t3 is not None:
+                        print(f"     T1 = {t1}, T3 = {t3}")
+                        
+                        # 레이어 이름 변경
+                        new_layer_tee1 = f"TEE_{t1}"
+                        new_layer_tee2 = f"TEE_{t1}"  # TEE2도 T1 사용
+                        new_layer_tee3 = f"TEE_{t3}"
+                        
+                        # 새 레이어가 없으면 생성
+                        if new_layer_tee1 not in self.doc.layers:
+                            self.doc.layers.new(name=new_layer_tee1)
+                        if new_layer_tee3 not in self.doc.layers:
+                            self.doc.layers.new(name=new_layer_tee3)
+                        
+                        # TEE1 레이어 변경
+                        tee1_entity.dxf.layer = new_layer_tee1
+                        tee1_entity.dxf.color = 2  # YELLOW
+                        print(f"     TEE1 레이어 변경: {new_layer_tee1}")
+                        
+                        # TEE2 레이어 변경
+                        tee2_entity.dxf.layer = new_layer_tee2
+                        tee2_entity.dxf.color = 2  # YELLOW
+                        print(f"     TEE2 레이어 변경: {new_layer_tee2}")
+                        
+                        # TEE3 레이어 변경
+                        tee3_entity.dxf.layer = new_layer_tee3
+                        tee3_entity.dxf.color = 2  # YELLOW
+                        print(f"     TEE3 레이어 변경: {new_layer_tee3}")
+                        
+                    else:
+                        print(f"     'x' 텍스트에서 숫자를 추출할 수 없음")
+                else:
+                    print(f"     'x' 포함 텍스트를 찾을 수 없음")
+            else:
+                print(f"     G1 폴리라인의 점이 부족함")
+    
     def reset_state(self):
         """각 파일 처리 전 상태 초기화"""
         self.doc = None
@@ -1012,8 +1267,11 @@ class PipeLayerRenamer:
                 print("   ERECTION MATERIALS 근처에서 <> 포함 텍스트를 찾을 수 없음")
                 print("   (검색 범위: X[0 ~ ERECTION MATERIALS X - 15mm])")
             
-            # 6. 파일 저장
-            output_filename = filename.replace('.dxf', '_PipeRenamed.dxf')
+            # 6. TEE 연결부 처리 (새로 추가된 기능)
+            self.process_tee_connections()
+            
+            # 7. 파일 저장
+            output_filename = filename.replace('.dxf', '_WDLA.dxf')
             self.doc.saveas(output_filename)
             print(f"\n처리 완료! 저장됨: {output_filename}")
             
@@ -1033,22 +1291,20 @@ def main():
     print("이 프로그램은 여러 개의 DXF 도면에서 파이프 정보를 추출하고")
     print("PIPE 레이어를 자동으로 PIPE_SIZE로 재명명합니다.")
     print("")
-    print("처리 순서:")
+    print("주요 기능:")
     print("1. FABRICATION/ERECTION MATERIALS에서 PT와 SIZE 정보 추출")
-    print("2. X 좌표 0부터 (MATERIALS X - 15mm)까지 범위에서 <> 포함 텍스트 찾기")
-    print("3. <> 텍스트 기준 X[-2mm ~ +10mm], Y[±5mm] 범위에서 가장 가까운 PT 번호 (2~5) 찾기")
-    print("4. PT 텍스트 기울기 확인:")
-    print("   - 기울기 ≠ 0: 3mm 내에서 PIPE 레이어 찾기")
-    print("   - 기울기 = 0: 가장 가까운 G1 폴리라인 찾기")
-    print("     → PIPE 찾으면 완료, 못 찾으면 다음 G1 시도 (최대 2번)")
-    print("5. 찾은 PIPE 레이어를 PIPE_SIZE로 변경하고 RED 색상 적용")
+    print("2. <> 텍스트 주변의 PT 번호를 기반으로 PIPE 레이어 검색")
+    print("3. PIPE 레이어를 PIPE_SIZE로 변경")
+    print("4. TEE 연결부 자동 처리 (새 기능)")
+    print("   - 3방향 교차점 검색")
+    print("   - 길이별로 TEE1, TEE2, TEE3 분류")
+    print("   - x 텍스트 기반으로 TEE_T1, TEE_T3 레이어 설정")
     print("")
-    print("제외 조건:")
-    print("- PT 번호가 1인 경우는 처리하지 않음")
-    print("- 곡선(bulge)이 있는 폴리라인은 G1에서 제외")
-    print("- <>와 PT 번호가 모두 있어야 처리 가능")
-    print("")
-    print("참고: 3D 좌표는 자동으로 2D로 변환하여 처리")
+    print("색상 표시:")
+    print("- RED: 수정된 PIPE 엔티티")
+    print("- GREEN: <> 포함 텍스트")
+    print("- CYAN: 선택된 PT 번호")
+    print("- YELLOW: TEE 연결부")
     print("="*60)
     
     root = tk.Tk()

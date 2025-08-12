@@ -7,10 +7,287 @@ import numpy as np
 from ezdxf.math import Vec3, intersection_line_line_2d
 from ezdxf.entities import Circle, Text, Line, Arc, LWPolyline, Polyline
 
+
+class A1LineFinder:
+    """A1 및 연속된 A1-1 라인을 찾는 클래스"""
+    
+    def __init__(self):
+        self.used_lines = set()  # 이미 사용된 라인 추적
+    
+    def distance_2d(self, p1, p2):
+        """두 점 사이의 거리 계산"""
+        return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+    
+    def get_line_angle(self, start, end):
+        """라인의 각도를 계산 (0~360도)"""
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        
+        # 라디안을 도로 변환
+        angle = math.atan2(dy, dx) * 180 / math.pi
+        
+        # 0~360도로 정규화
+        if angle < 0:
+            angle += 360
+            
+        return angle
+    
+    def check_welds_at_ap2(self, msp, ap2):
+        """AP2에서 WELDS 원이 있는지 확인"""
+        for entity in msp:
+            if entity.dxftype() == 'CIRCLE' and entity.dxf.layer == 'WELDS':
+                if 0.4 <= entity.dxf.radius <= 1.2:
+                    dist_to_ap2 = self.distance_2d(ap2, entity.dxf.center)
+                    if dist_to_ap2 <= 2.0:
+                        return True
+        return False
+    
+    def find_a1_from_wdc(self, msp, wdc_center, max_distance=3.0):
+        """
+        WDC 원 중심에서 가장 가까운 A1 라인과 연속된 라인들을 찾아 하나로 병합
+        
+        Returns:
+        - (merged_a1_line, ap1, ap2) 튜플
+        """
+        
+        # A1 후보들 수집
+        candidates = []
+        
+        for entity in msp:
+            if entity.dxftype() == 'LINE' and entity.dxf.layer == 'ISOTEXT':
+                # 이미 사용된 라인 제외
+                if entity in self.used_lines:
+                    continue
+                    
+                start = entity.dxf.start
+                end = entity.dxf.end
+                
+                # WDC 중심과 라인 양끝점 사이의 거리
+                dist_start = self.distance_2d(wdc_center, start)
+                dist_end = self.distance_2d(wdc_center, end)
+                
+                # 더 가까운 점 찾기
+                if dist_start < dist_end:
+                    if dist_start <= max_distance:
+                        line_length = self.distance_2d(start, end)
+                        candidates.append({
+                            'line': entity,
+                            'ap1': start,
+                            'ap2': end,
+                            'distance': dist_start,
+                            'length': line_length
+                        })
+                else:
+                    if dist_end <= max_distance:
+                        line_length = self.distance_2d(start, end)
+                        candidates.append({
+                            'line': entity,
+                            'ap1': end,
+                            'ap2': start,
+                            'distance': dist_end,
+                            'length': line_length
+                        })
+        
+        if not candidates:
+            return None, None, None
+        
+        # 단일 후보인 경우
+        if len(candidates) == 1:
+            selected = candidates[0]
+        else:
+            # 여러 후보가 있는 경우 - WELDS 원 확인
+            candidates_with_welds = []
+            candidates_without_welds = []
+            
+            for candidate in candidates:
+                ap2 = candidate['ap2']
+                has_welds = False
+                
+                # AP2에서 2mm 이내의 WELDS 원 찾기
+                for entity in msp:
+                    if entity.dxftype() == 'CIRCLE' and entity.dxf.layer == 'WELDS':
+                        if 0.4 <= entity.dxf.radius <= 1.2:
+                            dist_to_ap2 = self.distance_2d(ap2, entity.dxf.center)
+                            if dist_to_ap2 <= 2.0:
+                                has_welds = True
+                                break
+                
+                if has_welds:
+                    candidates_with_welds.append(candidate)
+                else:
+                    candidates_without_welds.append(candidate)
+            
+            # 선택 우선순위
+            if len(candidates_with_welds) == 1:
+                selected = candidates_with_welds[0]
+            elif len(candidates_with_welds) > 1:
+                selected = min(candidates_with_welds, key=lambda x: x['length'])
+            elif candidates_without_welds:
+                selected = min(candidates_without_welds, key=lambda x: x['distance'])
+            else:
+                return None, None, None
+        
+        # 선택된 A1 라인
+        first_line = selected['line']
+        self.used_lines.add(first_line)
+        
+        # AP2에 WELDS 원이 있는지 확인
+        has_welds_at_ap2 = self.check_welds_at_ap2(msp, selected['ap2'])
+        
+        if has_welds_at_ap2:
+            # WELDS 원이 있으면 연속 라인 찾기를 하지 않음
+            print("  → AP2에 WELDS 원이 있어 연속 라인 찾기 제외")
+            first_line.dxf.layer = 'A1'
+            return first_line, selected['ap1'], selected['ap2']
+        else:
+            # WELDS 원이 없으면 연속된 라인들 찾기
+            continuous_lines = self.find_continuous_lines(msp, first_line)
+            
+            # 찾은 모든 라인들을 used_lines에 추가
+            for line in continuous_lines:
+                self.used_lines.add(line)
+            
+            # 병합할 라인들 (첫 번째 라인 + 연속된 라인들)
+            all_lines = [first_line] + continuous_lines
+            
+            if len(all_lines) == 1:
+                # 연속된 라인이 없는 경우, 원래 라인을 A1으로 변경
+                first_line.dxf.layer = 'A1'
+                return first_line, selected['ap1'], selected['ap2']
+            else:
+                # 여러 라인을 하나로 병합
+                print(f"  → {len(all_lines)}개의 연속된 라인을 하나의 A1으로 병합")
+                
+                # 모든 라인의 시작점과 끝점 수집
+                all_points = []
+                for line in all_lines:
+                    all_points.append(line.dxf.start)
+                    all_points.append(line.dxf.end)
+                
+                # 가장 먼 두 점 찾기
+                max_distance = 0
+                merged_start = None
+                merged_end = None
+                
+                for i, p1 in enumerate(all_points):
+                    for j, p2 in enumerate(all_points):
+                        if i < j:
+                            dist = self.distance_2d(p1, p2)
+                            if dist > max_distance:
+                                max_distance = dist
+                                merged_start = p1
+                                merged_end = p2
+                
+                # 새로운 병합된 라인 생성
+                merged_line = msp.add_line(merged_start, merged_end)
+                merged_line.dxf.layer = 'A1'
+                
+                # 기존 라인들 삭제
+                for line in all_lines:
+                    msp.delete_entity(line)
+                
+                # AP1과 AP2 결정 (WDC에 가까운 점이 AP1)
+                dist_start = self.distance_2d(wdc_center, merged_start)
+                dist_end = self.distance_2d(wdc_center, merged_end)
+                
+                if dist_start < dist_end:
+                    return merged_line, merged_start, merged_end
+                else:
+                    return merged_line, merged_end, merged_start
+    
+    def find_continuous_lines(self, msp, base_line, max_distance=8.0, angle_tolerance=1.0):
+        """기준 라인과 연속된 라인들을 찾기"""
+        continuous_lines = []
+        
+        # 기준 라인의 각도 계산
+        base_start = base_line.dxf.start
+        base_end = base_line.dxf.end
+        base_angle = self.get_line_angle(base_start, base_end)
+        
+        # 방문한 라인 추적
+        visited = set([base_line])
+        
+        # 재귀적으로 연속된 라인 찾기
+        self._find_continuous_from_endpoints(
+            msp, base_line, base_angle, max_distance, 
+            angle_tolerance, continuous_lines, visited
+        )
+        
+        return continuous_lines
+    
+    def _find_continuous_from_endpoints(self, msp, current_line, base_angle, max_distance, 
+                                      angle_tolerance, continuous_lines, visited):
+        """현재 라인의 양 끝점에서 연속된 라인 찾기 (재귀)"""
+        current_start = current_line.dxf.start
+        current_end = current_line.dxf.end
+        
+        for entity in msp:
+            if entity.dxftype() == 'LINE' and entity.dxf.layer == 'ISOTEXT':
+                # 이미 방문했거나 사용된 라인은 제외
+                if entity in visited or entity in self.used_lines:
+                    continue
+                
+                line_start = entity.dxf.start
+                line_end = entity.dxf.end
+                
+                # 현재 라인의 끝점과 다음 라인의 시작점/끝점 사이 거리 확인
+                connections = [
+                    (current_end, line_start),
+                    (current_end, line_end),
+                    (current_start, line_start),
+                    (current_start, line_end)
+                ]
+                
+                for point1, point2 in connections:
+                    dist = self.distance_2d(point1, point2)
+                    if dist <= max_distance:
+                        # 다음 라인 자체의 각도 확인
+                        line_angle = self.get_line_angle(line_start, line_end)
+                        
+                        # 각도 차이 계산 (0-180도 사이로 정규화)
+                        angle_diff = abs(line_angle - base_angle)
+                        if angle_diff > 180:
+                            angle_diff = 360 - angle_diff
+                        
+                        # 반대 방향(180도 차이)도 같은 기울기로 간주
+                        if angle_diff > 90:
+                            angle_diff = 180 - angle_diff
+                        
+                        if angle_diff <= angle_tolerance:
+                            # 연결점 사이의 가상선 각도 확인 (일직선상에 있는지)
+                            if dist > 0.001:  # 거의 같은 점이 아닌 경우
+                                connection_angle = self.get_line_angle(point1, point2)
+                                
+                                # 연결선 각도와 base_angle 차이 계산
+                                connection_angle_diff = abs(connection_angle - base_angle)
+                                if connection_angle_diff > 180:
+                                    connection_angle_diff = 360 - connection_angle_diff
+                                
+                                # 반대 방향도 같은 기울기로 간주
+                                if connection_angle_diff > 90:
+                                    connection_angle_diff = 180 - connection_angle_diff
+                                
+                                # 연결선도 같은 기울기여야 함 (일직선상)
+                                if connection_angle_diff > angle_tolerance:
+                                    continue
+                            
+                            # 모든 조건을 만족하면 연속된 라인으로 추가
+                            continuous_lines.append(entity)
+                            visited.add(entity)
+                            
+                            # 재귀적으로 이 라인에서 또 연속된 라인 찾기
+                            self._find_continuous_from_endpoints(
+                                msp, entity, base_angle, max_distance, 
+                                angle_tolerance, continuous_lines, visited
+                            )
+                            break
+
+
 class DXFProcessor:
     def __init__(self):
         self.root = tk.Tk()
         self.root.withdraw()
+        self.a1_finder = A1LineFinder()  # A1 찾기 객체 생성
         
     def open_files(self):
         """DXF 파일 선택 대화상자 열기"""
@@ -146,8 +423,8 @@ class DXFProcessor:
             # 자기 자신의 WDT는 제외
             if entity == wdt_text:
                 continue
-            # WL, WELDS 레이어는 제외
-            if entity.dxf.layer in ['WL', 'WL1']:
+            # WL, WELDS, A1 레이어는 제외
+            if entity.dxf.layer in ['WL', 'WL1', 'A1']:
                 continue
             # WELDS 레이어의 선은 제외
             if entity.dxftype() == 'LINE' and entity.dxf.layer == 'WELDS':
@@ -209,73 +486,6 @@ class DXFProcessor:
                     return True
                     
         return False
-        """WD(WDC+WDT) 전체의 간섭 체크"""
-        check_radius = wdc_radius + 0.1  # WCHK (변경: 1.0 -> 0.1)
-        
-        # WDT 박스 corners 계산
-        text_box_corners = None
-        if wdt_text:
-            text_box_corners, _ = self.create_text_box(wdt_text)
-        
-        for entity in msp:
-            # 제외 대상 확인
-            if entity in exclude_entities:
-                continue
-            if entity.dxf.layer in ['WDC', 'WDT', 'A1', 'WEDLS']:
-                continue
-            
-            # 간섭 체크 범위 제한 (WD + A1 길이)
-            if check_boundary is not None:
-                # 객체의 대략적인 위치로 범위 확인
-                entity_approx_pos = None
-                entity_approx_radius = 0
-                
-                if entity.dxftype() == 'CIRCLE':
-                    entity_approx_pos = entity.dxf.center
-                    entity_approx_radius = entity.dxf.radius
-                elif entity.dxftype() == 'LINE':
-                    # 선의 중점 사용
-                    start = entity.dxf.start
-                    end = entity.dxf.end
-                    entity_approx_pos = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
-                    # 선의 길이의 절반을 반지름으로 사용
-                    entity_approx_radius = self.distance_2d(start, end) / 2
-                elif entity.dxftype() == 'TEXT':
-                    entity_approx_pos = entity.dxf.insert
-                    entity_approx_radius = entity.dxf.height * 2  # 대략적인 텍스트 크기
-                
-                if entity_approx_pos:
-                    dist_to_entity = self.distance_2d(wdc_center, entity_approx_pos)
-                    if dist_to_entity > check_boundary + entity_approx_radius:
-                        continue  # 범위 밖이면 스킵
-                
-            # WDC 원과의 간섭 체크
-            if entity.dxftype() == 'CIRCLE':
-                center = entity.dxf.center
-                radius = entity.dxf.radius
-                distance = self.distance_2d(wdc_center, center)
-                if distance < check_radius + radius:
-                    return True
-                    
-            elif entity.dxftype() == 'LINE':
-                start = entity.dxf.start
-                end = entity.dxf.end
-                dist, _ = self.point_to_line_distance(wdc_center, start, end)
-                if dist < check_radius:
-                    return True
-                    
-            # WDT 텍스트 박스와의 간섭 체크
-            if text_box_corners:
-                for corner in text_box_corners:
-                    if entity.dxftype() == 'CIRCLE':
-                        if self.distance_2d(corner, entity.dxf.center) < entity.dxf.radius:
-                            return True
-                    elif entity.dxftype() == 'LINE':
-                        dist, _ = self.point_to_line_distance(corner, entity.dxf.start, entity.dxf.end)
-                        if dist < 0.5:  # 작은 여유 공간
-                            return True
-                    
-        return False
     
     def get_iso_perpendicular_angle(self, line_start, line_end):
         """ISO 도면에서 선분에 대한 직교 각도 계산"""
@@ -322,84 +532,6 @@ class DXFProcessor:
         # 원래 위치로 이동
         return (new_x + center[0], new_y + center[1], point[2])
     
-    def check_interference_with_text_boxes(self, msp, wdc_center, wdc_radius, wdt_text, exclude_layers, check_boundary=None):
-        """모든 텍스트를 BOX화하여 간섭 체크"""
-        check_radius = wdc_radius + 0.1  # WCHK
-        
-        # WDT 박스 corners 계산
-        wdt_box_corners = None
-        if wdt_text:
-            wdt_box_corners, _ = self.create_text_box(wdt_text)
-        
-        for entity in msp:
-            # 제외 레이어 확인
-            if entity.dxf.layer in exclude_layers:
-                continue
-            
-            # WELDS 레이어의 선은 제외
-            if entity.dxftype() == 'LINE' and entity.dxf.layer == 'WELDS':
-                continue
-            
-            # 간섭 체크 범위 제한 (WD + A1 길이)
-            if check_boundary is not None:
-                # 객체의 대략적인 위치로 범위 확인
-                entity_approx_pos = None
-                entity_approx_radius = 0
-                
-                if entity.dxftype() == 'CIRCLE':
-                    entity_approx_pos = entity.dxf.center
-                    entity_approx_radius = entity.dxf.radius
-                elif entity.dxftype() == 'LINE':
-                    # 선의 중점 사용
-                    start = entity.dxf.start
-                    end = entity.dxf.end
-                    entity_approx_pos = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
-                    # 선의 길이의 절반을 반지름으로 사용
-                    entity_approx_radius = self.distance_2d(start, end) / 2
-                elif entity.dxftype() == 'TEXT':
-                    entity_approx_pos = entity.dxf.insert
-                    entity_approx_radius = entity.dxf.height * 2  # 대략적인 텍스트 크기
-                elif entity.dxftype() == 'ARC':
-                    entity_approx_pos = entity.dxf.center
-                    entity_approx_radius = entity.dxf.radius
-                
-                if entity_approx_pos:
-                    dist_to_entity = self.distance_2d(wdc_center, entity_approx_pos)
-                    if dist_to_entity > check_boundary + entity_approx_radius:
-                        continue  # 범위 밖이면 스킵
-                
-            # 텍스트인 경우 BOX화하여 체크
-            if entity.dxftype() == 'TEXT':
-                text_box_corners, _ = self.create_text_box(entity)
-                if text_box_corners:
-                    # WDC와 텍스트 박스의 간섭 체크
-                    for corner in text_box_corners:
-                        if self.distance_2d(corner, wdc_center) < check_radius:
-                            return True
-                    
-                    # WDT 박스와 다른 텍스트 박스의 간섭 체크
-                    if wdt_box_corners:
-                        for wdt_corner in wdt_box_corners:
-                            for text_corner in text_box_corners:
-                                if self.distance_2d(wdt_corner, text_corner) < 0.5:
-                                    return True
-                                    
-            elif entity.dxftype() == 'CIRCLE':
-                center = entity.dxf.center
-                radius = entity.dxf.radius
-                distance = self.distance_2d(wdc_center, center)
-                if distance < check_radius + radius:
-                    return True
-                    
-            elif entity.dxftype() == 'LINE':
-                start = entity.dxf.start
-                end = entity.dxf.end
-                dist, _ = self.point_to_line_distance(wdc_center, start, end)
-                if dist < check_radius:
-                    return True
-                    
-        return False
-    
     def find_ap2_from_wl_line(self, wl_line, wdc_center):
         """WL 라인에서 WDC 원 중심에서 먼 끝점을 AP2로 찾기"""
         if not wl_line:
@@ -416,6 +548,63 @@ class DXFProcessor:
             return start
         else:
             return end
+    
+    def process_welds_circles(self, msp):
+        """WELDS 레이어의 원들을 처리하는 메서드"""
+        welds_count = 0
+        welds_processed = 0
+        small_circles_created = 0
+        
+        print("\n=== WELDS 원 처리 시작 ===")
+        print("처리 조건: WELDS 레이어, 반지름 0.4~1.2mm")
+        
+        # WELDS 레이어의 모든 원 찾기
+        for entity in msp:
+            if entity.dxftype() == 'CIRCLE' and entity.dxf.layer == 'WELDS':
+                welds_count += 1
+                radius = entity.dxf.radius
+                
+                # 반지름이 0.4~1.2mm 범위인 경우만 처리
+                if 0.4 <= radius <= 1.2:
+                    welds_processed += 1
+                    
+                    # 색상을 YELLOW (6)로 변경
+                    entity.dxf.color = 6  # YELLOW
+                    
+                    # 원의 중심과 반지름 가져오기
+                    center = entity.dxf.center
+                    
+                    print(f"\nWELDS 원 {welds_processed} - 중심: ({center[0]:.2f}, {center[1]:.2f}), 반지름: {radius:.2f}mm")
+                    print(f"  → 색상을 YELLOW로 변경")
+                    
+                    # 0.2mm씩 작게 5개의 동심원 생성
+                    print(f"  → 동심원 5개 생성 (0.2mm씩 감소)")
+                    
+                    for i in range(1, 6):  # 1부터 5까지
+                        # 0.2mm씩 감소
+                        new_radius = radius - (0.2 * i)
+                        
+                        # 반지름이 0.1mm 이상인 경우만 생성
+                        if new_radius > 0.1:
+                            # 동심원 생성 (같은 중심)
+                            concentric_circle = msp.add_circle(center, new_radius)
+                            concentric_circle.dxf.layer = 'WELDS'
+                            concentric_circle.dxf.color = 6  # YELLOW
+                            
+                            small_circles_created += 1
+                            print(f"  → 동심원 {i} 생성 - 중심: ({center[0]:.2f}, {center[1]:.2f}), 반지름: {new_radius:.2f}mm")
+                        else:
+                            print(f"  → 동심원 {i} 스킵 - 반지름 {new_radius:.2f}mm (너무 작음)")
+                            break
+                else:
+                    print(f"\n[스킵] WELDS 원 - 반지름: {radius:.2f}mm (범위 벗어남)")
+        
+        print(f"\n=== WELDS 원 처리 완료 ===")
+        print(f"전체 WELDS 원: {welds_count}개")
+        print(f"처리된 WELDS 원 (0.4~1.2mm): {welds_processed}개")
+        print(f"생성된 동심원: {small_circles_created}개")
+        
+        return welds_processed, small_circles_created
     
     def second_stage_processing(self, doc, wdc_data_list):
         """2단계 처리: WL이 4mm 이상인 WD를 회전하여 최적 위치 찾기"""
@@ -632,92 +821,6 @@ class DXFProcessor:
                     return entity
         return None
     
-    def find_a1_line(self, msp, wdc_circle):
-        """WDC에서 3mm 내에 가장 가까운 ISOTEXT 선 찾기"""
-        center = wdc_circle.dxf.center
-        
-        # 모든 후보 A1 선들을 저장
-        a1_candidates = []
-        
-        for entity in msp:
-            if entity.dxftype() == 'LINE' and entity.dxf.layer == 'ISOTEXT':
-                start = entity.dxf.start
-                end = entity.dxf.end
-                
-                dist_start = self.distance_2d(center, start)
-                dist_end = self.distance_2d(center, end)
-                
-                # 더 가까운 점 찾기
-                if dist_start < dist_end:
-                    if dist_start <= 3.0:
-                        line_length = self.distance_2d(start, end)
-                        a1_candidates.append({
-                            'line': entity,
-                            'ap1': start,
-                            'ap2': end,
-                            'distance': dist_start,
-                            'length': line_length
-                        })
-                else:
-                    if dist_end <= 3.0:
-                        line_length = self.distance_2d(start, end)
-                        a1_candidates.append({
-                            'line': entity,
-                            'ap1': end,
-                            'ap2': start,
-                            'distance': dist_end,
-                            'length': line_length
-                        })
-        
-        if not a1_candidates:
-            return None, None, None
-        
-        # 단일 후보인 경우
-        if len(a1_candidates) == 1:
-            candidate = a1_candidates[0]
-            candidate['line'].dxf.layer = 'A1'
-            return candidate['line'], candidate['ap1'], candidate['ap2']
-        
-        # 여러 후보가 있는 경우
-        # 각 후보의 AP2 근처에 WELDS 원이 있는지 확인
-        candidates_with_welds = []
-        candidates_without_welds = []
-        
-        for candidate in a1_candidates:
-            ap2 = candidate['ap2']
-            has_welds = False
-            
-            # AP2에서 2mm 이내의 WELDS 원 찾기
-            for entity in msp:
-                if entity.dxftype() == 'CIRCLE' and entity.dxf.layer == 'WELDS':
-                    if entity.dxf.radius <= 2.0:  # 지름 2mm 이하 (반지름 1mm 이하)
-                        dist_to_ap2 = self.distance_2d(ap2, entity.dxf.center)
-                        if dist_to_ap2 <= 2.0:
-                            has_welds = True
-                            break
-            
-            if has_welds:
-                candidates_with_welds.append(candidate)
-            else:
-                candidates_without_welds.append(candidate)
-        
-        # 선택 우선순위
-        # 1. WELDS 원이 있는 후보가 하나만 있는 경우
-        if len(candidates_with_welds) == 1:
-            selected = candidates_with_welds[0]
-        # 2. WELDS 원이 있는 후보가 여러 개인 경우 - 길이가 짧은 것 선택
-        elif len(candidates_with_welds) > 1:
-            selected = min(candidates_with_welds, key=lambda x: x['length'])
-        # 3. WELDS 원이 있는 후보가 없는 경우 - 가장 가까운 것 선택
-        elif candidates_without_welds:
-            selected = min(candidates_without_welds, key=lambda x: x['distance'])
-        else:
-            return None, None, None
-        
-        # 선택된 A1 설정
-        selected['line'].dxf.layer = 'A1'
-        return selected['line'], selected['ap1'], selected['ap2']
-    
     def find_pipe_lines(self, msp, ap2):
         """AP2에서 가장 가까운 PIPE 이름을 포함하는 레이어의 선 찾기 (거리 제한 없음, 최대 2개)"""
         pipe_lines = []
@@ -789,8 +892,14 @@ class DXFProcessor:
             doc = ezdxf.readfile(file_path)
             msp = doc.modelspace()
             
+            # WELDS 원 처리 (첫 번째 단계로 추가)
+            welds_processed, small_circles_count = self.process_welds_circles(msp)
+            
             # 1. WDC 원 찾기
             wdc_circles = self.find_wdc_circles(msp)
+            
+            # 각 WDC에 대한 데이터 저장
+            wdc_data_collection = []
             
             for wdc in wdc_circles:
                 wdc_center = wdc.dxf.center
@@ -801,11 +910,14 @@ class DXFProcessor:
                 # 2. WDT 텍스트 찾기
                 wdt_text = self.find_wdt_text(msp, wdc)
                 
-                # 3. A1 선 찾기
-                a1_line, ap1, ap2 = self.find_a1_line(msp, wdc)
+                # 3. A1 및 연속된 라인들 찾기 (새로운 방식)
+                a1_line, ap1, ap2 = self.a1_finder.find_a1_from_wdc(msp, wdc_center)
                 
                 if not a1_line or not ap2:
+                    print(f"  → A1을 찾을 수 없음")
                     continue
+                
+                print(f"  → A1 찾음 (병합된 단일 라인)")
                 
                 # 4. PIPE 선 찾기
                 pipe_lines = self.find_pipe_lines(msp, ap2)
@@ -821,9 +933,6 @@ class DXFProcessor:
                     self.move_text_box_by_center(wdt_text, wdc_center)
                 
                 # 7. WD 이동 위치 계산
-                # WCHK = WD 원범위 + 0.1mm (간섭 체크 범위)
-                # 이동 조건: WDC 중심과 AP2의 거리가 'WDC 반지름 + 2.9mm'가 되는 지점으로 이동
-                # 즉, AP2에서 (WDC 반지름 + 2.9mm) 떨어진 위치가 새로운 WDC 중심
                 direction = np.array([wdc_center[0] - ap2[0], wdc_center[1] - ap2[1], 0])
                 direction_length = np.linalg.norm(direction[:2])
                 
@@ -902,10 +1011,10 @@ class DXFProcessor:
                             self.move_text_box_by_center(wdt_text, final_position)
                 
                 # 10. WL 선 생성 및 WDC 원 안 부분 TRIM
-                # WL: WDC 중심에서 AP2로 연결하되, WDC 원 안의 부분은 제거
-                
                 # 원과 선의 교점 찾기
                 intersections = self.get_circle_line_intersection(final_position, wdc_radius, final_position, ap2)
+                
+                wl_line = None  # WL 라인 초기화
                 
                 if intersections and len(intersections) > 0:
                     # 교점들 중 AP2에 가장 가까운 점 선택 (원을 나가는 점)
@@ -938,6 +1047,18 @@ class DXFProcessor:
                 # 11. A1 삭제
                 if a1_line:
                     msp.delete_entity(a1_line)
+                
+                # 데이터 저장 (2차 처리를 위해)
+                wdc_data_collection.append({
+                    'wdc': wdc,
+                    'wdt': wdt_text,
+                    'ap2': ap2,
+                    'pipe_lines': pipe_lines,
+                    'wl_line': wl_line,
+                    'st_position': st_position,
+                    'final_position': final_position,
+                    'a1_line': a1_line  # 병합된 A1 라인 저장
+                })
             
             # 12. 파일 저장 (1차 작업 완료)
             base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -946,7 +1067,7 @@ class DXFProcessor:
                 f"{base_name}_WDNO.DXF"
             )
             doc.saveas(output_path)
-            print(f"1차 처리 완료: {output_path}")
+            print(f"\n1차 처리 완료: {output_path}")
             
             # 13. 2차 처리를 위해 파일 다시 열기
             doc2 = ezdxf.readfile(output_path)
@@ -1029,27 +1150,7 @@ class DXFProcessor:
                         continue
                     
                     if ap2:
-                        # AP2 근처의 모든 레이어 확인 (디버깅용)
-                        print(f"  AP2 근처 3mm 내의 선 레이어 확인:")
-                        found_layers = set()
-                        pipe_layers = set()
-                        for line in msp2:
-                            if line.dxftype() == 'LINE':
-                                if self.distance_2d(ap2, line.dxf.start) <= 3.0 or self.distance_2d(ap2, line.dxf.end) <= 3.0:
-                                    found_layers.add(line.dxf.layer)
-                                    if 'PIPE' in line.dxf.layer.upper():
-                                        pipe_layers.add(line.dxf.layer)
-                        
-                        if found_layers:
-                            print(f"    발견된 레이어: {', '.join(sorted(found_layers))}")
-                        if pipe_layers:
-                            print(f"    PIPE 포함 레이어: {', '.join(sorted(pipe_layers))}")
-                        
                         # PIPE 찾기 - WL 라인의 끝점들에서 가장 가까운 PIPE 찾기 (거리 제한 없음)
-                        print(f"  WL 끝점에서 가장 가까운 PIPE 찾기:")
-                        print(f"    - WL 시작점: ({wl_line.dxf.start[0]:.2f}, {wl_line.dxf.start[1]:.2f})")
-                        print(f"    - WL 끝점: ({wl_line.dxf.end[0]:.2f}, {wl_line.dxf.end[1]:.2f})")
-                        
                         closest_pipe = None
                         closest_distance = float('inf')
                         closest_layer = None
@@ -1074,8 +1175,6 @@ class DXFProcessor:
                         if closest_pipe:
                             pipe1 = closest_pipe
                             print(f"  PIPE 찾음 (레이어: {closest_layer}, 거리: {closest_distance:.3f}mm)")
-                            print(f"    - PIPE 시작점: ({pipe1.dxf.start[0]:.2f}, {pipe1.dxf.start[1]:.2f})")
-                            print(f"    - PIPE 끝점: ({pipe1.dxf.end[0]:.2f}, {pipe1.dxf.end[1]:.2f})")
                         else:
                             print(f"  PIPE를 찾을 수 없음 (PIPE 레이어가 없음)")
                         

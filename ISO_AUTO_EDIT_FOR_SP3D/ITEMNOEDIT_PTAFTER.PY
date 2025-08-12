@@ -159,7 +159,7 @@ def process_dxf(file_path):
                 start = e.dxf.start
                 end = e.dxf.end
                 length = distance(Vec2(start.x, start.y), Vec2(end.x, end.y))
-                if 2.8 <= length <= 4.2:
+                if 2.8 <= length <= 4.5:
                    line_st2s.append(e)
 
         # ITNO 조건: 셋 다 있을 때만!

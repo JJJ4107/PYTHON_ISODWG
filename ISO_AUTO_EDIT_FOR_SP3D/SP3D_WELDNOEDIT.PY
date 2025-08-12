@@ -929,6 +929,64 @@ def rotate_entity_around_point(entity, center, angle):
     except Exception as e:
         print(f"엔티티 회전 오류: {e}")
 
+def delete_isotext_entities(msp, wd_group):
+    """WD 그룹과 관련된 ISOTEXT 레이어의 엔티티들을 삭제"""
+    deleted_count = 0
+    
+    try:
+        # 삭제할 엔티티 목록
+        entities_to_delete = []
+        
+        # WDC 원 중심 찾기
+        wdc_center = None
+        for entity in wd_group['entities']:
+            if entity.dxftype() == 'CIRCLE' and 1.5 <= entity.dxf.radius <= 3.2:
+                wdc_center = Vec2(entity.dxf.center.x, entity.dxf.center.y)
+                break
+        
+        if not wdc_center:
+            return deleted_count
+        
+        # ISOTEXT 레이어의 엔티티들 중 WDC 근처(10mm 이내)의 엔티티 찾기
+        for entity in msp:
+            if hasattr(entity.dxf, 'layer') and entity.dxf.layer == 'ISOTEXT':
+                # 엔티티가 이미 WD 그룹에 포함되어 있으면 건너뛰기
+                if entity in wd_group['entities']:
+                    continue
+                
+                # 엔티티와 WDC 중심 사이의 거리 계산
+                entity_pos = None
+                if entity.dxftype() == 'CIRCLE':
+                    entity_pos = Vec2(entity.dxf.center.x, entity.dxf.center.y)
+                elif entity.dxftype() in ('TEXT', 'MTEXT'):
+                    entity_pos = Vec2(entity.dxf.insert.x, entity.dxf.insert.y)
+                elif entity.dxftype() == 'LINE':
+                    start = Vec2(entity.dxf.start.x, entity.dxf.start.y)
+                    end = Vec2(entity.dxf.end.x, entity.dxf.end.y)
+                    # 선분의 한 끝점이라도 WDC 근처에 있으면 삭제
+                    if distance(start, wdc_center) <= 10.0 or distance(end, wdc_center) <= 10.0:
+                        entities_to_delete.append(entity)
+                        continue
+                
+                if entity_pos and distance(entity_pos, wdc_center) <= 10.0:
+                    entities_to_delete.append(entity)
+        
+        # 엔티티 삭제
+        for entity in entities_to_delete:
+            try:
+                msp.delete_entity(entity)
+                deleted_count += 1
+            except Exception as e:
+                print(f"   ❗ ISOTEXT 엔티티 삭제 오류: {e}")
+        
+        if deleted_count > 0:
+            print(f"   🗑️  ISOTEXT 레이어에서 {deleted_count}개 엔티티 삭제")
+    
+    except Exception as e:
+        print(f"   ❗ ISOTEXT 삭제 처리 오류: {e}")
+    
+    return deleted_count
+
 if __name__ == "__main__":
     # 디버깅을 위한 정보 출력
     import sys
@@ -1005,7 +1063,7 @@ if __name__ == "__main__":
         min_radius = 1.5  # 최소 반지름 (지름 3mm)
         max_radius = 3.2  # 최대 반지름 (지름 6.4mm)
         text_search_radius = 4.0
-        touch_tolerance = 1.0  # 원에 접하는 라인 찾기 위한 허용 오차
+        a1_search_radius = 3.0  # WDC 중심에서 A1 라인 찾기 위한 반경
         interference_check_radius = 25.0  # 간섭 체크 범위 (20mm → 25mm로 확대)
         
         # 사용된 WELDS 원 추적 리스트
@@ -1046,53 +1104,62 @@ if __name__ == "__main__":
             radius = wdc["radius"]
             texts = wdc["texts"]
             
-            # A1 찾기: WDC 원에 1mm 이내에 접하는 ISOTEXT 레이어의 LINE
+            # A1 찾기: WDC 중심에서 3mm 이내의 가장 가까운 ISOTEXT 레이어의 LINE
+            closest_line = None
+            closest_distance = float('inf')
+            closest_ap1 = None
+            closest_ap2 = None
+            
             for line in msp.query("LINE"):
                 if line.dxf.layer == "ISOTEXT":
                     start = Vec2(line.dxf.start.x, line.dxf.start.y)
                     end = Vec2(line.dxf.end.x, line.dxf.end.y)
                     
-                    # 선분과 원 중심까지의 최소 거리 계산
-                    min_dist = point_to_segment_distance(center, start, end)
+                    # 각 끝점과 원 중심까지의 거리 계산
+                    dist_start = distance(start, center)
+                    dist_end = distance(end, center)
                     
-                    # 원에 접하는지 확인 (반지름 ± 허용오차)
-                    if abs(min_dist - radius) <= touch_tolerance:
-                        line.dxf.color = 7  # 흰색
-                        
-                        # AP1 (원과 가까운 점), AP2 (먼 점) 결정
-                        dist_start = distance(start, center)
-                        dist_end = distance(end, center)
-                        
-                        if dist_start < dist_end:
-                            ap1, ap2 = start, end
-                        else:
-                            ap1, ap2 = end, start
-                        
-                        # A1의 기울기 계산
-                        angle = get_line_angle(ap1, ap2)
-                        
-                        # WD = WDC + WDT
-                        wd_entities = [circle] + texts
-                        
-                        # AP2를 임시 WELDS 위치로 저장 (나중에 실제 WELDS를 찾을 때까지)
-                        # A1 라인 삭제
-                        try:
-                            msp.delete_entity(line)
-                        except Exception as ex:
-                            print(f"❗ A1 라인 삭제 오류: {ex}")
-                        
-                        # WD 그룹 저장 (회전에 사용) - 이동은 나중에 WELDS를 찾은 후에 수행
-                        wd_groups.append({
-                            'wdc_circle': circle,
-                            'wdc_center': center,  # 원래 위치 저장
-                            'wdt_texts': texts,
-                            'entities': wd_entities,
-                            'ap2': ap2,  # AP2 위치 저장
-                            'a1_angle': angle,  # A1 라인의 각도 저장
-                            'radius': radius  # WDC 반지름 저장
-                        })
-                        
-                        break  # 하나의 라인만 처리
+                    # 더 가까운 점 찾기
+                    if dist_start < dist_end:
+                        if dist_start <= 3.0:  # WDC 중심에서 3mm 이내
+                            if dist_start < closest_distance:
+                                closest_distance = dist_start
+                                closest_line = line
+                                closest_ap1 = start
+                                closest_ap2 = end
+                    else:
+                        if dist_end <= 3.0:  # WDC 중심에서 3mm 이내
+                            if dist_end < closest_distance:
+                                closest_distance = dist_end
+                                closest_line = line
+                                closest_ap1 = end
+                                closest_ap2 = start
+            
+            if closest_line:
+                # 가장 가까운 라인을 A1으로 설정
+                closest_line.dxf.color = 7  # 흰색
+                
+                # A1의 기울기 계산
+                angle = get_line_angle(closest_ap1, closest_ap2)
+                
+                # WD = WDC + WDT
+                wd_entities = [circle] + texts
+                
+                # A1 라인은 나중에 삭제하기 위해 저장
+                # (WA가 성공적으로 생성된 경우에만 삭제)
+                
+                # WD 그룹 저장 (회전에 사용) - 이동은 나중에 WELDS를 찾은 후에 수행
+                wd_groups.append({
+                    'wdc_circle': circle,
+                    'wdc_center': center,  # 원래 위치 저장
+                    'wdt_texts': texts,
+                    'entities': wd_entities,
+                    'ap2': closest_ap2,  # AP2 위치 저장
+                    'a1_angle': angle,  # A1 라인의 각도 저장
+                    'radius': radius,  # WDC 반지름 저장
+                    'a1_line': closest_line,  # A1 라인 참조 저장 (나중에 삭제용)
+                    'wa_created': False  # WA 생성 여부 플래그
+                })
         
         print(f"✅ WD 그룹 생성: {len(wd_groups)}개")
         print(f"\n🔄 WD 회전 처리 시작 - 총 {len(wd_groups)}개 그룹")
@@ -1220,41 +1287,6 @@ if __name__ == "__main__":
                     # WDC 색상을 빨간색으로 변경
                     wdc_circle.dxf.color = 1  # RED
                     continue
-                
-                if not welds_circle:
-                    print(f"   ❌ 연결할 WELDS 원을 찾을 수 없음 - SKIP")
-                    continue
-                
-                print(f"   🔗 WELDS 원 발견: ({welds_center.x:.2f}, {welds_center.y:.2f})")
-                
-                # WD를 WELDS로부터 (WDC 반지름 + 2.8mm) 거리로 이동
-                # A1의 방향을 사용하여 초기 위치 설정
-                radius = wd_group['radius']
-                move_distance = radius + 2.8
-                
-                # WELDS에서 AP2 방향으로 이동
-                direction = ap2 - welds_center
-                if direction.magnitude > 0:
-                    direction_normalized = direction.normalize()
-                    new_wdc_center = welds_center + direction_normalized * move_distance
-                    
-                    # WD 엔티티들 이동
-                    move_vec = new_wdc_center - original_wdc_center
-                    
-                    # WDC 이동
-                    wdc_circle.dxf.center = (new_wdc_center.x, new_wdc_center.y, 0)
-                    
-                    # WDT 텍스트들 이동
-                    for txt in wd_group['wdt_texts']:
-                        pos = Vec2(txt.dxf.insert.x, txt.dxf.insert.y)
-                        new_pos = pos + move_vec
-                        txt.dxf.insert = (new_pos.x, new_pos.y, 0)
-                    
-                    # 이동된 WDC 중심 업데이트
-                    wdc_center = new_wdc_center
-                else:
-                    print(f"   ⚠️  방향 계산 오류 - 기존 위치 유지")
-                    wdc_center = original_wdc_center
                 
                 # WELDS 근처의 PIPE 선 찾기
                 pipe_lines = find_pipe_lines_near_sw(welds_center, msp, 5.0)
@@ -1516,10 +1548,24 @@ if __name__ == "__main__":
                         print(f"   ⚠️  최종 거리가 목표와 차이남: {abs(final_distance - move_distance):.2f}mm")
                         # WDC 색상을 주황색으로 변경
                         wdc_circle.dxf.color = 30  # ORANGE
+                    
+                    # WA 생성 성공 표시
+                    wd_group['wa_created'] = True
+                    print(f"   ✅ WD 회전 및 WA 재생성 완료")
+                    
+                    # WA가 성공적으로 생성되었으므로 A1 라인 삭제
+                    if 'a1_line' in wd_group and wd_group['a1_line']:
+                        try:
+                            msp.delete_entity(wd_group['a1_line'])
+                            print(f"   🗑️  A1 라인 삭제 완료")
+                        except Exception as del_e:
+                            print(f"   ❗ A1 라인 삭제 오류: {del_e}")
+                    
+                    # ISOTEXT 레이어의 관련 엔티티들 삭제
+                    delete_isotext_entities(msp, wd_group)
+                    
                 except Exception as trim_e:
                     print(f"   ❌ WA 라인 TRIM 오류: {trim_e}")
-                
-                print(f"   ✅ WD 회전 및 WA 재생성 완료")
                 
             except Exception as e:
                 print(f"❌ WD 처리 중 오류: {e}")
@@ -1531,8 +1577,10 @@ if __name__ == "__main__":
         print(f"📁 저장된 파일: {output_path}")
         
         # 처리 결과 요약
+        successful_wa_count = sum(1 for wd in wd_groups if wd.get('wa_created', False))
         print(f"\n📊 처리 결과 요약:")
         print(f"   - 전체 WD 그룹: {len(wd_groups)}개")
         print(f"   - 처리 실패: {failed_wd_count}개")
         print(f"   - 긴 WA 거리 (10mm 이상): {long_wa_count}개")
-        print(f"   - 성공적으로 처리: {len(wd_groups) - failed_wd_count}개")
+        print(f"   - WA 생성 성공: {successful_wa_count}개")
+        print(f"   - WA 생성 실패: {len(wd_groups) - successful_wa_count}개")
