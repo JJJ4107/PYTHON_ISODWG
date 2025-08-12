@@ -1,0 +1,994 @@
+<html>
+<head>
+<META http-equiv="Content-Type" content="text/html">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>간섭 보고서</title>
+<style>
+          body,table {
+          font-family: Calibri, Tahoma, Verdana, Arial, sans-serif;
+          }
+
+          softBreak{
+          mso-data-placement: same-cell;
+          }
+
+          tr.headerRow{
+          font-weight: bold;
+          }
+
+          table.titleTable tr.headerRow{
+          height: 75px;
+          }
+
+          table.titleTable td.headerCell{
+          font-size: 18pt;
+          vertical-align: middle;
+          }
+
+          table.titleTable td.logoCell{
+          padding: 5px 0px 0px 0px;
+          width: 180px;
+          vertical-align: middle;
+          }
+
+          table.testSummaryTable{
+          border: 3px solid black;
+          text-align: center;
+          background-color: #eeeeee;
+          border-collapse: collapse;
+          }
+
+          table.testSummaryTable tr.headerRow{
+          background: #eeeeee;
+          }
+
+          table.testSummaryTable td{
+          border-width: 1px;
+          border-style: solid;
+          border-color: #666666;
+          }
+
+          table.testSummaryTable td.testName{
+          font-size: 16pt;
+          font-weight: bold;
+          vertical-align: middle;
+          text-align: center;
+          }
+
+          table.mainTable{
+          border-collapse: collapse;
+          }
+
+          table.mainTable tr.contentRow{
+          height: 100px;
+          }
+
+          table.mainTable tr.childRow{
+          height: 100px;
+          }
+
+          table.mainTable tr.childRowLast{
+          height: 100px;
+          }
+
+          table.mainTable tr.clashGroupRow{
+          height: 100px;
+          font-weight: bold;
+          }
+
+          table.mainTable td{
+          vertical-align: middle;
+          border: 1px solid #999999;
+          }
+
+          table.mainTable td.mergedCellHeader{
+          text-align:center;
+          }
+
+          table.mainTable tr.clashGroupRow td{
+          font-weight: bold;
+          border-top: 5px solid #333333;
+          }
+
+          table.mainTable tr.childRow td, table.mainTable tr.childRowLast td{
+          color: #707070;
+          }
+
+          table.mainTable tr.childRow td.contentCell, table.mainTable tr.childRowLast td.contentCell{
+          background-color: #ffffee;
+          }
+
+          table.mainTable tr.childRowLast td{
+          border-bottom: 5px solid #333333;
+          }
+
+          table.mainTable td.clashGroupCell{
+          background: #ffff99;
+          }
+
+          table.mainTable td.item1HeaderGroup{
+          background-color: #99ccff;
+          text-align: center;
+          }
+
+          table.mainTable td.item2HeaderGroup{
+          background-color: #ffcccc;
+          text-align: center;
+          }
+
+          table.mainTable td.item1Header{
+          background-color: #99ccff;
+          }
+
+
+          table.mainTable td.item2Header{
+          background-color: #ffcccc;
+          }
+
+          table.mainTable td.generalHeader{
+          background-color: #eeeeee;
+          }
+
+
+          table.mainTable td.item1Content{
+          background-color: #ddeeff;
+          }
+
+          table.mainTable td.item2Content{
+          background-color: #ffeeee;
+          }
+
+          table.mainTable tr.clashGroupRow td.item1Content{
+          background-color: #bbddff;
+          }
+
+          table.mainTable tr.clashGroupRow td.item2Content{
+          background-color: #ffdddd;
+          }
+
+
+          span.hiddenText{
+          color: white;
+          height: 1px;
+          font-size: 5pt;
+          }
+        </style>
+</head>
+<body>
+<table class="titleTable">
+<tr class="headerRow">
+<td class="logoCell" colspan="3"><img alt="logo" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\logo.jpg"></td>
+<td class="headerCell" colspan="50">
+              간섭 보고서<br></td>
+<tr>
+<td></td>
+</tr>
+</tr>
+</table><br><table class="testSummaryTable">
+<tr class="headerRow">
+<td rowspan="2" colspan="2" class="testName">테스트 1</td>
+<td class="headerCell">공차</td>
+<td class="headerCell">간섭</td>
+<td class="headerCell">새로 만들기</td>
+<td class="headerCell">활성</td>
+<td class="headerCell">검토됨</td>
+<td class="headerCell">승인됨</td>
+<td class="headerCell">확인됨</td>
+<td class="headerCell">유형</td>
+<td class="headerCell">상태</td>
+</tr>
+<tr class="contentRow">
+<td class="contentCell">0.001m</td>
+<td class="contentCell">46</td>
+<td class="contentCell">46</td>
+<td class="contentCell">0</td>
+<td class="contentCell">0</td>
+<td class="contentCell">0</td>
+<td class="contentCell">0</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">확인</td>
+</tr>
+</table><br><table class="mainTable">
+<tr class="headerRow">
+<td colspan="11" class="generalHeader"></td>
+<td colspan="2" class="item1HeaderGroup">항목 1</td>
+<td colspan="2" class="item2HeaderGroup">항목 2</td>
+</tr>
+<tr class="headerRow">
+<td colspan="2" class="generalHeader">이미지</td>
+<td colspan="2" class="generalHeader">간섭 이름</td>
+<td class="generalHeader">상태</td>
+<td class="generalHeader">거리</td>
+<td class="generalHeader">설명</td>
+<td class="generalHeader">찾은 날짜</td>
+<td colspan="3" class="generalHeader">간섭 지점</td>
+<td class="item1Header">항목 이름</td>
+<td class="item1Header">항목 유형</td>
+<td class="item2Header">항목 이름</td>
+<td class="item2Header">항목 유형</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000001.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000001.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭1</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.907</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:715.194,
+          y:526.153,
+          z:35.200</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LCQ10-BR501-HB1N-DN200</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 23 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_35232</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000002.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000002.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭2</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.645</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:728.980,
+          y:544.894,
+          z:35.200</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAF40-BR001-DB1N-DN80</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 3 of SUBSTRUCTURE 2 of STRUCTURE /PP21_#1_PLATFORM_FL_35232</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000003.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000003.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭3</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.537</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.343,
+          y:532.515,
+          z:35.200</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11HAC30-BR004-DB2B-DN80</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_35232-ADD3</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000004.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000004.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭4</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.473</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:729.379,
+          y:546.796,
+          z:35.232</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAE10-BR001-BB1N-DN80</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 3 of SUBSTRUCTURE 2 of STRUCTURE /PP21_#1_PLATFORM_FL_35232</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000005.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000005.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭5</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.472</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:723.839,
+          y:527.844,
+          z:39.882</td>
+<td class="항목1컨텐츠">/11LBC20-BR002-GA1B-DN100/B2</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_39882-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000006.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000006.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭6</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.404</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:732.918,
+          y:527.047,
+          z:29.600</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LBA20-BR001-EB2B-DN200</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_29632</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000007.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000007.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭7</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.377</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.826,
+          y:537.964,
+          z:3.900</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LBA31-BR415-GB2N-DN300</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_3932-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000008.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000008.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭8</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.373</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.709,
+          y:524.266,
+          z:29.632</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB63-BR003-CB2B-DN80</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_29732_L_ADD</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000009.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000009.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭9</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.372</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.717,
+          y:533.639,
+          z:3.900</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LBA30-BR410-GB2B-DN300</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_3932-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000010.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000010.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭10</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.362</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:715.980,
+          y:533.289,
+          z:3.900</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB61-BR001-BB1N-DN300</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 8 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_3932</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000011.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000011.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭11</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.353</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:716.642,
+          y:524.869,
+          z:35.232</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB04-BR010-BB1B-DN150</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 22 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_35232</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000012.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000012.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭12</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.353</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:715.745,
+          y:524.884,
+          z:35.232</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB04-BR011-BB1B-DN150</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 6 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_35232</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000013.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000013.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭13</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.352</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:730.303,
+          y:540.567,
+          z:5.200</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11HHG01-BR005-HB6N-DN200</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 2 of SUBSTRUCTURE 2 of STRUCTURE /PP21_#1_PLATFORM_FL_5232R</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000014.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000014.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭14</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.331</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.663,
+          y:533.239,
+          z:29.600</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11HAC30-BR003-DB2N-DN80</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_29732_L_ADD</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000015.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000015.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭15</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.302</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:728.697,
+          y:529.238,
+          z:39.882</td>
+<td class="항목1컨텐츠">/11LBC20-BR003-GA1B-DN250/B2</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_39882-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000016.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000016.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭16</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.282</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:729.121,
+          y:528.530,
+          z:35.200</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB66-BR001-EB3B-DN250</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 11 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_35232</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000017.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000017.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭17</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.255</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:733.143,
+          y:532.525,
+          z:7.650</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LCB30-BR003-EB4N-DN150</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_8332-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000018.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000018.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭18</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.212</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.759,
+          y:523.509,
+          z:3.900</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LBA30-BR001-GB2B-DN350</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_3932-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000019.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000019.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭19</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.206</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:732.453,
+          y:520.160,
+          z:3.900</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LCA20-BR003-EB3B-DN250</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_3932-ADD2</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000020.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000020.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭20</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.205</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:732.757,
+          y:520.206,
+          z:29.600</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LCA20-BR002-EB3B-DN200</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_29632</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000021.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000021.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭21</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.189</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.680,
+          y:530.147,
+          z:29.600</td>
+<td class="항목1컨텐츠">BRANCH 2 of PIPE /11LAB64-BR001-DB1N-DN100</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_29732_L_ADD</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000022.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000022.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭22</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.169</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:733.254,
+          y:521.511,
+          z:7.682</td>
+<td class="항목1컨텐츠">/11LCB40-BR002-EB3B-DN150/B1</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_8332-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000023.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000023.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭23</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.150</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:715.952,
+          y:530.908,
+          z:29.600</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LCQ10-BR001-HB1N-DN50</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 7 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_29632L</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000024.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000024.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭24</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.147</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:715.144,
+          y:525.984,
+          z:36.932</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LCQ10-BR501-HB1N-DN200</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE /C63</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000025.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000025.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭25</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.105</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:723.649,
+          y:525.823,
+          z:39.850</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB66-BR002-EB3B-DN250</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_39882-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000026.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000026.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭26</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.105</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:723.649,
+          y:527.374,
+          z:39.850</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB66-BR001-EB3B-DN250</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">/PP21_#1_PLATFORM_FL_39882-ADD1</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000027.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000027.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭27</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.102</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:723.868,
+          y:528.236,
+          z:40.528</td>
+<td class="항목1컨텐츠">ATTACHMENT 1 of BRANCH /11LBC20-BR002-GA1B-DN100/B2</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE /V71</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000028.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000028.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭28</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.100</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:723.851,
+          y:522.680,
+          z:42.200</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB66-BR005-GA2B-DN350</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 2 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_42232</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000029.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000029.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭29</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.098</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:723.811,
+          y:528.236,
+          z:40.636</td>
+<td class="항목1컨텐츠">/11LBC20-BR002-GA1B-DN100/B2</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE /V71</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000030.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000030.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭30</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.094</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:728.083,
+          y:542.376,
+          z:38.142</td>
+<td class="항목1컨텐츠">/11LBB10-AA192</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">SCTN 79 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL38182</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000031.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000031.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭31</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.083</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:728.083,
+          y:542.314,
+          z:38.150</td>
+<td class="항목1컨텐츠">/11LBB10-AA192</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">BOX 3 of SUBSTRUCTURE 1 of STRUCTURE /PP21_#1_PLATFORM_FL_38182</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000032.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000032.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭32</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.046</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:736.580,
+          y:523.225,
+          z:1.295</td>
+<td class="항목1컨텐츠">/11LCB10-AA002</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE /C11</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000033.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000033.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭33</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.037</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.678,
+          y:533.549,
+          z:3.750</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LBA30-BR410-GB2B-DN300</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">SCTN 27 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL3932R</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000034.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000034.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭34</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.031</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:726.445,
+          y:542.784,
+          z:38.150</td>
+<td class="항목1컨텐츠">BRANCH 2 of PIPE /11LBB10-BR192-GA1N-DN200</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">SCTN 45 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL38182</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000035.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000035.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭35</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.029</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:731.131,
+          y:529.032,
+          z:23.267</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LBA20-BR001-EB2B-DN200</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 2 of SUBSTRUCTURE 1 of STRUCTURE 14 of ZONE /PP12_#1_LADDER_ZONE</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000036.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000036.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭36</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.025</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:715.941,
+          y:533.603,
+          z:3.900</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAB61-BR001-BB1N-DN300</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">SCTN 9 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL3932R</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000037.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000037.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭37</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.022</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:726.390,
+          y:542.896,
+          z:38.128</td>
+<td class="항목1컨텐츠">ATTACHMENT 2 of BRANCH 2 of PIPE /11LBB10-BR192-GA1N-DN200</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">SCTN 45 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL38182</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000038.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000038.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭38</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.019</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:727.734,
+          y:542.431,
+          z:38.067</td>
+<td class="항목1컨텐츠">/11LBB10-AA192</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">SCTN 48 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL38182</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000039.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000039.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭39</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.019</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:726.406,
+          y:542.786,
+          z:38.012</td>
+<td class="항목1컨텐츠">ELBOW 1 of BRANCH 2 of PIPE /11LBB10-BR192-GA1N-DN200</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">SCTN 45 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL38182</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000040.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000040.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭40</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.018</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:713.703,
+          y:523.235,
+          z:3.750</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LBA30-BR001-GB2B-DN350</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">SCTN 3 of FRMWORK 2 of STRUCTURE /PP12_#1_PF_STRU_FL3932R</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000041.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000041.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭41</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.017</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:715.929,
+          y:541.306,
+          z:28.532</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAF40-BR001-DB1N-DN80</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE /C43</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000042.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000042.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭42</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.013</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:715.936,
+          y:541.394,
+          z:28.532</td>
+<td class="항목1컨텐츠">BRANCH 1 of PIPE /11LAF40-BR001-DB1N-DN80</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE /C42</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000043.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000043.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭43</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.012</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:726.443,
+          y:543.187,
+          z:38.150</td>
+<td class="항목1컨텐츠">PCOMPONENT 1 of BRANCH 1 of PIPE /11LBB10-BR191-GA1N-DN450</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">SCTN 45 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL38182</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000044.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000044.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭44</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.009</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:728.152,
+          y:542.183,
+          z:38.138</td>
+<td class="항목1컨텐츠">/11LBB10-AA192</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">SCTN 85 of FRMWORK 1 of STRUCTURE /PP12_#1_PF_STRU_FL38182</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000045.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000045.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭45</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.002</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:723.783,
+          y:528.536,
+          z:40.742</td>
+<td class="항목1컨텐츠">/11LBC20-BR002-DA6B-DN100/B1</td>
+<td class="항목1컨텐츠">원통</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE /V71</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+<tr class="contentRow">
+<td colspan="2" class="contentCell"><a target="_blank" href="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000046.jpg "><img border="0" width="95" height="95" src="%ED%85%8C%EC%8A%A4%ED%8A%B8 1_files\cd000046.jpg"></a></td>
+<td colspan="2" class="contentCell">간섭46</td>
+<td class="contentCell">새로 만들기</td>
+<td class="contentCell">-0.002</td>
+<td class="contentCell">하드</td>
+<td class="contentCell">2025/6/17 
+      14:16</td>
+<td colspan="3" class="contentCell">
+          x:723.831,
+          y:528.536,
+          z:40.734</td>
+<td class="항목1컨텐츠">WELD 1 of BRANCH /11LBC20-BR002-DA6B-DN100/B1</td>
+<td class="항목1컨텐츠">그룹</td>
+<td class="항목2컨텐츠">BOX 1 of SUBSTRUCTURE /V71</td>
+<td class="항목2컨텐츠">그룹</td>
+</tr>
+</table>
+<hr><br></body>
+</html>

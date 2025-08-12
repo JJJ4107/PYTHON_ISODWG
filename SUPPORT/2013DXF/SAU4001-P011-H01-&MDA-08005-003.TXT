@@ -1,0 +1,9 @@
+NO.  QTY    DESCRIPTION                    SIZE                   LENGTH MAT'L            UNIT      TOTAL REMARK
+1    1      PIPE DUMMY                     150A                      112 A106-C              -        3.2 -
+2    1      DUMMY PLATE                    PL12x250x250                0 A36                 -        5.9 -
+3    4      GUIDE PLATE                    PL20x60x80                  0 A36               0.8        3.2 -
+4    1      H-BEAM                         H200x200x8x12            2090 A36                 -      101.9 -
+5    1      H-BEAM                         H150x150x7x10            2380 A36                 -       73.1 -
+6    2      STIFFNER PLATE                 SP-H200x200                 0 A36               0.8        1.6 -
+
+TOTAL WEIGHT(Kg) : 188.9

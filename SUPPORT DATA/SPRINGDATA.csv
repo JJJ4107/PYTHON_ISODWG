@@ -1,0 +1,17 @@
+﻿"CAESAR II 2018  Ver.10.00.00.7700,  (Build 170726)   Date: NOV 16, 2024   Time: 16:18"
+Job Name: TB_LB_09_BFP_SUCTION_LINE
+Licensed To: SPLM: Aceplant Co.Ltd
+
+ CAESAR II  HANGER REPORT (TABLE DATA FROM DESIGN RUNS)   
+
+                                                 THEORETICAL   ACTUAL
+            NUM   FIG.       VERTICAL    HOT      INSTALLED   INSTALLED    SPRING    HORIZONTAL
+   NODE     RQD   NO.  SIZE  MOVEMENT    LOAD       LOAD        LOAD        RATE     MOVEMENT
+
+----------+-----+-----+----+---(mm.)--+--(N. )--+---(N. )---+---(N. )---+-(N./mm. )-+--(mm.)---
+        70   2   B-268   15    -14.075    20980.      18318.          0.       189.1      6.115
+          ANVIL                                       LOAD  VARIATION =   15%
+       130   1   98      12    -40.596     9553.       7954.          0.        39.4      6.297
+          ANVIL                                       LOAD  VARIATION =   20%
+       150   1   98      11    -50.247     7740.       6244.          0.        29.8     10.313
+          ANVIL                                       LOAD  VARIATION =   24%

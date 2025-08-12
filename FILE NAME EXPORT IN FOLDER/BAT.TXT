@@ -1,0 +1,16 @@
+ //ACEPLANTSERVER2/Variable_PDMS_12.1_Project/custom12/Bat
+BHI_pdms_pshes34.bat
+DOOSAN_pdms_pshes34.bat
+DS21_pdms_pshes34.bat
+DYPNF_pdms_pshes34.bat
+EMCO_pdms_pshes34.bat
+HALLA_pdms_pshes34.bat
+HANJOONG_pdms_pshes34.bat
+HANLA_pdms_pshes34.bat
+HYUNDAI_pdms_pshes34.bat
+KANGWON_pdms_pshes34.bat
+KC_pdms_pshes34.bat
+MSENG_pdms_pshes34.bat
+NEW_BHI_pdms_pshes34.bat
+PANASIA_pdms_pshes34.bat
+STX_pdms_pshes34.bat

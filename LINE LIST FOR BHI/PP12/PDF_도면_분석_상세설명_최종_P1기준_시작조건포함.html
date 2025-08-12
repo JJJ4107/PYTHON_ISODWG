@@ -1,0 +1,169 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>PDF 도면 자동 분석 프로그램 상세 설명</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #f8f9fa;
+            margin: 0;
+            padding: 0;
+            color: #333;
+        }
+        .container {
+            max-width: 960px;
+            margin: auto;
+            padding: 40px;
+            background: #ffffff;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            border-bottom: 3px solid #555;
+            padding-bottom: 10px;
+            color: #2c3e50;
+        }
+        h2 {
+            margin-top: 40px;
+            color: #2c3e50;
+            border-left: 6px solid #888;
+            padding-left: 10px;
+        }
+        ul, ol {
+            margin-left: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        th, td {
+            border: 1px solid #999;
+            padding: 8px;
+            background-color: #fff;
+        }
+        th {
+            background-color: #f0f0f0;
+        }
+        code {
+            background-color: #eee;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>PDF 도면 자동 분석 프로그램 상세 설명</h1>
+
+    <h2>1. 프로그램 개요</h2>
+    <p>
+        이 프로그램은 P&ID 등의 도면을 PDF 파일 형식으로 받아, 도면에 포함된 특정 설계 식별자(<strong>LINE NO</strong>, <strong>VALVE NO</strong>, <strong>SPECIAL NO</strong>)를 자동으로 추출하고,
+        하이라이트와 함께 시각적으로 표시된 PDF를 생성하며, 중복된 항목을 따로 감지하고, 관련 데이터를 CSV로 정리하는 자동화 도구입니다.
+    </p>
+
+    <h2>2. 주요 기능</h2>
+    <ol>
+        <li><strong>PDF 파일 다중 선택:</strong> Tkinter GUI를 통해 사용자가 다수의 PDF 도면 파일을 선택할 수 있습니다.</li>
+        <li><strong>P1 텍스트 자동 인식:</strong> 도면 내 텍스트를 한 단어씩 스캔하여, 아래 조건을 만족하는 텍스트를 P1 항목으로 분류합니다.</li>
+    </ol>
+
+    <table>
+        <thead><tr><th>항목</th><th>인식 조건</th><th>예시</th></tr></thead>
+        <tbody>
+            <tr><td>LINE NO</td><td>"BR"과 "DN"이 모두 포함된 문자열</td><td>11HAC30-BR001-DN80</td></tr>
+            <tr><td>VALVE NO</td><td>AA로 시작하고 숫자 3~4자리 포함</td><td>AA1021</td></tr>
+            <tr><td>SPECIAL NO</td><td>AJ, BJ, AT로 시작하고 숫자 3~4자리 포함</td><td>BJ003, AT0201</td></tr>
+        </tbody>
+    </table>
+
+    <ol start="3">
+        <li><strong>OUT PDF 생성:</strong> 인식된 P1 텍스트를 녹색 반투명 박스로 하이라이트하여 저장합니다.<br>파일명: <code>OUT_파일명_날짜.PDF</code></li>
+        <li><strong>DUP PDF 생성:</strong> 중복된 항목을 시각적으로 구분하여 하이라이트합니다.</li>
+    </ol>
+
+    <table>
+        <thead><tr><th>중복 상태</th><th>색상</th><th>의미</th></tr></thead>
+        <tbody>
+            <tr><td>첫 번째 항목</td><td>파랑 (0, 0, 1)</td><td>정상 인식</td></tr>
+            <tr><td>두 번째 이상</td><td>빨강 (1, 0, 0)</td><td>중복 발생 경고</td></tr>
+        </tbody>
+    </table>
+
+    <ol start="5">
+        <li><strong>CSV 결과 저장:</strong> 각 항목별 결과를 정리한 CSV 4종을 자동 저장합니다.</li>
+    </ol>
+
+    <table>
+        <thead><tr><th>CSV 파일명</th><th>내용</th></tr></thead>
+        <tbody>
+            <tr><td>LINE_파일명_날짜.csv</td><td>LINE 항목 리스트 및 중복 여부</td></tr>
+            <tr><td>VALVE_파일명_날짜.csv</td><td>VALVE 항목 리스트 및 중복 여부</td></tr>
+            <tr><td>SPECIAL_파일명_날짜.csv</td><td>SPECIAL 항목 리스트 및 중복 여부</td></tr>
+            <tr><td>DUP_파일명_날짜.csv</td><td>중복 항목만 모아 병합 저장 (빈칸 정렬 포함)</td></tr>
+        </tbody>
+    </table>
+
+    <h2>3. 사용 기술</h2>
+    <ul>
+        <li><strong>PyMuPDF (fitz):</strong> PDF 텍스트 및 좌표 추출, 하이라이트 처리</li>
+        <li><strong>Tkinter:</strong> GUI 기반 파일 다중 선택 기능 제공</li>
+        <li><strong>re:</strong> 정규표현식 기반 텍스트 필터링</li>
+        <li><strong>csv / os / datetime:</strong> 파일 저장 및 날짜 관리</li>
+        <li><strong>collections.defaultdict:</strong> 텍스트 위치 및 개수 관리</li>
+    </ul>
+
+    <h2>4. 기대 효과</h2>
+    <ul>
+        <li>도면 검토 자동화로 반복 작업 시간 절감</li>
+        <li>중복 및 오기재 항목 자동 감지로 품질 향상</li>
+        <li>검토자 간 커뮤니케이션 자료로 OUT/DUP PDF 활용</li>
+        <li>CSV 데이터로 보고서 및 통계 분석 연계 가능</li>
+    </ul>
+
+    <h2>5. 향후 확장 아이디어</h2>
+    <ul>
+        <li>하이라이트 항목 옆에 라벨 텍스트 삽입</li>
+        <li>OUT + DUP PDF 병합 저장 기능</li>
+        <li>좌표/페이지 정보 로그 기록 (JSON/CSV)</li>
+        <li>PyInstaller를 활용한 EXE 패키징 및 배포</li>
+    </ul>
+
+    <h2>6. 사용 방법</h2>
+    <ol>
+        <li>프로그램 실행 시 파일 선택 창이 열립니다.</li>
+        <li>분석할 PDF 도면 파일을 하나 이상 선택합니다.</li>
+        <li>선택한 각 PDF에 대해 아래의 파일이 자동으로 생성됩니다:</li>
+    </ol>
+    <h3>OUTPUT 파일 상세 목록</h3>
+    <table>
+        <thead><tr><th>파일명</th><th>형식</th><th>설명</th></tr></thead>
+        <tbody>
+            <tr><td>OUT_파일명_YYYYMMDD.PDF</td><td>PDF</td><td>인식된 텍스트(P1)만 녹색 박스로 하이라이트</td></tr>
+            <tr><td>DUP_파일명_YYYYMMDD.PDF</td><td>PDF</td><td>중복 항목만 파랑/빨강으로 하이라이트</td></tr>
+            <tr><td>LINE_파일명_YYYYMMDD.CSV</td><td>CSV</td><td>LINE NO 목록 + 중복 여부</td></tr>
+            <tr><td>VALVE_파일명_YYYYMMDD.CSV</td><td>CSV</td><td>VALVE NO 목록 + 중복 여부</td></tr>
+            <tr><td>SPECIAL_파일명_YYYYMMDD.CSV</td><td>CSV</td><td>SPECIAL NO 목록 + 중복 여부</td></tr>
+            <tr><td>DUP_파일명_YYYYMMDD.CSV</td><td>CSV</td><td>중복된 항목만 종합 정리 (3열 병합)</td></tr>
+        </tbody>
+    </table>
+    <p>※ 파일명은 원본 PDF 이름과 현재 날짜를 조합하여 자동 생성되며, 같은 폴더에 저장됩니다.</p>
+
+    <h2>7. P1 텍스트 인식 기준 상세 설명 (갱신됨)</h2>
+    <p>
+        프로그램은 PDF 도면 내에서 각 단어를 순차적으로 검사하며, <strong>"P1 텍스트"</strong>로 간주할 수 있는 조건을 아래와 같이 정의합니다.
+        이 기준에 따라 LINE NO, VALVE NO, SPECIAL NO를 판별하고 각각의 리스트에 저장합니다.
+    </p>
+    <ul>
+        <li><strong>공통 조건:</strong> 텍스트는 <code>00</code>, <code>10</code>, <code>11</code>, <code>12</code> 등으로 시작해야 합니다.</li>
+        <li><strong>LINE NO:</strong> 텍스트 내에 "BR" 과 "DN" 이 모두 포함되어 있는 경우 (예: <code>11HAC30-BR001-DN80</code>)</li>
+        <li><strong>VALVE NO:</strong> 텍스트가 <code>AA</code>로 시작하고 뒤에 숫자 3~4자리가 따라오는 경우 (예: <code>AA1021</code>)</li>
+        <li><strong>SPECIAL NO:</strong> 텍스트가 <code>AJ</code>, <code>BJ</code>, <code>AT</code> 중 하나로 시작하고 숫자 3~4자리가 따라오는 경우 (예: <code>BJ023</code>)</li>
+    </ul>
+    <p>
+        인식된 P1 텍스트는 해당 위치에 <strong>녹색 반투명 박스</strong>로 하이라이트되며, 이후 중복 검출 및 CSV 저장 대상으로 처리됩니다.
+    </p>
+</div>
+</body>
+</html>

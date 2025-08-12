@@ -1,0 +1,12 @@
+NO.  QTY    DESCRIPTION                    SIZE                   LENGTH MAT'L            UNIT      TOTAL REMARK
+2    4      GUIDE PLATE                    PL20x60x80                  0 A36               0.8        3.2 -
+3    2      PLATE                          PL20x40x50                  0 A36               0.3        0.6 -
+4    1      H-BEAM                         H200x200x8x12            5092 A36                 -      248.1 -
+5    1      H-BEAM                         H200x200x8x12            1918 A36                 -       93.5 -
+6    1      H-BEAM                         H200x200x8x12            2250 A36                 -      109.6 -
+7    1      H-BEAM                         H200x200x8x12            1743 A36                 -       84.9 -
+B    1      H-BEAM                         H200x200x8x12            2003 A36                 -       97.6 B
+9    2      CHANNEL                        C100x50x5x7.5            4645 A36              42.8       85.6 -
+10   16     STIFFNER PLATE                 SP-H200x200                 0 A36               0.8       12.8 -
+
+TOTAL WEIGHT(Kg) : 735.9

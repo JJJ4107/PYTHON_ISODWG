@@ -1,0 +1,8 @@
+NO.  QTY    DESCRIPTION                    SIZE                   LENGTH MAT'L            UNIT      TOTAL REMARK
+6    1      H-BEAM                         H200x200x8x12            5068 A36                 -      247.0 -
+7    1      H-BEAM                         H200x200x8x12            5092 A36                 -      248.1 -
+8    1      H-BEAM                         H200x200x8x12            1290 A36                 -       62.9 B
+9    1      H-BEAM                         H200x200x8x12             643 A36                 -       31.3 -
+10   1      H-BEAM                         H200x200x8x12             818 A36                 -       39.9 -
+
+TOTAL WEIGHT(Kg) : 629.2
