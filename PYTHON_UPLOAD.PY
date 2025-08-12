@@ -371,7 +371,7 @@ Thumbs.db
                 push_cmd = f"git push -u origin {branch}"
             else:
                 # 기존 브랜치가 있는 경우
-                push_cmd = f"git push origin {branch}"
+                push_cmd = f"git push origin {branch} -f"
             
             success, output = self.run_command(push_cmd)
             if success:
