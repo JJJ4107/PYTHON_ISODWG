@@ -133,6 +133,72 @@ def move_entities(entities, dx, dy):
             if hasattr(entity.dxf, 'insert'):
                 entity.dxf.insert = Vec2(entity.dxf.insert[0] + dx, entity.dxf.insert[1] + dy)
 
+def extend_line_to_circle(line, point_to_extend, circle):
+    """라인을 원까지 확장"""
+    center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
+    radius = circle.dxf.radius
+    
+    # 라인의 방향 벡터 계산
+    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+    
+    if get_distance(point_to_extend, (start.x, start.y)) < get_distance(point_to_extend, (end.x, end.y)):
+        # start 점을 확장
+        direction = (start - end).normalize()
+        # 원과 라인의 교점 계산
+        t = 2 * radius  # 충분히 긴 거리
+        
+        # 실제 교점 찾기
+        for i in range(100):
+            test_point = start + direction * (t * i / 100)
+            if abs(get_distance((test_point.x, test_point.y), (center.x, center.y)) - radius) < 0.1:
+                line.dxf.start = test_point
+                break
+    else:
+        # end 점을 확장
+        direction = (end - start).normalize()
+        t = 2 * radius
+        
+        for i in range(100):
+            test_point = end + direction * (t * i / 100)
+            if abs(get_distance((test_point.x, test_point.y), (center.x, center.y)) - radius) < 0.1:
+                line.dxf.end = test_point
+                break
+    """라인을 원까지 강제로 확장 (방향 무관)"""
+    center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
+    radius = circle.dxf.radius
+    
+    # 라인의 시작점과 끝점
+    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+    
+    # point_to_extend가 start에 가까운지 end에 가까운지 확인
+    dist_to_start = get_distance(point_to_extend, (start.x, start.y))
+    dist_to_end = get_distance(point_to_extend, (end.x, end.y))
+    
+    if dist_to_start < dist_to_end:
+        # start 점을 확장
+        # start에서 원 중심으로의 방향
+        to_center = center - start
+        if to_center.magnitude > radius:
+            # 원 외부에서 시작
+            direction = to_center.normalize()
+            # 원의 경계까지의 거리
+            distance = to_center.magnitude - radius
+            new_start = start + direction * distance
+            line.dxf.start = new_start
+    else:
+        # end 점을 확장
+        # end에서 원 중심으로의 방향
+        to_center = center - end
+        if to_center.magnitude > radius:
+            # 원 외부에서 시작
+            direction = to_center.normalize()
+            # 원의 경계까지의 거리
+            distance = to_center.magnitude - radius
+            new_end = end + direction * distance
+            line.dxf.end = new_end
+
 def check_line_circle_intersection(line, circle):
     """라인과 원의 교차 여부 확인 (개선된 버전)"""
     center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
@@ -199,7 +265,7 @@ def find_ilines_near_circle(inno_circle, lines):
             
         # 선분의 길이 확인 (3~5mm)
         length = get_line_length(line)
-        if not (3 <= length <= 5):
+        if not (3 <= length <= 6.5):
             continue
             
         # 선분의 중심점 계산
@@ -253,9 +319,6 @@ def process_dxf_file(filepath):
         doc = ezdxf.readfile(filepath)
         msp = doc.modelspace()
         
-        # 변경사항이 있었는지 추적
-        any_changes_made = False
-        
         # 1. ISOTEXT 레이어의 원 중 지름이 11-18mm인 원 찾기
         inno_circles = []
         for entity in msp:
@@ -263,14 +326,11 @@ def process_dxf_file(filepath):
                 diameter = get_circle_diameter(entity)
                 if 11 <= diameter <= 18:
                     inno_circles.append(entity)
+                    entity.dxf.layer = 'INNO'
+                    entity.dxf.color = 4  # CYAN
         
         if not inno_circles:
             print(f"No circles with diameter 11-18mm found in ISOTEXT layer in {filepath}")
-            # 변경사항이 없어도 파일 저장
-            base_name = os.path.splitext(os.path.basename(filepath))[0]
-            output_path = os.path.join(os.path.dirname(filepath), f"{base_name}_INST.DXF")
-            doc.saveas(output_path)
-            print(f"File saved without changes as: {output_path}")
             return
         
         # 모든 텍스트 엔티티 수집
@@ -283,13 +343,8 @@ def process_dxf_file(filepath):
         for inno in inno_circles:
             inno_center = (inno.dxf.center.x, inno.dxf.center.y)
             
-            # DEL2 발견 여부를 추적하는 플래그
-            del2_found = False
-            
             # A1 확장에 사용된 라인들을 추적
             a1_extension_lines = []
-            # A1 확장 라인들의 원본 상태를 저장
-            extension_lines_original_state = []
             
             # 2. INNO 원 안의 기울기 0인 텍스트 찾기 (ITAG)
             itag_texts = []
@@ -302,6 +357,7 @@ def process_dxf_file(filepath):
                         
                     if is_point_in_circle(text_pos, inno) and is_text_horizontal(entity):
                         itag_texts.append(entity)
+                        entity.dxf.color = 2  # YELLOW
             
             # INSTNO = INNO + ITAG
             instno_entities = [inno] + itag_texts
@@ -314,8 +370,14 @@ def process_dxf_file(filepath):
             it_texts = []  # it_texts를 미리 초기화
             
             if ilines:
+                # ILINE 색상 변경
+                for iline in ilines:
+                    iline.dxf.color = 6  # MAGENTA (식별을 위해)
+                
                 # IT 텍스트 찾기
                 it_texts = find_text_near_lines(ilines, all_texts)
+                for it in it_texts:
+                    it.dxf.color = 6  # MAGENTA
                 
                 # ITEMNO = ILINE + IT
                 itemno_entities = ilines + it_texts
@@ -330,22 +392,24 @@ def process_dxf_file(filepath):
                         min_distance = dist
                         ip_point = closest_point
                 
-                # INSTNO에 ITEMNO 추가
+                # ITEMNO를 IP에서 INNO의 수직 끝점으로 이동
+                if ip_point:
+                    top_point = get_circle_top_point(inno)
+                    dx = top_point[0] - ip_point[0]
+                    dy = top_point[1] - ip_point[1]
+                    move_entities(itemno_entities, dx, dy)
+                
+                # ITEMNO를 INSTNO에 추가
                 instno_entities.extend(itemno_entities)
             
             # 3. 원의 선분에서 1mm 내에 접하는 ISOTEXT 레이어 LINE 찾기 (A1)
             isotext_lines = [e for e in msp if isinstance(e, Line) and e.dxf.layer == 'ISOTEXT']
-            a1_line_original, ap1_original, ap2_original = find_line_near_circle(inno, isotext_lines, 1.0)
+            a1_line, ap1, ap2 = find_line_near_circle(inno, isotext_lines, 1.0)
             
-            if not a1_line_original:
+            if not a1_line:
                 continue
             
-            # A1 라인의 원본 상태를 저장 (DEL2가 없을 경우 복원을 위해)
-            a1_line = a1_line_original
-            ap1 = ap1_original
-            ap2 = ap2_original
-            original_start = Vec2(a1_line.dxf.start.x, a1_line.dxf.start.y)
-            original_end = Vec2(a1_line.dxf.end.x, a1_line.dxf.end.y)
+            a1_line.dxf.color = 4  # CYAN
             
             # AP1은 INNO에 가까운 점, AP2는 먼 점
             if get_distance(ap1, inno_center) > get_distance(ap2, inno_center):
@@ -387,13 +451,6 @@ def process_dxf_file(filepath):
                     
                     # AP2와 가까운 점 찾기
                     if get_distance(ap2, start) <= 0.2:
-                        # 확장에 사용될 라인의 원본 상태 저장
-                        extension_lines_original_state.append({
-                            'line': line,
-                            'start': Vec2(line.dxf.start.x, line.dxf.start.y),
-                            'end': Vec2(line.dxf.end.x, line.dxf.end.y)
-                        })
-                        
                         # A1 라인 연장 (합치기)
                         if get_distance(ap1, a1_line.dxf.start) < 0.1:
                             a1_line.dxf.start = Vec2(end[0], end[1])
@@ -426,13 +483,6 @@ def process_dxf_file(filepath):
                                     break
                         break
                     elif get_distance(ap2, end) <= 0.2:
-                        # 확장에 사용될 라인의 원본 상태 저장
-                        extension_lines_original_state.append({
-                            'line': line,
-                            'start': Vec2(line.dxf.start.x, line.dxf.start.y),
-                            'end': Vec2(line.dxf.end.x, line.dxf.end.y)
-                        })
-                        
                         # A1 라인 연장 (합치기)
                         if get_distance(ap1, a1_line.dxf.start) < 0.1:
                             a1_line.dxf.start = Vec2(start[0], start[1])
@@ -465,6 +515,10 @@ def process_dxf_file(filepath):
                                     break
                         break
             
+            # DEL1 라인들을 CYAN으로 변경
+            for line in del1_lines:
+                line.dxf.color = 4  # CYAN
+            
             # 5. AP2에서 10mm 내의 FITTINGS 레이어 원 찾기 (TYPE1/DEL2)
             del2_circle = None
             for entity in msp:
@@ -478,54 +532,12 @@ def process_dxf_file(filepath):
                         circle_center = (entity.dxf.center.x, entity.dxf.center.y)
                         if get_distance(ap2, circle_center) <= 10:
                             del2_circle = entity
+                            del2_circle.dxf.color = 4  # CYAN
                             used_del2_circles.append(entity)  # 사용된 DEL2로 표시
-                            del2_found = True  # DEL2를 찾았음을 표시
                             break
             
-            # DEL2가 없으면 다음 작업을 수행하지 않음
-            if not del2_found:
-                print(f"No DEL2 circle found for INNO at ({inno_center[0]:.2f}, {inno_center[1]:.2f})")
-                # A1 라인을 원본 상태로 복원
-                if a1_line:
-                    a1_line.dxf.start = original_start
-                    a1_line.dxf.end = original_end
-                # A1 확장에 사용된 라인들도 원본 상태로 복원
-                for state in extension_lines_original_state:
-                    state['line'].dxf.start = state['start']
-                    state['line'].dxf.end = state['end']
+            if not del2_circle:
                 continue
-            
-            # ===== 이하 DEL2가 발견된 경우에만 실행되는 코드 =====
-            any_changes_made = True  # 변경사항이 있음을 표시
-            
-            # INNO와 ITAG 색상 변경
-            inno.dxf.layer = 'INNO'
-            inno.dxf.color = 4  # CYAN
-            for entity in itag_texts:
-                entity.dxf.color = 2  # YELLOW
-            
-            # ILINE과 IT 색상 변경
-            for iline in ilines:
-                iline.dxf.color = 6  # MAGENTA
-            for it in it_texts:
-                it.dxf.color = 6  # MAGENTA
-            
-            # IP에서 INNO 수직 끝점으로 ITEMNO 이동
-            if itemno_entities and ip_point:
-                top_point = get_circle_top_point(inno)
-                dx = top_point[0] - ip_point[0]
-                dy = top_point[1] - ip_point[1]
-                move_entities(itemno_entities, dx, dy)
-            
-            # A1 색상 변경
-            a1_line.dxf.color = 4  # CYAN
-            
-            # DEL1 색상 변경
-            for line in del1_lines:
-                line.dxf.color = 4  # CYAN
-            
-            # DEL2 색상 변경
-            del2_circle.dxf.color = 4  # CYAN
             
             # 6. DEL2 원을 접하는 FITTINGS 레이어 LINE 찾기 (INLINE)
             fittings_lines = [e for e in msp if isinstance(e, Line) and e.dxf.layer == 'FITTINGS']
@@ -675,15 +687,11 @@ def process_dxf_file(filepath):
                         entity.dxf.color = 4  # CYAN
                     all_entities_to_modify.append(entity)
         
-        # 11. 파일 저장 (변경사항 유무와 관계없이)
+        # 11. 파일 저장
         base_name = os.path.splitext(os.path.basename(filepath))[0]
         output_path = os.path.join(os.path.dirname(filepath), f"{base_name}_INST.DXF")
         doc.saveas(output_path)
-        
-        if any_changes_made:
-            print(f"Processed file saved as: {output_path}")
-        else:
-            print(f"File saved without changes as: {output_path}")
+        print(f"Processed file saved as: {output_path}")
         
     except Exception as e:
         print(f"Error processing {filepath}: {str(e)}")
