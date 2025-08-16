@@ -17,7 +17,7 @@ HALF_SL1 = 0.25  # 원의 반지름을 0.25mm로 변경 (직경 0.5mm)
 LINE_LENGTH = 7.0  # 선의 길이 7mm로 변경
 LINE_WIDTH = 0.6  # 선 두께 0.6
 NODENO_RADIUS = 5.25  # NODENO 원의 반지름 10.5mm/2 = 5.25mm
-NODENO_OFFSET_Y = 11.0  # Y방향 이동 거리 11mm
+NODENO_OFFSET_Y = 12.25  # Y방향 이동 거리 12.25mm로 변경
 ROTATION_ANGLE = 30  # 회전 각도 (도)
 TEXT_HEIGHT = 3.0  # 텍스트 높이 3mm
 TEXT_VALUE = '0000'  # 텍스트 값
@@ -64,9 +64,6 @@ def is_valid_s1(ent):
     if len(pts) != 2: return False
     L = polyline_length(pts)
     return 3.0 <= L <= 4.0  # S1 길이 조건 변경: 3.0~4.0mm
-
-def is_ps_candidate(pts):
-    return len(pts) == 7 and any(calc_distance(pts[i], pts[i+1]) >= 3.0 for i in range(6))
 
 def point_at_distance(origin, target, dist):
     dx, dy = target[0] - origin[0], target[1] - origin[1]
@@ -192,6 +189,7 @@ def create_triangle_arrow(center, direction_angle, side_length, base_width, msp,
 def create_iso_orthogonal_lines(center, pipe_angle, length, msp):
     """ISO 도면 기준으로 파이프에 직교하는 4개 방향으로 선을 생성"""
     lines = []
+    line_angles = []  # 생성된 선의 각도를 저장
     
     # 파이프 각도를 도 단위로 변환
     pipe_angle_deg = math.degrees(pipe_angle) % 360
@@ -251,6 +249,7 @@ def create_iso_orthogonal_lines(center, pipe_angle, length, msp):
         line = msp.add_line(trim_start, end_point, 
                           dxfattribs={'color': CYAN, 'lineweight': 60, 'layer': 'SUPP'})
         lines.append(line)
+        line_angles.append(angle_deg)  # 선의 각도 저장
         
         # 삼각형 화살표 5개 그리기 (같은 위치에서 크기만 다르게)
         arrow_side_length = 4.0  # 양쪽 변의 길이 mm
@@ -268,7 +267,7 @@ def create_iso_orthogonal_lines(center, pipe_angle, length, msp):
             # 삼각형 그리기 (중심점 기준 스케일링)
             create_triangle_arrow(arrow_pos, angle_deg, arrow_side_length, arrow_base_width, msp, scale=scale)
     
-    return lines
+    return lines, line_angles  # 선들과 각도들을 함께 반환
 
 def rotate_point(point, center, angle_deg):
     """점을 중심점 기준으로 회전"""
@@ -285,34 +284,21 @@ def rotate_point(point, center, angle_deg):
     return (new_x, new_y)
 
 def find_best_orthogonal_position_for_special(cp, offset_distance, pipe_angle, msp, exclude_entities):
-    """ELBO/TEE용 특별한 NODE 위치 결정 - 수직과 파이프 방향 제외"""
+    """ELBO/TEE용 특별한 NODE 위치 결정 - 30도 단위로 모든 각도를 검사하여 최적 위치 찾기"""
     pipe_angle_deg = math.degrees(pipe_angle) % 360
-    normalized_angle = round(pipe_angle_deg / 30) * 30 % 360
-    
-    # 파이프 각도 정규화
-    pipe_angle_normalized = round(pipe_angle_deg / 30) * 30 % 360
     
     # 모든 가능한 각도 (30도 간격)
     all_angles = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
     
-    # 제외할 각도들
-    excluded_angles = [
-        90, 270,  # 수직 위치
-        pipe_angle_normalized % 360,  # 파이프 방향
-        (pipe_angle_normalized + 180) % 360  # 파이프 반대 방향
-    ]
-    
-    # 사용 가능한 각도만 필터링
-    available_angles = [angle for angle in all_angles if angle not in excluded_angles]
-    
-    print(f"      특수 노드: 파이프 각도={pipe_angle_deg:.1f}°, 제외된 각도={excluded_angles}")
-    print(f"      사용 가능한 각도: {available_angles}")
+    print(f"      특수 노드: 파이프 각도={pipe_angle_deg:.1f}°")
+    print(f"      모든 각도에서 간섭 체크 시작...")
     
     # 각 가능한 방향에서의 간섭 체크
     best_angle = None
     min_interference_count = float('inf')
+    no_interference_angles = []  # 간섭이 없는 각도들
     
-    for angle in available_angles:
+    for angle in all_angles:
         angle_rad = math.radians(angle)
         test_pos = (cp[0] + offset_distance * math.cos(angle_rad),
                     cp[1] + offset_distance * math.sin(angle_rad))
@@ -339,33 +325,47 @@ def find_best_orthogonal_position_for_special(cp, offset_distance, pipe_angle, m
                     if dist < NODENO_RADIUS + 1.0:  # 1mm 여유
                         interference_count += 1
                         break
+            elif ent_type == 'TEXT' or ent_type == 'MTEXT':
+                # 텍스트와의 간섭도 체크
+                if ent_type == 'TEXT':
+                    text_pos = (ent.dxf.insert.x, ent.dxf.insert.y)
+                else:
+                    text_pos = (ent.dxf.insert.x, ent.dxf.insert.y)
+                dist = calc_distance(test_pos, text_pos)
+                if dist < NODENO_RADIUS + 2.0:  # 텍스트와 2mm 여유
+                    interference_count += 1
         
         print(f"      {angle}° 방향: 간섭 {interference_count}개")
+        
+        # 간섭이 없는 각도 저장
+        if interference_count == 0:
+            no_interference_angles.append(angle)
         
         # 간섭이 가장 적은 방향 선택
         if interference_count < min_interference_count:
             min_interference_count = interference_count
             best_angle = angle
     
+    # 간섭이 없는 각도가 있으면 그 중 첫 번째 선택
+    if no_interference_angles:
+        best_angle = no_interference_angles[0]
+        print(f"      → 간섭 없는 각도 발견: {no_interference_angles}")
+        print(f"      → 선택된 각도: {best_angle}°")
+    else:
+        print(f"      → 모든 각도에 간섭 있음. 최소 간섭 각도: {best_angle}° (간섭 {min_interference_count}개)")
+    
     if best_angle is not None:
         angle_rad = math.radians(best_angle)
         best_pos = (cp[0] + offset_distance * math.cos(angle_rad),
                     cp[1] + offset_distance * math.sin(angle_rad))
-        print(f"      → 최적 방향: {best_angle}° (간섭 {min_interference_count}개)")
         return best_pos
     
-    # 기본값: 첫 번째 가능한 각도
-    if available_angles:
-        angle_rad = math.radians(available_angles[0])
-        return (cp[0] + offset_distance * math.cos(angle_rad),
-                cp[1] + offset_distance * math.sin(angle_rad))
-    else:
-        # 모든 각도가 제외된 경우 45도 방향 사용
-        angle_rad = math.radians(45)
-        return (cp[0] + offset_distance * math.cos(angle_rad),
-                cp[1] + offset_distance * math.sin(angle_rad))
+    # 기본값: 0도 방향
+    angle_rad = math.radians(0)
+    return (cp[0] + offset_distance * math.cos(angle_rad),
+            cp[1] + offset_distance * math.sin(angle_rad))
 
-def find_best_orthogonal_position(cp, offset_distance, pipe_angle, msp, exclude_entities):
+def find_best_orthogonal_position(cp, offset_distance, pipe_angle, msp, exclude_entities, line_angles=None):
     """일반 NODE용 직교선 방향 중 간섭이 가장 적은 위치 찾기"""
     pipe_angle_deg = math.degrees(pipe_angle) % 360
     normalized_angle = round(pipe_angle_deg / 30) * 30 % 360
@@ -442,50 +442,12 @@ def find_best_orthogonal_position(cp, offset_distance, pipe_angle, msp, exclude_
         best_pos = (cp[0] + offset_distance * math.cos(angle_rad),
                     cp[1] + offset_distance * math.sin(angle_rad))
         print(f"      → 최적 방향: {best_angle}° (간섭 {min_interference_count}개)")
-        return best_pos
+        return best_pos, best_angle  # 선택된 각도도 반환
     
     # 기본값: 첫 번째 직교선 방향
     angle_rad = math.radians(orthogonal_angles[0])
     return (cp[0] + offset_distance * math.cos(angle_rad),
-            cp[1] + offset_distance * math.sin(angle_rad))
-
-def check_circle_interference(circle_center, radius, msp, exclude_entities=[]):
-    """원과 다른 엔티티들 간의 간섭 체크 (LINE 포함)"""
-    for ent in msp:
-        if ent in exclude_entities:
-            continue
-            
-        ent_type = ent.dxftype()
-        
-        # LINE 엔티티도 체크
-        if ent_type == 'LINE':
-            # 선분과 원의 간섭 체크
-            p1 = (ent.dxf.start.x, ent.dxf.start.y)
-            p2 = (ent.dxf.end.x, ent.dxf.end.y)
-            dist = point_to_line_distance(circle_center, p1, p2)
-            if dist < radius:
-                return True
-                
-        elif ent_type in ['LWPOLYLINE', 'POLYLINE']:
-            pts = extract_points(ent)
-            if len(pts) >= 2:
-                # 각 선분과 원의 간섭 체크
-                for i in range(len(pts) - 1):
-                    p1, p2 = pts[i], pts[i+1]
-                    # 선분과 원의 최단 거리 계산
-                    dist = point_to_line_distance(circle_center, p1, p2)
-                    if dist < radius:
-                        return True
-                        
-        elif ent_type == 'CIRCLE':
-            # 원과 원의 간섭 체크
-            other_center = (ent.dxf.center.x, ent.dxf.center.y)
-            other_radius = ent.dxf.radius
-            center_distance = calc_distance(circle_center, other_center)
-            if center_distance < (radius + other_radius):
-                return True
-                
-    return False
+            cp[1] + offset_distance * math.sin(angle_rad)), orthogonal_angles[0]
 
 def point_to_line_distance(point, line_start, line_end):
     """점과 선분 사이의 최단 거리 계산"""
@@ -506,16 +468,16 @@ def point_to_line_distance(point, line_start, line_end):
     return calc_distance(point, closest_point)
 
 def find_connected_pipes(elbo_pts, msp):
-    """ELBO의 양 끝점에 연결된 PIPE 찾기"""
+    """ELBO의 양 끝점에 연결된 PIPE 찾기 - PIPE TEXT가 포함된 레이어 검색"""
     start_point = elbo_pts[0]
     end_point = elbo_pts[-1]
     
     start_pipe = None
     end_pipe = None
     
-    # PIPE 레이어의 엔티티 검색
+    # PIPE TEXT가 포함된 레이어의 엔티티 검색
     for e in msp:
-        if hasattr(e.dxf, 'layer') and e.dxf.layer == 'PIPE':
+        if hasattr(e.dxf, 'layer') and 'PIPE' in e.dxf.layer:
             pts = extract_points(e)
             if len(pts) >= 2:
                 # 시작점과 연결된 파이프 찾기
@@ -685,47 +647,91 @@ def find_tee_junction_points(msp):
     print(f"    TEE 분기점 총 {len(tee_points)}개 발견")
     return tee_points
 
-def add_text_to_node(msp, center, text_value, height, color, layer):
-    """NODE에 텍스트 추가 - MTEXT 사용"""
+def add_text_to_node(msp, center, text_value, height, color, layer, doc=None):
+    """NODE에 텍스트 추가 - (0,0)에 생성하여 중심점 확인 후 NODE 중심에 재생성"""
     try:
-        # MTEXT 사용 (더 나은 호환성)
-        mtext = msp.add_mtext(
+        # ARIAL 스타일이 없으면 생성
+        if doc and "ARIAL" not in doc.styles:
+            doc.styles.new("ARIAL", dxfattribs={"font": "arial.ttf"})
+        
+        # 1단계: (0, 0) 위치에 TEXT 생성하여 중심점 확인
+        temp_text = msp.add_text(
             text_value,
             dxfattribs={
-                'insert': (center[0], center[1], 0),
-                'height': height,
-                'color': color,
+                'height': 2.2,  # 2.2mm 높이
+                'color': MAGENTA,  # MAGENTA 색상
                 'layer': layer,
-                'attachment_point': 5,  # Middle center
-                'char_height': height,
-                'width': 0,  # 자동 너비
-                'style': 'Standard'
+                'insert': (0, 0, 0),  # (0, 0) 위치에 생성
+                'halign': 4,  # CENTER
+                'valign': 2,  # MIDDLE
+                'style': 'ARIAL' if doc else 'Standard',  # ARIAL 폰트 또는 기본
+                'width': 0.85  # 폭 설정
             }
         )
-        return mtext
-    except:
-        # MTEXT가 실패하면 일반 TEXT 사용
+        
+        print(f"      텍스트 '0000' (0,0)에 생성됨")
+        
+        # 2단계: 중심점 확인 (halign=CENTER, valign=MIDDLE이므로 insert point가 중심)
+        # insert는 Vector 객체일 수 있으므로 안전하게 처리
+        insert_point = temp_text.dxf.insert
+        if hasattr(insert_point, 'x'):
+            text_center_x = insert_point.x
+            text_center_y = insert_point.y
+        else:
+            # 튜플이나 리스트인 경우
+            text_center_x = insert_point[0]
+            text_center_y = insert_point[1]
+        
+        print(f"      텍스트 중심점: ({text_center_x:.2f}, {text_center_y:.2f})")
+        
+        # 3단계: 임시 텍스트 삭제
+        msp.delete_entity(temp_text)
+        print(f"      임시 텍스트 삭제됨")
+        
+        # 4단계: NODE 원의 중심에 새로운 텍스트 생성
+        final_text = msp.add_text(
+            text_value,
+            dxfattribs={
+                'height': 2.2,  # 2.2mm 높이
+                'color': MAGENTA,  # MAGENTA 색상
+                'layer': layer,
+                'insert': (center[0], center[1], 0),  # NODE 원의 중심
+                'halign': 4,  # CENTER
+                'valign': 2,  # MIDDLE
+                'style': 'ARIAL' if doc else 'Standard',  # ARIAL 폰트 또는 기본
+                'width': 0.85  # 폭 설정
+            }
+        )
+        
+        print(f"      텍스트 '0000' NODE 중심 ({center[0]:.2f}, {center[1]:.2f})에 최종 생성 완료")
+        return final_text
+        
+    except Exception as e:
+        print(f"      텍스트 처리 실패: {e}")
+        # 실패 시 NODE 원의 중심 위치에 직접 생성
         try:
             text = msp.add_text(
                 text_value,
                 dxfattribs={
-                    'height': height,
-                    'color': color,
+                    'height': 2.2,
+                    'color': MAGENTA,
                     'layer': layer,
                     'insert': (center[0], center[1], 0),
-                    'halign': 4,  # CENTER
-                    'valign': 2,  # MIDDLE
+                    'halign': 4,
+                    'valign': 2,
                     'style': 'Standard'
                 }
             )
+            print(f"      텍스트 '0000' 백업 방식으로 생성: 위치 ({center[0]:.2f}, {center[1]:.2f})")
             return text
-        except Exception as e:
-            print(f"      텍스트 추가 실패: {e}")
+        except Exception as e2:
+            print(f"      텍스트 추가 완전 실패: {e2}")
             return None
 
 def process_special_nodes(msp, doc):
     """ELBO와 TEE TEXT 레이어의 특수 노드 처리"""
     processed_count = 0
+    texts_to_add = []  # 텍스트 추가를 위한 리스트
     
     # ELBO 처리
     # ELBO 레이어의 모든 엔티티를 CYAN으로 변경
@@ -746,7 +752,7 @@ def process_special_nodes(msp, doc):
         avg_dir = ((v1[0] + v2[0])/2, (v1[1] + v2[1])/2)
         pipe_angle = math.atan2(avg_dir[1], avg_dir[0])
         
-        # NODENO 원 위치 결정 (수직과 파이프 방향 제외)
+        # NODENO 원 위치 결정 (30도 단위로 회전하며 간섭 체크)
         nodeno_pos = find_best_orthogonal_position_for_special(
             center_point, NODENO_OFFSET_Y, pipe_angle, msp, []
         )
@@ -757,9 +763,6 @@ def process_special_nodes(msp, doc):
             radius=NODENO_RADIUS, 
             dxfattribs={'color': MAGENTA, 'layer': 'NODE'}
         )
-        
-        # 텍스트 '0000' 추가 - MTEXT 사용
-        add_text_to_node(msp, nodeno_pos, TEXT_VALUE, TEXT_HEIGHT, YELLOW, 'NODE')
         
         # center_point와 NODENO 중심을 잇는 선 (NODE 원에서 trim)
         dx = nodeno_pos[0] - center_point[0]
@@ -777,6 +780,9 @@ def process_special_nodes(msp, doc):
                 (trim_end_x, trim_end_y), 
                 dxfattribs={'color': WHITE, 'layer': 'NODE'}
             )
+        
+        # 텍스트 추가를 위해 저장
+        texts_to_add.append(nodeno_pos)
         
         processed_count += 1
         print(f"  ELBO 노드 처리: ({center_point[0]:.2f}, {center_point[1]:.2f})")
@@ -823,7 +829,7 @@ def process_special_nodes(msp, doc):
                 if abs(avg_dir[0]) > 0.01 or abs(avg_dir[1]) > 0.01:
                     pipe_angle = math.atan2(avg_dir[1], avg_dir[0])
         
-        # NODENO 원 위치 결정 (수직과 파이프 방향 제외)
+        # NODENO 원 위치 결정 (30도 단위로 회전하며 간섭 체크)
         nodeno_pos = find_best_orthogonal_position_for_special(
             center_point, NODENO_OFFSET_Y, pipe_angle, msp, []
         )
@@ -834,9 +840,6 @@ def process_special_nodes(msp, doc):
             radius=NODENO_RADIUS, 
             dxfattribs={'color': MAGENTA, 'layer': 'NODE'}
         )
-        
-        # 텍스트 '0000' 추가 - MTEXT 사용
-        add_text_to_node(msp, nodeno_pos, TEXT_VALUE, TEXT_HEIGHT, YELLOW, 'NODE')
         
         # center_point와 NODENO 중심을 잇는 선 (NODE 원에서 trim)
         dx = nodeno_pos[0] - center_point[0]
@@ -855,10 +858,282 @@ def process_special_nodes(msp, doc):
                 dxfattribs={'color': WHITE, 'layer': 'NODE'}
             )
         
+        # 텍스트 추가를 위해 저장
+        texts_to_add.append(nodeno_pos)
+        
         processed_count += 1
         print(f"  TEE 노드 처리: ({center_point[0]:.2f}, {center_point[1]:.2f}) - {tee['count']}개 연결")
     
+    # 모든 그래픽 요소 처리 후 텍스트 추가
+    for text_pos in texts_to_add:
+        add_text_to_node(msp, text_pos, TEXT_VALUE, TEXT_HEIGHT, YELLOW, 'NODE', doc)
+    
     return processed_count
+
+def find_texts_with_hyphen(msp, center_point, radius):
+    """중심점에서 반경 내의 '-'가 포함된 TEXT 엔티티 찾기"""
+    texts = []
+    for e in msp:
+        if e.dxftype() == 'TEXT' or e.dxftype() == 'MTEXT':
+            text_content = ""
+            text_pos = None
+            
+            if e.dxftype() == 'TEXT':
+                text_content = e.dxf.text
+                text_pos = (e.dxf.insert.x, e.dxf.insert.y)
+            elif e.dxftype() == 'MTEXT':
+                text_content = e.text
+                text_pos = (e.dxf.insert.x, e.dxf.insert.y)
+            
+            if text_pos and '-' in text_content:
+                dist = calc_distance(center_point, text_pos)
+                if dist <= radius:
+                    texts.append({
+                        'entity': e,
+                        'content': text_content,
+                        'position': text_pos,
+                        'distance': dist
+                    })
+    
+    return texts
+
+def get_text_bounding_box(text_entity):
+    """TEXT 엔티티의 바운딩 박스 계산"""
+    if text_entity.dxftype() == 'TEXT':
+        # 간단한 추정 (정확하지 않을 수 있음)
+        text_height = text_entity.dxf.height
+        text_content = text_entity.dxf.text
+        text_width = len(text_content) * text_height * 0.6  # 추정값
+        
+        pos = (text_entity.dxf.insert.x, text_entity.dxf.insert.y)
+        
+        # 4개의 모서리 점
+        corners = [
+            pos,  # 좌하
+            (pos[0] + text_width, pos[1]),  # 우하
+            (pos[0] + text_width, pos[1] + text_height),  # 우상
+            (pos[0], pos[1] + text_height)  # 좌상
+        ]
+        
+        return corners
+    
+    elif text_entity.dxftype() == 'MTEXT':
+        # MTEXT의 경우
+        pos = (text_entity.dxf.insert.x, text_entity.dxf.insert.y)
+        height = text_entity.dxf.char_height
+        
+        # 텍스트 내용에서 실제 텍스트만 추출
+        text_content = text_entity.text
+        # MTEXT 포맷 코드 제거 (간단한 방법)
+        import re
+        clean_text = re.sub(r'\\[^;]+;', '', text_content)
+        
+        width = len(clean_text) * height * 0.6  # 추정값
+        
+        corners = [
+            (pos[0] - width/2, pos[1] - height/2),  # 좌하
+            (pos[0] + width/2, pos[1] - height/2),  # 우하
+            (pos[0] + width/2, pos[1] + height/2),  # 우상
+            (pos[0] - width/2, pos[1] + height/2)   # 좌상
+        ]
+        
+        return corners
+    
+    return []
+
+def process_type2_support(msp, a1_data, a2_data, cp_center, orthogonal_lines, line_angles, pipe_angle, node_angle):
+    """2단계 지원 처리"""
+    if not a2_data:
+        return None
+    
+    # AP1, AP2 찾기
+    a1_center = midpoint(a1_data['pts'])
+    a2_pts = a2_data['pts']
+    
+    ap1 = min(a2_pts, key=lambda p: calc_distance(p, a1_center))
+    ap2 = max(a2_pts, key=lambda p: calc_distance(p, a1_center))
+    
+    print(f"\n  2단계 처리:")
+    print(f"    AP1: ({ap1[0]:.2f}, {ap1[1]:.2f})")
+    print(f"    AP2: ({ap2[0]:.2f}, {ap2[1]:.2f})")
+    
+    # AP2에서 70mm 내의 '-'가 포함된 TEXT 찾기
+    texts_with_hyphen = find_texts_with_hyphen(msp, ap2, 70.0)
+    
+    if not texts_with_hyphen:
+        print("    '-'가 포함된 TEXT를 찾을 수 없음")
+        return None
+    
+    # 모든 TEXT의 CBOX 계산
+    all_corners = []
+    for text_info in texts_with_hyphen:
+        corners = get_text_bounding_box(text_info['entity'])
+        all_corners.extend(corners)
+    
+    if not all_corners:
+        print("    TEXT 바운딩 박스를 계산할 수 없음")
+        return None
+    
+    # 각 모서리에서 AP2와 가장 가까운 TEXT 찾기
+    ct = None
+    min_dist = float('inf')
+    
+    for corner in all_corners:
+        for text_info in texts_with_hyphen:
+            dist = calc_distance(corner, ap2)
+            if dist < min_dist:
+                min_dist = dist
+                ct = text_info
+    
+    if not ct:
+        print("    CT를 찾을 수 없음")
+        return None
+    
+    print(f"    CT 발견: '{ct['content']}' at ({ct['position'][0]:.2f}, {ct['position'][1]:.2f})")
+    
+    # CT 내용에서 뒤에서 첫번째 '-' 찾고 다음 글자를 STYPE으로
+    ct_content = ct['content']
+    last_hyphen_idx = ct_content.rfind('-')
+    
+    if last_hyphen_idx == -1 or last_hyphen_idx == len(ct_content) - 1:
+        print("    STYPE을 추출할 수 없음")
+        return None
+    
+    stype = ct_content[last_hyphen_idx + 1]
+    print(f"    STYPE: '{stype}'")
+    
+    # STYPE에 따른 처리
+    if stype in ['G', 'A']:
+        print("    STYPE이 G 또는 A - 특수 화살표 처리")
+        
+        # NODE가 없는 각도의 LINE 찾기 (L1)
+        l1_angle = None
+        for i, angle in enumerate(line_angles):
+            if angle != node_angle:  # NODE가 있는 각도가 아닌 것
+                l1_angle = angle
+                break
+        
+        if l1_angle is None:
+            print("    L1을 찾을 수 없음")
+            return None
+        
+        print(f"    L1 각도: {l1_angle}°")
+        
+        # CP점에서 5.5mm 떨어진 지점 계산
+        angle_rad = math.radians(l1_angle)
+        intersection_point = (
+            cp_center[0] + 5.5 * math.cos(angle_rad),
+            cp_center[1] + 5.5 * math.sin(angle_rad)
+        )
+        
+        # PIPE와 동일한 기울기로 L1 라인 기준 교차하는 양쪽으로 5mm cyan 선 그리기
+        pipe_angle_deg = math.degrees(pipe_angle)
+        perp_angle_rad = math.radians(pipe_angle_deg)
+        
+        # 양쪽 끝점 계산
+        p1 = (
+            intersection_point[0] - 5.0 * math.cos(perp_angle_rad),
+            intersection_point[1] - 5.0 * math.sin(perp_angle_rad)
+        )
+        p2 = (
+            intersection_point[0] + 5.0 * math.cos(perp_angle_rad),
+            intersection_point[1] + 5.0 * math.sin(perp_angle_rad)
+        )
+        
+        # 10mm cyan 선 그리기
+        msp.add_line(p1, p2, dxfattribs={'color': CYAN, 'layer': 'SUPP'})
+        
+        # 양방향 마주보는 방향으로 삼각형 그리기
+        # 첫 번째 방향 (L1 방향)
+        arrow_side_length = 4.0
+        arrow_base_width = 1.4
+        
+        for j in range(5):
+            scale = 1.0 - (j * 0.2)
+            if scale <= 0:
+                break
+            create_triangle_arrow(intersection_point, l1_angle, arrow_side_length, arrow_base_width, msp, scale=scale)
+        
+        # 두 번째 방향 (반대 방향)
+        opposite_angle = (l1_angle + 180) % 360
+        for j in range(5):
+            scale = 1.0 - (j * 0.2)
+            if scale <= 0:
+                break
+            create_triangle_arrow(intersection_point, opposite_angle, arrow_side_length, arrow_base_width, msp, scale=scale)
+    
+    elif stype in ['C', 'V']:
+        print("    STYPE이 C 또는 V - 수직선 처리")
+        
+        # 수직인 두 선(90도, 270도) 찾기
+        vertical_lines = []
+        for i, angle in enumerate(line_angles):
+            if angle == 90 or angle == 270:
+                vertical_lines.append((orthogonal_lines[i], angle))
+        
+        if len(vertical_lines) < 2:
+            print("    수직선을 찾을 수 없음")
+            return None
+        
+        # 각 수직선에 대해 처리
+        for line, angle in vertical_lines:
+            angle_rad = math.radians(angle)
+            
+            # 5mm, 6mm, 7mm 떨어진 지점
+            distances = [5.0, 6.0, 7.0]
+            points = []
+            
+            for dist in distances:
+                point = (
+                    cp_center[0] + dist * math.cos(angle_rad),
+                    cp_center[1] + dist * math.sin(angle_rad)
+                )
+                points.append(point)
+                
+                # PIPE 기울기와 동일하게 교차하는 3mm 흰색 선
+                pipe_angle_deg = math.degrees(pipe_angle)
+                perp_angle_rad = math.radians(pipe_angle_deg)
+                
+                p1 = (
+                    point[0] - 1.5 * math.cos(perp_angle_rad),
+                    point[1] - 1.5 * math.sin(perp_angle_rad)
+                )
+                p2 = (
+                    point[0] + 1.5 * math.cos(perp_angle_rad),
+                    point[1] + 1.5 * math.sin(perp_angle_rad)
+                )
+                
+                msp.add_line(p1, p2, dxfattribs={'color': WHITE, 'layer': 'SUPP'})
+            
+            # 5mm 선의 끝점과 6mm 선의 시작점 연결
+            # 여기서는 각 교차선의 끝점을 사용
+            pipe_angle_deg = math.degrees(pipe_angle)
+            perp_angle_rad = math.radians(pipe_angle_deg)
+            
+            # 5mm 위치의 끝점
+            p5_end = (
+                points[0][0] + 1.5 * math.cos(perp_angle_rad),
+                points[0][1] + 1.5 * math.sin(perp_angle_rad)
+            )
+            # 6mm 위치의 시작점
+            p6_start = (
+                points[1][0] - 1.5 * math.cos(perp_angle_rad),
+                points[1][1] - 1.5 * math.sin(perp_angle_rad)
+            )
+            msp.add_line(p5_end, p6_start, dxfattribs={'color': WHITE, 'layer': 'SUPP'})
+            
+            # 6mm 선의 끝점과 7mm 선의 시작점 연결
+            p6_end = (
+                points[1][0] + 1.5 * math.cos(perp_angle_rad),
+                points[1][1] + 1.5 * math.sin(perp_angle_rad)
+            )
+            p7_start = (
+                points[2][0] - 1.5 * math.cos(perp_angle_rad),
+                points[2][1] - 1.5 * math.sin(perp_angle_rad)
+            )
+            msp.add_line(p6_end, p7_start, dxfattribs={'color': WHITE, 'layer': 'SUPP'})
+    
+    return ct['entity']  # 삭제할 CT 반환
 
 def main():
     root = tk.Tk(); root.withdraw()
@@ -872,11 +1147,15 @@ def main():
             doc = ezdxf.readfile(filepath)
             msp = doc.modelspace()
             
-            # NODE와 SUPP 레이어가 없으면 생성
+            # NODE, SUPP, A1, A2 레이어가 없으면 생성
             if 'NODE' not in doc.layers:
                 doc.layers.new('NODE')
             if 'SUPP' not in doc.layers:
                 doc.layers.new('SUPP')
+            if 'A1' not in doc.layers:
+                doc.layers.new('A1')
+            if 'A2' not in doc.layers:
+                doc.layers.new('A2')
 
             s1_list = []
             for e in msp:
@@ -884,12 +1163,18 @@ def main():
                     pts = extract_points(e)
                     if pts and len(pts) == 2:
                         s1_list.append({'ent': e, 'pts': pts})
+            
+            print(f"\n✅ 유효한 S1 개수: {len(s1_list)}")
 
-            croschk = []
+            # 1단계 처리 - A1, A2를 저장하고 나중에 삭제
+            entities_to_delete = []  # 삭제할 엔티티들
+            ct_entities_to_delete = []  # CT 엔티티들
+            
+            # 먼저 A1, A2와 관련된 정보를 수집하는 루프
+            a1_a2_info = []
             for rec1 in s1_list:
                 for rec2 in s1_list:
-                    if rec1 is rec2:
-                        continue
+                    if rec1 is rec2: continue
                     if not hasattr(rec1['ent'], 'dxf') or not hasattr(rec2['ent'], 'dxf'):
                         continue
                     
@@ -904,11 +1189,11 @@ def main():
                     dmin = min(all_distances)
                     dmax = max(all_distances)
                     
-                    # 점 간 거리는 3.5~7mm 사이여야 함 (S1 길이 3~4mm 고려)
+                    # 점 간 거리는 3.5~7mm 사이여야 함
                     if not (3.5 <= dmin <= 7.0 and 3.5 <= dmax <= 7.0):
                         continue
                     
-                    # 두 폴리라인의 점들이 0.2mm 범위에서 같은 위치에 있으면 PASS (평행해야 하고 만나면 안됨)
+                    # 두 폴리라인의 점들이 0.2mm 범위에서 같은 위치에 있으면 PASS
                     if any(calc_distance(p1, p2) <= 0.2 for p1 in rec1['pts'] for p2 in rec2['pts']):
                         continue
 
@@ -922,39 +1207,47 @@ def main():
 
                     rec1['ent'].dxf.color = CYAN
                     rec2['ent'].dxf.color = CYAN
-                    center1 = midpoint(rec1['pts'])
+                    center1 = midpoint([midpoint(rec1['pts']), midpoint(rec2['pts'])])
 
                     A1 = next(({'ent':e,'pts':extract_points(e)} for e in msp if len(extract_points(e))==3 and any(calc_distance(p,center1)<=1 for p in extract_points(e))), None)
                     if not A1: continue
+                    
+                    # A1 레이어와 색상 설정
+                    A1['ent'].dxf.layer = 'A1'
+                    A1['ent'].dxf.color = RED
+                    
                     mid_p2 = A1['pts'][1]
                     A2 = next(({'ent':e,'pts':extract_points(e)} for e in msp if e is not A1['ent'] and len(extract_points(e)) in (2,3) and any(calc_distance(p,mid_p2)<=0.3 for p in extract_points(e))), None)
-                    if not A2:
-                        # A2를 찾지 못한 경우 - 아무것도 삭제하지 않음
-                        continue
-                    A2['ent'].dxf.color = RED
-                    farpt = max(A2['pts'], key=lambda p: calc_distance(p, center1))
-                    PS = next(({'ent':e,'pts':extract_points(e)} for e in msp if is_ps_candidate(extract_points(e)) and any(calc_distance(p,farpt)<=7 for p in extract_points(e))), None)
-                    if not PS:
-                        # PS를 찾지 못한 경우 - 아무것도 삭제하지 않음
-                        continue
-                    PS['ent'].dxf.color = CYAN
-                    ps_point = min(PS['pts'], key=lambda p: calc_distance(p, center1))
-                    line = msp.add_line(center1, ps_point, dxfattribs={'color': CYAN})
-                    croschk.append({'s1': rec1['ent'], 's2': rec2['ent'], 'line': line, 'ps': ps_point})
+                    if not A2: continue
                     
-                    # 전체 작업이 성공한 경우에만 A1, A2 삭제
-                    # A1 삭제 시 ARROW 레이어의 1mm 이하 LINE도 함께 삭제
+                    # A2 레이어와 색상 설정
+                    A2['ent'].dxf.layer = 'A2'
+                    A2['ent'].dxf.color = RED
+                    
+                    # A1, A2 정보 저장
+                    a1_a2_info.append({
+                        's1': rec1,
+                        's2': rec2,
+                        'a1': A1,
+                        'a2': A2,
+                        'center': center1
+                    })
+                    
+                    # ARROW 레이어의 1mm 이하 LINE 찾기
                     arrow_lines = find_arrow_lines(msp, A1['pts'])
                     for arrow_line in arrow_lines:
-                        msp.delete_entity(arrow_line)
-                        print(f"  ARROW 레이어 LINE 삭제됨 (길이: {polyline_length(extract_points(arrow_line)):.3f}mm)")
+                        entities_to_delete.append(arrow_line)
+                        print(f"  ARROW 레이어 LINE 삭제 예정 (길이: {polyline_length(extract_points(arrow_line)):.3f}mm)")
                     
-                    msp.delete_entity(A1['ent'])
-                    msp.delete_entity(A2['ent'])
+                    entities_to_delete.append(A1['ent'])
+                    entities_to_delete.append(A2['ent'])
                     break
 
+            # S1 쌍을 찾아 CP 원, 직교선, NODE 생성하는 루프
             supptag = []
-            created_circles = []  # 생성된 원들을 추적
+            created_circles = []
+            texts_to_add = []  # 텍스트 추가를 위한 리스트
+            
             for rec1 in list(s1_list):
                 for rec2 in list(s1_list):
                     if rec1 is rec2: continue
@@ -979,51 +1272,23 @@ def main():
                     # 두 폴리라인의 점들이 0.2mm 범위에서 같은 위치에 있으면 PASS
                     if any(calc_distance(p1, p2) <= 0.2 for p1 in rec1['pts'] for p2 in rec2['pts']):
                         continue
+                    
                     pts1, pts2 = rec1['pts'], rec2['pts']
                     center_sl1 = midpoint([midpoint(pts1), midpoint(pts2)])
                     
-                    # CP 원 그리기 (반지름 0.25mm로 변경)
+                    # CP 원 그리기
                     cp_circle = msp.add_circle(center=center_sl1, radius=HALF_SL1, dxfattribs={'color': CYAN})
                     created_circles.append(cp_circle)
                     
                     # 파이프 방향 계산 및 직교선 생성
                     pipe_angle = get_pipe_angle(pts1, pts2)
                     
-                    # 직교선 각도 미리 계산 (NODE 위치 결정에 필요)
-                    pipe_angle_deg = math.degrees(pipe_angle) % 360
-                    normalized_angle = round(pipe_angle_deg / 30) * 30 % 360
-                    
-                    if 85 <= pipe_angle_deg <= 95 or 265 <= pipe_angle_deg <= 275:
-                        normalized_angle = 90 if pipe_angle_deg < 180 else 270
-                    
-                    # 직교선 각도 결정
-                    if normalized_angle == 0 or normalized_angle == 180:
-                        orthogonal_angles = [90, 270, 30, 210]
-                    elif normalized_angle == 90 or normalized_angle == 270:
-                        orthogonal_angles = [30, 150, 210, 330]
-                    elif normalized_angle == 30 or normalized_angle == 210:
-                        orthogonal_angles = [90, 270, 150, 330]
-                    elif normalized_angle == 60 or normalized_angle == 240:
-                        orthogonal_angles = [90, 270, 180, 0]
-                    elif normalized_angle == 120 or normalized_angle == 300:
-                        orthogonal_angles = [90, 270, 60, 240]
-                    elif normalized_angle == 150 or normalized_angle == 330:
-                        orthogonal_angles = [90, 270, 30, 210]
-                    else:
-                        orth_angle = (pipe_angle_deg + 90) % 360
-                        orth_angle_normalized = round(orth_angle / 30) * 30
-                        orthogonal_angles = [
-                            orth_angle_normalized % 360,
-                            (orth_angle_normalized + 180) % 360,
-                            (orth_angle_normalized + 60) % 360,
-                            (orth_angle_normalized + 240) % 360
-                        ]
-                    
-                    orthogonal_lines = create_iso_orthogonal_lines(center_sl1, pipe_angle, LINE_LENGTH, msp)
+                    # 직교선과 각도 함께 받기
+                    orthogonal_lines, line_angles = create_iso_orthogonal_lines(center_sl1, pipe_angle, LINE_LENGTH, msp)
                     
                     # NODENO 원 위치 결정 (4개의 직교선 방향 중 최적 선택)
-                    nodeno_pos = find_best_orthogonal_position(
-                        center_sl1, NODENO_OFFSET_Y, pipe_angle, msp, [cp_circle]
+                    nodeno_pos, node_angle = find_best_orthogonal_position(
+                        center_sl1, NODENO_OFFSET_Y, pipe_angle, msp, [cp_circle], line_angles
                     )
                     
                     # NODENO 원 그리기
@@ -1033,21 +1298,14 @@ def main():
                         dxfattribs={'color': MAGENTA, 'layer': 'NODE'}
                     )
                     
-                    # 텍스트 '0000' 추가 - MTEXT 사용
-                    add_text_to_node(msp, nodeno_pos, TEXT_VALUE, TEXT_HEIGHT, YELLOW, 'NODE')
-                    
                     # CP와 NODENO 중심을 잇는 선 (NODE 원에서 trim)
-                    # 선의 방향 계산
                     dx = nodeno_pos[0] - center_sl1[0]
                     dy = nodeno_pos[1] - center_sl1[1]
                     distance = math.hypot(dx, dy)
                     
                     if distance > 0:
-                        # 정규화된 방향 벡터
                         ux = dx / distance
                         uy = dy / distance
-                        
-                        # NODE 원 경계에서의 점 계산 (trim 끝점)
                         trim_end_x = nodeno_pos[0] - ux * NODENO_RADIUS
                         trim_end_y = nodeno_pos[1] - uy * NODENO_RADIUS
                         
@@ -1057,91 +1315,61 @@ def main():
                             dxfattribs={'color': WHITE, 'layer': 'NODE'}
                         )
                     
-                    msp.delete_entity(rec1['ent']); msp.delete_entity(rec2['ent'])
+                    # 텍스트 추가를 위해 저장
+                    texts_to_add.append(nodeno_pos)
+                    
+                    # 2단계 처리를 위해 해당하는 A1, A2 정보 찾기
+                    matching_info = None
+                    for info in a1_a2_info:
+                        if (info['s1']['ent'] == rec1['ent'] and info['s2']['ent'] == rec2['ent']) or \
+                           (info['s1']['ent'] == rec2['ent'] and info['s2']['ent'] == rec1['ent']):
+                            matching_info = info
+                            break
+                    
+                    # 2단계 처리
+                    if matching_info:
+                        ct_entity = process_type2_support(
+                            msp, matching_info['a1'], matching_info['a2'], 
+                            center_sl1, orthogonal_lines, line_angles, 
+                            pipe_angle, node_angle
+                        )
+                        if ct_entity:
+                            ct_entities_to_delete.append(ct_entity)
+                    
+                    msp.delete_entity(rec1['ent'])
+                    msp.delete_entity(rec2['ent'])
                     supptag.append({'s1': rec1['ent'], 's2': rec2['ent'], 'center': center_sl1})
                     break
 
-            for rec in croschk:
-                match = next((x for x in supptag if x['s1']==rec['s1'] and x['s2']==rec['s2']), None)
-                if not match: continue
-                ln = rec['line']
-                ln.dxf.start = rec['ps']
-                ln.dxf.end = (*match['center'], 0)
-                msp.delete_entity(rec['s1']); msp.delete_entity(rec['s2'])
-
-            # ===== 추가된 코드: PS-원 중심 연결선 재확인 및 조정 =====
-            print("\n📐 PS-원 중심 연결선 재확인 시작...")
-            
-            # 모든 원(반지름 0.25mm) 찾기
-            circles = []
-            for e in msp:
-                if e.dxftype() == 'CIRCLE' and abs(e.dxf.radius - HALF_SL1) < 0.01:
-                    circles.append({'ent': e, 'center': (e.dxf.center.x, e.dxf.center.y)})
-            
-            # 모든 7점 폴리라인(PS) 찾기
-            ps_entities = []
-            for e in msp:
-                pts = extract_points(e)
-                if is_ps_candidate(pts):
-                    ps_entities.append({'ent': e, 'pts': pts})
-            
-            # 모든 CYAN 색상의 LINE 검사
-            adjustment_count = 0
-            for e in msp:
-                if e.dxftype() == 'LINE' and hasattr(e.dxf, 'color') and e.dxf.color == CYAN:
-                    line_start = (e.dxf.start.x, e.dxf.start.y)
-                    line_end = (e.dxf.end.x, e.dxf.end.y)
-                    
-                    # 이 선이 PS와 연결되어 있는지 확인
-                    connected_to_ps = False
-                    for ps in ps_entities:
-                        for pt in ps['pts']:
-                            if calc_distance(line_start, pt) < 0.1 or calc_distance(line_end, pt) < 0.1:
-                                connected_to_ps = True
-                                break
-                        if connected_to_ps:
-                            break
-                    
-                    if connected_to_ps:
-                        # 가장 가까운 원 찾기
-                        closest_circle = None
-                        min_dist = float('inf')
-                        
-                        for circle in circles:
-                            dist_start = calc_distance(line_start, circle['center'])
-                            dist_end = calc_distance(line_end, circle['center'])
-                            
-                            if dist_start < min_dist:
-                                min_dist = dist_start
-                                closest_circle = circle
-                                is_start_closer = True
-                            if dist_end < min_dist:
-                                min_dist = dist_end
-                                closest_circle = circle
-                                is_start_closer = False
-                        
-                        # 원에 가까운 끝점을 원의 중심으로 조정
-                        if closest_circle and min_dist < 5.0:  # 5mm 이내에 원이 있으면
-                            if is_start_closer:
-                                old_point = line_start
-                                e.dxf.start = (*closest_circle['center'], 0)
-                            else:
-                                old_point = line_end
-                                e.dxf.end = (*closest_circle['center'], 0)
-                            
-                            adjustment_count += 1
-                            print(f"  선 조정 #{adjustment_count}: "
-                                  f"({old_point[0]:.3f}, {old_point[1]:.3f}) → "
-                                  f"({closest_circle['center'][0]:.3f}, {closest_circle['center'][1]:.3f})")
-            
-            print(f"✅ PS-원 중심 연결선 재조정 완료: {adjustment_count}개 선 조정됨")
-            # ===== 추가 코드 끝 =====
-            
             # ===== ELBO와 TEE TEXT 처리 =====
             print("\n🔧 ELBO 및 TEE TEXT 특수 노드 처리 시작...")
             special_nodes_count = process_special_nodes(msp, doc)
             print(f"✅ 특수 노드 처리 완료: {special_nodes_count}개 노드 생성됨")
-            # ===== 특수 노드 처리 끝 =====
+            
+            # 모든 그래픽 요소 처리 후 텍스트 추가
+            print("\n📝 텍스트 추가 시작...")
+            for text_pos in texts_to_add:
+                add_text_to_node(msp, text_pos, TEXT_VALUE, TEXT_HEIGHT, YELLOW, 'NODE', doc)
+            print(f"✅ {len(texts_to_add)}개 텍스트 추가 완료")
+            
+            # 모든 작업 완료 후 A1, A2, CT 삭제
+            print("\n🗑️ 엔티티 삭제 시작...")
+            deleted_count = 0
+            for ent in entities_to_delete:
+                try:
+                    msp.delete_entity(ent)
+                    deleted_count += 1
+                except:
+                    pass
+            
+            for ent in ct_entities_to_delete:
+                try:
+                    msp.delete_entity(ent)
+                    deleted_count += 1
+                except:
+                    pass
+            
+            print(f"✅ {deleted_count}개 엔티티 삭제 완료")
 
             out_path = os.path.splitext(filepath)[0] + '_SUPP.dxf'
             doc.saveas(out_path)

@@ -398,6 +398,40 @@ def line_exists_between_points(msp, p1, p2, tolerance=1e-6):
             return True
     return False
 
+def calculate_polygon_area(points):
+    """폴리곤의 면적 계산 (Shoelace formula)"""
+    n = len(points)
+    if n < 3:
+        return 0
+    
+    # 닫힌 폴리곤인 경우 마지막 점 제거 (첫 점과 동일)
+    if points[0] == points[-1]:
+        points = points[:-1]
+        n = len(points)
+    
+    area = 0
+    for i in range(n):
+        j = (i + 1) % n
+        area += points[i][0] * points[j][1]
+        area -= points[j][0] * points[i][1]
+    
+    return abs(area) / 2
+
+def calculate_perimeter(points):
+    """폴리곤의 둘레 계산"""
+    perimeter = 0
+    n = len(points)
+    
+    # 모든 연속된 점들 사이의 거리 합산
+    for i in range(n-1):
+        perimeter += distance(points[i], points[i+1])
+    
+    # 닫힌 폴리곤이 아닌 경우 마지막 점과 첫 점 사이 거리 추가
+    if points[0] != points[-1]:
+        perimeter += distance(points[-1], points[0])
+    
+    return perimeter
+
 def process_dxf(filepath: str):
     print(f"\n📁 처리 중: {Path(filepath).name}")
     doc = ezdxf.readfile(filepath)
@@ -479,19 +513,16 @@ def process_dxf(filepath: str):
                         ent.dxf.layer = 'INSTNO'
                         ent.dxf.color = 2
 
-        # 4점 polyline (PL4) - FALL 조건 추가
+        # 4점 polyline (PL4) - FALL 조건 수정
         elif n==4:
-            # 점간 거리 계산 (마지막 점에서 첫 점으로의 거리 포함)
-            dists = all_pair_distances(pts)
-            last_to_first = distance(pts[3], pts[0])
+            # 면적과 둘레 계산
+            area = calculate_polygon_area(pts)
+            perimeter = calculate_perimeter(pts)
             
-            # FALL 패턴 확인 (허용 오차 0.1mm)
-            tolerance = 0.1
-            if (len(dists) >= 3 and
-                abs(dists[0] - 7.445) <= tolerance and  # 점1→점2
-                abs(dists[1] - 1.612) <= tolerance and  # 점2→점3
-                abs(dists[2] - 7.592) <= tolerance and  # 점3→점4
-                abs(last_to_first - 0) <= tolerance):   # 점4→점1
+            # FALL 패턴 확인 (허용 오차 0.5mm)
+            tolerance = 0.5
+            if (abs(area - 9.1000) <= tolerance and
+                abs(perimeter - 20.6562) <= tolerance):
                 ent.dxf.layer = 'FALL'
                 ent.dxf.color = 2
             else:
@@ -677,7 +708,7 @@ def process_dxf(filepath: str):
         if not txt.dxf.text:
             continue
         
-        txt.dxf.width = 0.87      # 원하는 폭으로 설정
+        txt.dxf.width = 0.85      # 원하는 폭으로 설정
         txt.dxf.style = "ARIAL"  # 폰트 스타일
         txt.dxf.color = 2        # 색상 (2 = 노란색)
 
