@@ -8,24 +8,25 @@ from typing import List, Tuple, Optional, Dict, Set
 # ==================== 타입/상수 ====================
 Point = Tuple[float, float]
 
-# 탐지 파라미터 (필요시 조정)
+# 탐지 파라미터 (사용자 지정값)
 INST_LAYER = "GT_1"   # INST 후보 폴리라인 레이어
-AD1_NEAR_R = 5.0      # AD1: INST 중심 반경
-AD1_LEN_MAX = 5.0     # AD1: 총 길이 상한
-AD1_VERT_COUNT = 3    # AD1: 꼭짓점 수
+AD1_NEAR_R = 10.0     # AD1: INST 중심 반경
+AD1_LEN_MAX = 50.0    # AD1: 총 길이 상한
+AD1_VERT_COUNT_MIN = 3    # AD1: 최소 꼭짓점 수
+AD1_VERT_COUNT_MAX = 4    # AD1: 최대 꼭짓점 수
 
 AD2_LAYER = "ARROW"   # AD2: LINE 레이어
-AD2_LEN_MAX = 1.0     # AD2: LINE 길이 상한
-AD2_NEAR_TOL = 0.1    # AD1 점 ↔ AD2 끝점 근접 허용
+AD2_LEN_MAX = 5.0     # AD2: LINE 길이 상한
+AD2_NEAR_TOL = 1.0    # AD1 점 ↔ AD2 끝점 근접 허용
 
 AD3_LAYER = "PL2"     # AD3: 폴리라인 레이어
-AD3_TOUCH_TOL = 0.1   # AD1과 AD3 점 접촉 허용 오차
+AD3_TOUCH_TOL = 1.0   # AD1과 AD3 점 접촉 허용 오차
 AD3_MAX_PER_AD1 = 2   # AD1 하나당 AD3 최대 매칭 수
 
 AD4_LAYER = "PL2"     # AD4: LINE 레이어
-AD4_NEAR_R = 5.0      # AD4: INST 중심 반경
+AD4_NEAR_R = 10.0     # AD4: INST 중심 반경
 
-CYAN_COLOR = 4        # CYAN 색상 인덱스
+VERIFY_BASENAME = "INDEL_verify_report"  # 검증 리포트 파일 접두어
 
 # ==================== 공용 유틸 ====================
 
@@ -154,21 +155,73 @@ def text_in_rect_unrotated_T_keys(t, rect_min: Point, rect_max: Point) -> bool:
 def safe_handle(e) -> Optional[str]:
     return e.dxf.handle if (is_valid_entity(e) and hasattr(e.dxf, "handle")) else None
 
-# ==================== 레이어 및 색상 변경 ====================
+# ==================== 소유 컨테이너 기반 삭제 유틸 ====================
 
-def change_entity_layer_color(e, new_layer: str, color_index: int = CYAN_COLOR):
-    """엔티티의 레이어와 색상을 변경"""
-    if is_valid_entity(e):
-        try:
-            e.dxf.layer = new_layer
-            e.dxf.color = color_index
-            return True
-        except Exception as ex:
-            print(f"  [변경 실패] {e.dxftype()}: {ex}")
-            return False
-    return False
+def get_owner_layout(doc, e):
+    """엔티티의 owner(레이아웃/블록 레코드)를 찾아 해당 엔티티 스페이스 컨테이너를 반환"""
+    try:
+        owner_handle = e.dxf.owner
+    except Exception:
+        return None
+    if not owner_handle:
+        return None
+    owner = doc.entitydb.get(owner_handle)
+    if owner is None:
+        return None
+    if owner.dxftype() == "BLOCK_RECORD":
+        name = owner.dxf.name
+        # Model/Paper 특수 이름
+        if name == "*Model_Space":
+            return doc.modelspace()
+        elif name == "*Paper_Space":
+            try:
+                return doc.layout("*Paper_Space")
+            except Exception:
+                for lay in doc.layouts:
+                    if lay.name != "Model":
+                        return lay
+                return None
+        else:
+            # 일반 블록
+            return doc.blocks.get(name)
+    return None
 
-# ==================== 공통 쿼리 유틸 ====================
+def hard_delete(doc, e, deleted: Set[str]) -> bool:
+    """
+    소유 컨테이너에서 안전 삭제 (BLOCK 내부/레이아웃 모두 지원).
+    ⚠️ 반드시 '삭제 전'에 핸들과 타입을 캐싱하고, 삭제 후에는 e.dxf에 접근하지 않는다.
+    """
+    # 삭제 전 캐시
+    try:
+        etype = e.dxftype() if hasattr(e, "dxftype") else str(type(e))
+    except Exception:
+        etype = str(type(e))
+    h = None
+    try:
+        if is_valid_entity(e) and hasattr(e.dxf, "handle"):
+            h = e.dxf.handle
+    except Exception:
+        h = None
+
+    # 중복 방지
+    if h and h in deleted:
+        return False
+
+    try:
+        owner_space = get_owner_layout(doc, e)
+        if owner_space is not None:
+            owner_space.delete_entity(e)  # 이후 e는 무효일 수 있음
+        else:
+            e.destroy()  # 최후 수단
+        if h:
+            deleted.add(h)
+        return True
+    except Exception as ex:
+        msg_h = h if h is not None else "unknown"
+        print(f"  [삭제 실패-hard] {etype} ({msg_h}): {ex}")
+        return False
+
+# ==================== 공통 쿼리 유틸 (검증/탐색용) ====================
 
 def collect_all_spaces(doc):
     """ModelSpace, 모든 PaperSpace 레이아웃, 모든 Blocks 컨테이너를 반환"""
@@ -203,15 +256,15 @@ def find_related_entities_for_inst(inst, center: Point, all_polys, all_lines, al
         "DEL1": []
     }
     
-    # 1) AD1 찾기 (INST 근처의 작은 삼각형 폴리라인) - 원래 레이어만 체크
+    # 1) AD1 찾기 (INST 근처의 작은 삼각형 폴리라인)
     ad1_entities = []
     for p in all_polys:
         if p is inst:
             continue
-        if getattr(p.dxf, "layer", None) != INST_LAYER:  # 원래 레이어만!
+        if getattr(p.dxf, "layer", None) != INST_LAYER:
             continue
         pts, _closed = poly_vertices(p)
-        if len(pts) != AD1_VERT_COUNT:
+        if len(pts) < AD1_VERT_COUNT_MIN or len(pts) > AD1_VERT_COUNT_MAX:
             continue
         if not pts:
             continue
@@ -223,27 +276,26 @@ def find_related_entities_for_inst(inst, center: Point, all_polys, all_lines, al
     
     result["AD1"] = ad1_entities
     
-    # 2) AD2 찾기 (AD1과 연결된 화살표 선) - 원래 레이어만 체크
+    # 2) AD2 찾기 (AD1과 연결된 화살표 선)
     ad2_entities = []
     for ad1 in ad1_entities:
         pts_ad1, _ = poly_vertices(ad1)
         if not pts_ad1:
             continue
         for ln in all_lines:
-            if getattr(ln.dxf, "layer", None) != AD2_LAYER:  # 원래 레이어만!
+            if getattr(ln.dxf, "layer", None) != AD2_LAYER:
                 continue
             p0, p1 = get_line_endpoints(ln)
             if hypot_xy(p0, p1) > AD2_LEN_MAX + 1e-9:
                 continue
             if any(near((pt[0], pt[1]), p0, AD2_NEAR_TOL) or near((pt[0], pt[1]), p1, AD2_NEAR_TOL) for pt in pts_ad1):
-                if ln not in ad2_entities:  # 중복 방지
-                    ad2_entities.append(ln)
+                ad2_entities.append(ln)
     
     result["AD2"] = ad2_entities
     
-    # 3) AD3 찾기 (AD1과 접촉하는 PL2 폴리라인) - 원래 레이어만 체크
-    ad3_pairs = []  # (AD3 poly, AD1)
-    pl2_polys = [ent for ent in all_polys if getattr(ent.dxf, "layer", None) == AD3_LAYER]  # 원래 레이어만!
+    # 3) AD3 찾기 (AD1과 접촉하는 PL2 폴리라인)
+    ad3_entities = []
+    pl2_polys = [ent for ent in all_polys if getattr(ent.dxf, "layer", None) == AD3_LAYER]
     
     for ad1 in ad1_entities:
         pts_ad1, _ = poly_vertices(ad1)
@@ -259,13 +311,13 @@ def find_related_entities_for_inst(inst, center: Point, all_polys, all_lines, al
             touch = any(near((p1[0], p1[1]), (p2[0], p2[1]), AD3_TOUCH_TOL) for p1 in pts_ad1 for p2 in pts_p)
             if not touch:
                 continue
-            ad3_pairs.append((p, ad1))
+            ad3_entities.append(p)
             matched += 1
     
-    result["AD3"] = [p for p, _ in ad3_pairs]
+    result["AD3"] = ad3_entities
     
-    # 4) AD4 찾기 (INST 근처의 PL2 라인 중 가장 가까운 것) - 원래 레이어만 체크
-    pl2_lines = [ln for ln in all_lines if getattr(ln.dxf, "layer", None) == AD4_LAYER]  # 원래 레이어만!
+    # 4) AD4 찾기 (INST 근처의 PL2 라인 중 가장 가까운 것)
+    pl2_lines = [ln for ln in all_lines if getattr(ln.dxf, "layer", None) == AD4_LAYER]
     candidates = []
     for ln in pl2_lines:
         p0, p1 = get_line_endpoints(ln)
@@ -277,27 +329,36 @@ def find_related_entities_for_inst(inst, center: Point, all_polys, all_lines, al
         candidates.sort(key=lambda x: x[1])
         result["AD4"] = [candidates[0][0]]  # 가장 가까운 것만
     
-    # 5) DEL1 텍스트 찾기
+    # 5) DEL1 텍스트 찾기 - AD3와 AD1 쌍 재구성
     del1_texts = []
-    for p_ad3, ad1 in ad3_pairs:
-        pts_ad3, _ = poly_vertices(p_ad3)
+    for i, ad1 in enumerate(ad1_entities):
         pts_ad1, _ = poly_vertices(ad1)
-        if not pts_ad3 or not pts_ad1:
+        if not pts_ad1:
             continue
+            
+        # 이 AD1과 연결된 AD3 찾기
+        for ad3 in ad3_entities:
+            pts_ad3, _ = poly_vertices(ad3)
+            if not pts_ad3:
+                continue
+                
+            # AD1과 AD3가 접촉하는지 확인
+            touch = any(near((p1[0], p1[1]), (p2[0], p2[1]), AD3_TOUCH_TOL) for p1 in pts_ad1 for p2 in pts_ad3)
+            if not touch:
+                continue
 
-        def min_d_to_ad1(xy: Point) -> float:
-            return min(hypot_xy(xy, (q[0], q[1])) for q in pts_ad1)
+            def min_d_to_ad1(xy: Point) -> float:
+                return min(hypot_xy(xy, (q[0], q[1])) for q in pts_ad1)
 
-        dlist = [(min_d_to_ad1((pt[0], pt[1])), (pt[0], pt[1])) for pt in pts_ad3]
-        dlist.sort(key=lambda x: x[0])
-        AP2 = dlist[-1][1]  # 가장 먼 점
+            dlist = [(min_d_to_ad1((pt[0], pt[1])), (pt[0], pt[1])) for pt in pts_ad3]
+            dlist.sort(key=lambda x: x[0])
+            AP2 = dlist[-1][1]  # 가장 먼 점
 
-        rect_min = (AP2[0] - 60.0, AP2[1] - 7.0)
-        rect_max = (AP2[0] + 15.0, AP2[1] + 7.0)
+            rect_min = (AP2[0] - 60.0, AP2[1] - 7.0)
+            rect_max = (AP2[0] + 15.0, AP2[1] + 7.0)
 
-        for t in all_texts:
-            if text_in_rect_unrotated_T_keys(t, rect_min, rect_max):
-                if t not in del1_texts:  # 중복 방지
+            for t in all_texts:
+                if text_in_rect_unrotated_T_keys(t, rect_min, rect_max):
                     del1_texts.append(t)
     
     result["DEL1"] = del1_texts
@@ -312,15 +373,10 @@ def process_dxf_file(filepath: str) -> bool:
         doc = ezdxf.readfile(filepath)
         msp = doc.modelspace()
 
-        # 레이어가 없으면 생성하고 CYAN 색상 설정
-        target_layers = ["INST", "AD1", "AD2", "AD3", "AD4", "DEL1"]
-        for layer_name in target_layers:
+        # 필요 레이어가 없으면 생성 (삭제 자체에는 영향 없음)
+        for layer_name in ("INST", "AD1", "AD2", "AD3", "AD4", "DEL1"):
             if layer_name not in doc.layers:
-                new_layer = doc.layers.add(layer_name)
-                new_layer.color = CYAN_COLOR
-            else:
-                # 기존 레이어의 색상도 CYAN으로 변경
-                doc.layers.get(layer_name).color = CYAN_COLOR
+                doc.layers.add(layer_name)
 
         # ---------- 1) INST 찾기 ----------
         inst_entities: List[Tuple[object, Point]] = []
@@ -342,42 +398,8 @@ def process_dxf_file(filepath: str) -> bool:
         all_lines = list(all_query(doc, "LINE"))
         all_texts = list(all_query(doc, "TEXT"))
 
-        # ---------- 2) 모든 INST에 대해 관련 엔티티 찾기 (변경하지 않고) ----------
-        # 엔티티와 카테고리를 매핑 (같은 엔티티가 여러 카테고리에 속할 수 있음)
-        entity_changes = {}  # {entity_handle: category}
-        
-        # 모든 INST 등록
-        for inst, _ in inst_entities:
-            h = safe_handle(inst) or str(id(inst))
-            entity_changes[h] = "INST"
-        
-        # 각 INST별 관련 엔티티 수집
-        inst_related_entities = []  # 각 INST별 관련 엔티티 정보 저장
-        
-        for inst_idx, (inst, center) in enumerate(inst_entities):
-            print(f"\n분석중 INST #{inst_idx + 1}/{len(inst_entities)}")
-            
-            # 이 INST에 대한 관련 엔티티 찾기
-            related = find_related_entities_for_inst(inst, center, all_polys, all_lines, all_texts)
-            inst_related_entities.append(related)
-            
-            # 각 카테고리별로 저장 (같은 엔티티가 여러 INST에 연관될 수 있음)
-            for category, entities in related.items():
-                for e in entities:
-                    h = safe_handle(e) or str(id(e))
-                    # 기존 카테고리와 다르면 우선순위에 따라 결정
-                    # 우선순위: DEL1 > AD4 > AD3 > AD2 > AD1
-                    priority = {"AD1": 1, "AD2": 2, "AD3": 3, "AD4": 4, "DEL1": 5}
-                    if h not in entity_changes or priority.get(category, 0) > priority.get(entity_changes.get(h), 0):
-                        entity_changes[h] = category
-            
-            # 이 INST에 대한 결과 출력
-            counts_str = ", ".join([f"{cat}:{len(ents)}" for cat, ents in related.items() if ents])
-            if counts_str:
-                print(f"  -> 찾은 엔티티: {counts_str}")
-        
-        # 카테고리별로 엔티티 정리
-        all_changes = {
+        # ---------- 2) 각 INST별로 관련 엔티티 찾기 ----------
+        all_to_delete = {
             "INST": [],
             "AD1": [],
             "AD2": [],
@@ -388,59 +410,66 @@ def process_dxf_file(filepath: str) -> bool:
         
         # INST 엔티티 추가
         for inst, _ in inst_entities:
-            all_changes["INST"].append(inst)
+            all_to_delete["INST"].append(inst)
         
-        # 각 INST에서 찾은 모든 엔티티 추가 (중복 포함)
-        for related in inst_related_entities:
+        print("\n=== 각 INST별 관련 엔티티 찾기 ===")
+        
+        for inst_idx, (inst, center) in enumerate(inst_entities):
+            print(f"\n[INST #{inst_idx + 1}/{len(inst_entities)}]")
+            print(f"  중심좌표: ({center[0]:.2f}, {center[1]:.2f})")
+            
+            # 이 INST에 대한 관련 엔티티 찾기
+            related = find_related_entities_for_inst(inst, center, all_polys, all_lines, all_texts)
+            
+            # 각 카테고리별로 삭제 대상에 추가
             for category, entities in related.items():
-                all_changes[category].extend(entities)
+                all_to_delete[category].extend(entities)
+                if entities:
+                    print(f"  {category}: {len(entities)}개 찾음")
 
-        # ---------- 3) 모든 엔티티의 레이어와 색상을 한 번에 변경 ----------
-        print("\n=== 레이어/색상 변경 시작 ===")
-        
-        # 실제 변경할 고유 엔티티들 (중복 제거)
-        unique_entities = {}  # {handle: (entity, category)}
-        changed_counts = {
-            "INST": 0,
-            "AD1": 0,
-            "AD2": 0,
-            "AD3": 0,
-            "AD4": 0,
-            "DEL1": 0
-        }
-        
-        # 찾은 엔티티 수 (중복 포함)
-        found_counts = {category: len(entities) for category, entities in all_changes.items()}
-        
-        # 고유 엔티티 추출 및 변경
-        for category, entities in all_changes.items():
+        # 고유 엔티티만 남기기 (중복 제거)
+        unique_to_delete = {}
+        for category, entities in all_to_delete.items():
+            unique_handles = set()
+            unique_entities = []
             for e in entities:
                 h = safe_handle(e) or str(id(e))
-                if h not in unique_entities:
-                    unique_entities[h] = (e, category)
-                    if change_entity_layer_color(e, category, CYAN_COLOR):
-                        changed_counts[category] += 1
+                if h not in unique_handles:
+                    unique_handles.add(h)
+                    unique_entities.append(e)
+            unique_to_delete[category] = unique_entities
 
-        # ---------- 4) 변경 결과 요약 ----------
-        print("\n=== 레이어/색상 변경 결과 ===")
-        print("카테고리 | 찾은 수(중복포함) | 변경한 수(고유)")
-        print("-" * 50)
-        for category in ["INST", "AD1", "AD2", "AD3", "AD4", "DEL1"]:
-            found = found_counts.get(category, 0)
-            changed = changed_counts.get(category, 0)
-            print(f"{category:8} | {found:17} | {changed:11}")
+        print("\n=== 삭제 대상 요약 (중복 제거) ===")
+        for category, entities in unique_to_delete.items():
+            print(f"{category}: {len(entities)}개")
+
+        # ---------- 3) 삭제 실행 ----------
+        deleted_handles: Set[str] = set()
         
-        total_found = sum(found_counts.values())
-        total_changed = sum(changed_counts.values())
-        print("-" * 50)
-        print(f"{'총계':8} | {total_found:17} | {total_changed:11}")
+        # 연관선(AD2/3/4) → 보조도형(AD1) → 텍스트(DEL1) → 본체(INST) 순서로 삭제
+        cnt_ad2 = sum(1 for e in unique_to_delete["AD2"] if hard_delete(doc, e, deleted_handles))
+        cnt_ad3 = sum(1 for e in unique_to_delete["AD3"] if hard_delete(doc, e, deleted_handles))
+        cnt_ad4 = sum(1 for e in unique_to_delete["AD4"] if hard_delete(doc, e, deleted_handles))
+        cnt_ad1 = sum(1 for e in unique_to_delete["AD1"] if hard_delete(doc, e, deleted_handles))
+        cnt_del1 = sum(1 for e in unique_to_delete["DEL1"] if hard_delete(doc, e, deleted_handles))
+        cnt_inst = sum(1 for e in unique_to_delete["INST"] if hard_delete(doc, e, deleted_handles))
 
-        # ---------- 5) 저장 ----------
+        total_deleted = cnt_ad2 + cnt_ad3 + cnt_ad4 + cnt_ad1 + cnt_del1 + cnt_inst
+        print(
+            f"\n삭제 결과: AD2 {cnt_ad2}, AD3 {cnt_ad3}, AD4 {cnt_ad4}, AD1 {cnt_ad1}, "
+            f"DEL1 {cnt_del1}, INST {cnt_inst} -> 총 {total_deleted}개"
+        )
+
+        # ---------- 4) 검증 ----------
         base_name = os.path.splitext(os.path.basename(filepath))[0]
         dir_name = os.path.dirname(filepath)
-        new_filename = os.path.join(dir_name, f"{base_name}_LAYER_CHANGED.DXF")
+        verify_path = os.path.join(dir_name, f"{VERIFY_BASENAME}_{base_name}.txt")
+        verify_remaining(doc, verify_path)
+
+        # ---------- 5) 저장 ----------
+        new_filename = os.path.join(dir_name, f"{base_name}_INDEL.DXF")
         doc.saveas(new_filename)
-        print(f"\n[OK] Saved: {new_filename}")
+        print(f"[OK] Saved: {new_filename}")
 
         return True
 
@@ -449,6 +478,62 @@ def process_dxf_file(filepath: str) -> bool:
         import traceback
         traceback.print_exc()
         return False
+
+# ==================== 검증(remaining scan) ====================
+
+def verify_remaining(doc, report_path: str) -> None:
+    """삭제 후 남은 타깃 엔티티를 재스캔하여 수량/핸들 리포트 저장"""
+    # INST
+    inst_left = []
+    for e in all_query(doc, "LWPOLYLINE POLYLINE"):
+        if getattr(e.dxf, "layer", None) == INST_LAYER:
+            ok, R, C = poly_has_radius_between(e, 3.0, 5.0)
+            if ok:
+                inst_left.append(safe_handle(e))
+
+    # AD1 (근사 스캔: GT_1 / 꼭짓점 3-4 / 총길이<=50)
+    ad1_left = []
+    for e in all_query(doc, "LWPOLYLINE POLYLINE"):
+        if getattr(e.dxf, "layer", None) == INST_LAYER:
+            pts, _ = poly_vertices(e)
+            if AD1_VERT_COUNT_MIN <= len(pts) <= AD1_VERT_COUNT_MAX and poly_total_length(e) <= AD1_LEN_MAX + 1e-9:
+                ad1_left.append(safe_handle(e))
+
+    # AD2 (ARROW, 길이<=5)
+    ad2_left = []
+    for ln in all_query(doc, "LINE"):
+        if getattr(ln.dxf, "layer", None) == AD2_LAYER:
+            p0 = (float(ln.dxf.start[0]), float(ln.dxf.start[1]))
+            p1 = (float(ln.dxf.end[0]), float(ln.dxf.end[1]))
+            if hypot_xy(p0, p1) <= AD2_LEN_MAX + 1e-9:
+                ad2_left.append(safe_handle(ln))
+
+    # AD3 (PL2 폴리라인), AD4 (PL2 라인)
+    ad3_left = [safe_handle(e) for e in all_query(doc, "LWPOLYLINE POLYLINE") if getattr(e.dxf, "layer", None) == AD3_LAYER]
+    ad4_left = [safe_handle(e) for e in all_query(doc, "LINE") if getattr(e.dxf, "layer", None) == AD4_LAYER]
+
+    # DEL1 (T/P/I 키 포함 TEXT)
+    def text_has_keys(t):
+        val = (t.dxf.text or "").upper()
+        keys = ("TT","TI","TE","TP","PI","PP","PE","PT")
+        return any(k in val for k in keys)
+    del1_left = [safe_handle(t) for t in all_query(doc, "TEXT") if text_has_keys(t)]
+
+    print("[VERIFY] 남은 엔티티 수:",
+          f"INST {len(inst_left)}, AD1 {len(ad1_left)}, AD2 {len(ad2_left)}, AD3 {len(ad3_left)}, AD4 {len(ad4_left)}, DEL1 {len(del1_left)}")
+
+    try:
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("==== 삭제 후 남은 엔티티(핸들 기준) ====\n")
+            f.write(f"INST({len(inst_left)}): {inst_left}\n")
+            f.write(f"AD1({len(ad1_left)}): {ad1_left}\n")
+            f.write(f"AD2({len(ad2_left)}): {ad2_left}\n")
+            f.write(f"AD3({len(ad3_left)}): {ad3_left}\n")
+            f.write(f"AD4({len(ad4_left)}): {ad4_left}\n")
+            f.write(f"DEL1({len(del1_left)}): {del1_left}\n")
+        print(f"[VERIFY] 리포트 저장: {report_path}")
+    except Exception as ex:
+        print(f"[VERIFY] 리포트 저장 실패: {ex}")
 
 # ==================== 진입점 ====================
 
