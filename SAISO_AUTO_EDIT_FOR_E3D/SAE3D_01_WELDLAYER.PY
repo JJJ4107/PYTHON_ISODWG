@@ -853,9 +853,10 @@ class PipeLayerRenamer:
                             points.append((vertex.dxf.location.x, vertex.dxf.location.y))
                     
                     # 2점 폴리라인인지 확인
-                    if len(points) == 2:
+                    # 2점 또는 3점 폴리라인인지 확인
+                    if 2 <= len(points) <= 3:
                         pipe_polylines.append((entity, points))
-        
+                            
         return pipe_polylines
     
     def find_3way_intersections(self, pipe_polylines):
@@ -910,8 +911,8 @@ class PipeLayerRenamer:
         
         return total_length
     
-    def find_pl2_polyline_near_point(self, point, radius=0.5):
-        """특정 점 근처의 PL2 레이어 폴리라인 찾기"""
+    def find_pl2_polyline_near_point(self, point, radius=1.0):  # 0.5mm → 1.0mm로 변경
+        """특정 점 근처의 PL2 레이어 폴리라인 찾기 (2점 또는 3점)"""
         for entity in self.msp:
             if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE'] and entity.dxf.layer == 'PL2':
                 # 폴리라인의 점들 가져오기
@@ -922,15 +923,21 @@ class PipeLayerRenamer:
                     for vertex in entity.vertices:
                         points.append((vertex.dxf.location.x, vertex.dxf.location.y))
                 
-                # 각 점이 교차점 근처에 있는지 확인
-                for p in points:
-                    if self.distance_2d(point, p) <= radius:
-                        return entity, points
+                # 2점 또는 3점 폴리라인만 확인
+                if 2 <= len(points) <= 3:
+                    # 각 점이 교차점 근처에 있는지 확인
+                    for p in points:
+                        if self.distance_2d(point, p) <= radius:
+                            return entity, points
         
         return None, None
     
-    def find_x_text_near_point(self, point, radius=20):
-        """특정 점 근처에서 'x'를 포함하는 텍스트 찾기"""
+    def find_x_text_near_point_with_range(self, point, x_min=-35, x_max=10, y_range=5):
+        """특정 점 기준으로 지정된 범위 내에서 'x'를 포함하는 텍스트 찾기"""
+        # 3D 좌표를 2D로 변환
+        if len(point) > 2:
+            point = (point[0], point[1])
+        
         for entity in self.msp:
             if entity.dxftype() in ['TEXT', 'MTEXT']:
                 text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
@@ -940,7 +947,14 @@ class PipeLayerRenamer:
                 if len(pos) > 2:
                     pos = (pos[0], pos[1])
                 
-                if self.distance_2d(point, pos) <= radius and 'x' in text_content.lower():
+                # X 범위: point에서 -35mm ~ +10mm
+                # Y 범위: point에서 ±5mm
+                x_in_range = (point[0] + x_min) <= pos[0] <= (point[0] + x_max)
+                y_in_range = (point[1] - y_range) <= pos[1] <= (point[1] + y_range)
+                
+                if x_in_range and y_in_range and 'x' in text_content.lower():
+                    print(f"       'x' 텍스트 후보: '{text_content}' at ({pos[0]:.2f}, {pos[1]:.2f})")
+                    print(f"         X 오프셋: {pos[0] - point[0]:.2f}mm, Y 오프셋: {pos[1] - point[1]:.2f}mm")
                     return entity, text_content
         
         return None, None
@@ -1027,8 +1041,8 @@ class PipeLayerRenamer:
             print(f"     TEE2 길이: {tee_lengths[1][1]:.2f}mm")
             print(f"     TEE3 길이: {tee_lengths[2][1]:.2f}mm")
             
-            # 교차점에서 0.5mm 내의 PL2 레이어 폴리라인(G1) 찾기
-            g1_entity, g1_points = self.find_pl2_polyline_near_point(intersection_point, 0.5)
+            # 교차점에서 1mm 내의 PL2 레이어 폴리라인(G1) 찾기 (수정됨)
+            g1_entity, g1_points = self.find_pl2_polyline_near_point(intersection_point, 1.0)
             
             if not g1_entity:
                 print("     PL2 레이어(G1)를 찾을 수 없음")
@@ -1043,8 +1057,9 @@ class PipeLayerRenamer:
                 far_point = g1_points[0] if dist1 > dist2 else g1_points[-1]
                 print(f"     G1의 먼 쪽 끝점: ({far_point[0]:.2f}, {far_point[1]:.2f})")
                 
-                # 먼 쪽 끝점에서 20mm 내의 'x' 포함 텍스트 찾기
-                x_entity, x_text = self.find_x_text_near_point(far_point, 20)
+                # 먼 쪽 끝점에서 지정된 범위 내의 'x' 포함 텍스트 찾기 (수정됨)
+                print(f"     'x' 텍스트 검색 범위: X[{far_point[0]-35:.2f} ~ {far_point[0]+10:.2f}], Y[{far_point[1]-5:.2f} ~ {far_point[1]+5:.2f}]")
+                x_entity, x_text = self.find_x_text_near_point_with_range(far_point, x_min=-35, x_max=10, y_range=5)
                 
                 if x_entity:
                     print(f"     'x' 텍스트 찾음: '{x_text}'")
@@ -1295,9 +1310,10 @@ def main():
     print("1. FABRICATION/ERECTION MATERIALS에서 PT와 SIZE 정보 추출")
     print("2. <> 텍스트 주변의 PT 번호를 기반으로 PIPE 레이어 검색")
     print("3. PIPE 레이어를 PIPE_SIZE로 변경")
-    print("4. TEE 연결부 자동 처리 (새 기능)")
+    print("4. TEE 연결부 자동 처리 (수정된 기능)")
     print("   - 3방향 교차점 검색")
-    print("   - 길이별로 TEE1, TEE2, TEE3 분류")
+    print("   - PL2 레이어에서 2점 또는 3점 폴리라인 찾기 (1mm 이내)")
+    print("   - x 텍스트 검색 범위: X[-35mm ~ +10mm], Y[±5mm]")
     print("   - x 텍스트 기반으로 TEE_T1, TEE_T3 레이어 설정")
     print("")
     print("색상 표시:")
