@@ -717,6 +717,23 @@ def process_dxf(filepath: str):
             doc.styles.new("ARIAL", dxfattribs={"font": "arial.ttf"})
     set_width_by_f_x(msp)
 
+    # 6. GT_1 레이어의 7개 이상 점을 가진 폴리라인 처리 (추가된 부분)
+    print("\n=== GT_1 레이어 폴리라인 처리 ===")
+    gt1_count = 0
+    for ent in msp:
+        if ent.dxftype() in ['LWPOLYLINE', 'POLYLINE'] and ent.dxf.layer == 'GT_1':
+            pts = polypoints(ent)
+            n = len(pts)
+            
+            # 7개 이상의 점을 가진 경우만 처리
+            if n >= 7:
+                new_layer_name = f'PL{n}'
+                ent.dxf.layer = new_layer_name
+                gt1_count += 1
+                print(f"  GT_1 → {new_layer_name} (점 개수: {n})")
+    
+    print(f"GT_1 레이어에서 변경된 폴리라인 수: {gt1_count}개")
+
     # 7. 파일 저장
     outname = Path(filepath).with_stem(Path(filepath).stem + '_PL')
     doc.saveas(str(outname))
