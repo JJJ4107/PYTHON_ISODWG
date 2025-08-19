@@ -197,7 +197,7 @@ def find_tinfo_texts(msp):
         text_content = entity.dxf.text
         
         # 디버깅: 범위 내 모든 텍스트 확인
-        if 20 <= text_pos[0] <= 30 and 40 <= text_pos[1] <= 60:
+        if 20 <= text_pos[0] <= 30 and 5 <= text_pos[1] <= 150:
             print(f"Found text at X={text_pos[0]}, Y={text_pos[1]}: {text_content[:50]}...")
             
             # 'Line:' 포함 여부 확인
@@ -309,14 +309,27 @@ def add_pipe_specification_texts(msp):
         (803, 557.3, 'MATERIAL')
     ]
     
-    for x, y, text in texts:
-        msp.add_text(
+    # 첫 번째 텍스트로 디버깅
+    first_text = None
+    for i, (x, y, text) in enumerate(texts):
+        text_entity = msp.add_text(
             text,
             dxfattribs={
                 **text_attribs,
                 'insert': (x, y, 0)
             }
         )
+        if i == 0:
+            first_text = text_entity
+    
+    # 디버깅: 첫 번째 텍스트의 실제 속성 출력
+    if first_text:
+        print("\n=== PIPE SPECIFICATION text attributes ===")
+        print(f"Style: {first_text.dxf.style}")
+        print(f"Width: {first_text.dxf.width}")
+        print(f"Height: {first_text.dxf.height}")
+        print(f"Color: {first_text.dxf.color}")
+        print("=========================================")
 
 def add_grid_lines(msp):
     """격자선 추가"""
@@ -387,6 +400,36 @@ def process_dxf_file(filepath):
     print(f"\n=== Processing DXF file: {filepath} ===")
     doc = ezdxf.readfile(filepath)
     msp = doc.modelspace()
+    
+    # ARIAL 스타일 확인 및 생성 (더 확실한 방법)
+    print("Checking text styles...")
+    try:
+        # 기존 스타일 목록 출력
+        existing_styles = list(doc.styles.names())
+        print(f"Existing styles: {existing_styles}")
+        
+        # ARIAL 스타일이 없으면 생성
+        if 'ARIAL' not in doc.styles:
+            print("Creating ARIAL text style...")
+            style = doc.styles.new('ARIAL')
+            style.dxf.font = 'arial.ttf'
+            style.dxf.width = 1.0  # 스타일의 기본 width factor
+            print("ARIAL style created successfully")
+        else:
+            print("ARIAL style already exists")
+            # 기존 ARIAL 스타일 확인
+            arial_style = doc.styles.get('ARIAL')
+            print(f"ARIAL style font: {arial_style.dxf.font}")
+    except Exception as e:
+        print(f"Warning: Could not create/check ARIAL style: {e}")
+        # STANDARD 스타일 사용을 시도
+        try:
+            if 'STANDARD' in doc.styles:
+                standard_style = doc.styles.get('STANDARD')
+                standard_style.dxf.font = 'arial.ttf'
+                print("Modified STANDARD style to use Arial font")
+        except:
+            pass
     
     # 모든 TEXT 엔티티 개수 확인
     text_count = len(list(msp.query('TEXT')))
@@ -498,13 +541,21 @@ def process_dxf_file(filepath):
     # 격자선 추가
     h_lines, v_lines, v1_copies, v6_copies = add_grid_lines(msp)
     
-    # SN이 있는 TNO만 출력
+    # SN 매칭 여부에 따른 출력 결정
+    # matched_tnos가 비어있으면 모든 TNO 출력, 아니면 매칭된 것만 출력
+    output_all_tnos = len(matched_tnos) == 0
+    
+    if output_all_tnos:
+        print("\nNo SN matches found - outputting all TNOs")
+    else:
+        print(f"\nSN matches found - outputting {len(matched_tnos)} TNOs with SN")
+    
     output_tno_count = 0
     for data in tinfo_data:
         tno = data['tno']
         
-        # SN이 매칭된 TNO만 출력
-        if tno not in matched_tnos:
+        # SN 매칭이 없으면 모든 TNO 출력, 있으면 매칭된 것만 출력
+        if not output_all_tnos and tno not in matched_tnos:
             continue
             
         output_tno_count += 1
@@ -518,24 +569,20 @@ def process_dxf_file(filepath):
             dxfattribs={'color': 4}  # CYAN
         )
         
-        # TNO 텍스트를 BOX화하여 원 중심에 추가
-        tno_text = msp.add_text(
-            str(tno),
-            dxfattribs={
-                'style': 'ARIAL',
-                'height': 4.3,
-                'color': 2,  # YELLOW
-                'width': 0.85,  # 폭 비율 0.85
-                'insert': (541, 548 - y_offset, 0),  # 원의 중심과 동일
-                'halign': 1,  # CENTER
-                'valign': 2   # MIDDLE
-            }
+        # TNO 텍스트를 add_text_to_circle 함수를 사용하여 원 중심에 추가
+        tno_text = add_text_to_circle(
+            msp=msp,
+            center=(541, 548 - y_offset),
+            text_value=str(tno),
+            height=4.3,
+            color=2,  # YELLOW
+            layer='default'
         )
         
-        # I1~I9 출력 (위치 조정됨)
+        # I1~I9 출력 (위치 조정됨 - DDEDIT 안정성을 위해 기본 설정 사용)
         i_positions = [
-            (555, 545.8),         # I1 (변경 없음)
-            (633, 545.8),         # I2 (변경 없음)
+            (553, 545.8),         # I1 (변경 없음)
+            (631.5, 545.8),         # I2 (변경 없음)
             (650.5, 545.8),       # I3 (653 - 2.5)
             (670.5, 545.8),       # I4 (673 - 2.5)
             (690.5, 545.8),       # I5 (693 - 2.5)
@@ -547,33 +594,35 @@ def process_dxf_file(filepath):
         
         for i, (x, y) in enumerate(i_positions):
             if i < len(i_values) and i_values[i]:
+                # 가장 단순한 텍스트 생성 방법 사용
                 msp.add_text(
                     i_values[i],
                     dxfattribs={
-                        'style': 'ARIAL',
                         'height': 4.3,
                         'color': 2,  # YELLOW
-                        'width': 0.85,  # 폭 비율 0.85
-                        'halign': 1,  # CENTER
-                        'valign': 2,  # MIDDLE
-                        'insert': (x, y - y_offset, 0)
+                        'insert': (x, y - y_offset, 0),
+                        'layer': 'default'
                     }
                 )
     
-    print(f"\nOutput TNO count: {output_tno_count} (with SN)")
+    print(f"\nOutput TNO count: {output_tno_count}")
     
-    # H4 복사 및 HF 처리
-    if output_tno_count > 1:
-        # H4를 output_tno_count-1개 만큼 -Y 10mm로 이동 복사
-        for i in range(1, output_tno_count):
-            layer_name = f'H4_{i}'
-            msp.add_line(
-                (801, 543 - i * 10),
-                (536, 543 - i * 10),
-                dxfattribs={'layer': layer_name}
-            )
+    # H4 복사 및 HF 처리 - output_tno_count가 1인 경우도 처리
+    if output_tno_count >= 1:
+        # output_tno_count가 1이면 H4 복사 없이 바로 HF 생성
+        # output_tno_count가 2 이상이면 H4 복사 후 HF 생성
         
-        # 마지막 H4를 HF로 하고 길이 확장
+        if output_tno_count > 1:
+            # H4를 output_tno_count-1개 만큼 -Y 10mm로 이동 복사
+            for i in range(1, output_tno_count):
+                layer_name = f'H4_{i}'
+                msp.add_line(
+                    (801, 543 - i * 10),
+                    (536, 543 - i * 10),
+                    dxfattribs={'layer': layer_name}
+                )
+        
+        # HF 생성 (output_tno_count가 1이면 H4 위치에, 2 이상이면 마지막 H4 위치에)
         hf_y = 543 - (output_tno_count - 1) * 10
         msp.add_line(
             (831, hf_y),  # 801 -> 831로 확장
@@ -583,7 +632,7 @@ def process_dxf_file(filepath):
         
         # 모든 V선의 Y 453 값을 HF의 Y값으로 변경
         # 기존 V선 삭제하고 새로 그리기
-        # V1~V11의 시작 X 좌표 계산
+        # V1~V12의 시작 X 좌표 계산
         v_lines_new = [
             ('V1', 506),
             ('V2', 536),
@@ -780,24 +829,245 @@ def process_dxf_file(filepath):
             new_center = ap3 + direction * move_dist
             sc.dxf.center = (new_center.x, new_center.y)
             
-            # SN 번호 텍스트 추가 (BOX화하여 원 중심에 추가)
-            sn_text = msp.add_text(
-                str(sn),
-                dxfattribs={
-                    'style': 'ARIAL',
-                    'height': 4.3,  # 높이 4.3
-                    'color': 2,  # YELLOW
-                    'layer': 'spoolno',
-                    'width': 0.85,  # 폭 비율 0.85
-                    'insert': (new_center.x, new_center.y, 0),  # 원의 중심과 동일
-                    'halign': 1,  # CENTER
-                    'valign': 2   # MIDDLE
-                }
+            # SN 번호 텍스트를 add_text_to_circle 함수를 사용하여 원 중심에 추가
+            sn_text = add_text_to_circle(
+                msp=msp,
+                center=(new_center.x, new_center.y),
+                text_value=str(sn),
+                height=4.3,
+                color=2,  # YELLOW
+                layer='spoolno'
             )
         
         print(f"\nTotal S1 processed with SN: {processed_count}")
     else:
         print(f"No polylines found in 'spoolno' layer in {filepath}")
+    
+    # 파일 저장 전에 추가 작업 수행
+    print("\n=== Additional Processing ===")
+    
+    # x 738 y 14 위치(공차 ±5mm)에서 '_'가 포함된 텍스트 찾기
+    sat_text = None
+    print("\n=== Searching for SAT text ===")
+    print("Looking for text with '_' in range X=733-743, Y=9-19")
+    
+    # 범위 내의 모든 텍스트 확인
+    found_count = 0
+    for entity in msp.query('TEXT'):
+        text_pos = entity.dxf.insert
+        # 범위를 조금 더 넓게 설정 (±10)
+        if (728 <= text_pos[0] <= 748 and  # 738 ± 10
+            4 <= text_pos[1] <= 24):        # 14 ± 10
+            found_count += 1
+            distance = ((text_pos[0] - 738)**2 + (text_pos[1] - 14)**2)**0.5
+            print(f"  Text near target: X={text_pos[0]:.1f}, Y={text_pos[1]:.1f}, Distance={distance:.1f}, Content: {entity.dxf.text[:30]}...")
+            
+            # 정확한 위치 확인
+            if (733 <= text_pos[0] <= 743 and 9 <= text_pos[1] <= 19):
+                if '_' in entity.dxf.text:
+                    sat_text = entity
+                    print(f"  *** EXACT MATCH - Selected as SAT!")
+                    break
+    
+    if found_count == 0:
+        print("  No text found in the specified range!")
+    elif not sat_text:
+        print("  Text found but none contains '_'")
+    
+    if sat_text:
+        # 텍스트 내의 숫자 이후의 텍스트 찾기
+        text_content = sat_text.dxf.text
+        print(f"\nProcessing SAT text: {text_content}")
+        
+        # 숫자 이후의 텍스트 추출
+        print(f"Original text: {text_content}")
+        
+        # 연속된 숫자들을 찾고 마지막 숫자 그룹 이후부터 추출
+        import re
+        # 숫자 그룹들을 찾기
+        digit_pattern = r'\d+'
+        matches = list(re.finditer(digit_pattern, text_content))
+        
+        if matches:
+            # 마지막 숫자 그룹의 끝 위치
+            last_match = matches[-1]
+            last_digit_end = last_match.end()
+            print(f"Last number found: '{last_match.group()}' at position {last_match.start()}-{last_match.end()}")
+            
+            if last_digit_end < len(text_content):
+                # 마지막 숫자 그룹 다음부터
+                text_after_number = text_content[last_digit_end:]
+                print(f"After last number: '{text_after_number}'")
+            else:
+                # 숫자가 마지막에 있으면 빈 문자열
+                text_after_number = ""
+                print(f"Number is at the end, no text after")
+        else:
+            # 숫자가 없으면 전체 텍스트 사용
+            text_after_number = text_content
+            print(f"No number found, using full text")
+        
+        # 모든 '_'를 공백으로 변경
+        cleaned_text = text_after_number.replace('_', ' ')
+        print(f"After replacing '_' with space: '{cleaned_text}'")
+        
+        # 텍스트가 공백으로 시작하는지 확인
+        starts_with_space = cleaned_text.startswith(' ')
+        
+        # 25mm 길이로 맞추기 
+        # 높이 4.3mm, 폭 비율 0.85, 문자 간격 고려하여 약 10-12자
+        max_chunk_length = 10  # 25mm에 맞는 대략적인 문자 수
+        text_chunks = []
+        
+        # 단어별로 나누지 않고 전체 텍스트를 길이로만 자르기
+        remaining_text = cleaned_text
+        while remaining_text:
+            # 현재 청크 추출
+            if len(remaining_text) <= max_chunk_length:
+                text_chunks.append(remaining_text)
+                break
+            else:
+                # 공백 위치에서 자르기 시도
+                chunk = remaining_text[:max_chunk_length]
+                last_space = chunk.rfind(' ')
+                
+                # 공백이 있으면 거기서 자르기
+                if last_space > 0:
+                    text_chunks.append(remaining_text[:last_space])
+                    remaining_text = remaining_text[last_space + 1:]  # 공백 다음부터
+                else:
+                    # 공백이 없으면 강제로 자르기
+                    text_chunks.append(chunk)
+                    remaining_text = remaining_text[max_chunk_length:]
+        
+        print(f"Text chunks: {text_chunks}")
+        
+        # 텍스트 출력
+        for i, chunk in enumerate(text_chunks):
+            text_entity = msp.add_text(
+                chunk,
+                dxfattribs={
+                    'style': 'ARIAL',
+                    'height': 4.3,
+                    'color': 2,  # YELLOW
+                    'width': 0.85,
+                    'halign': 0,  # LEFT
+                    'valign': 0,  # BASELINE
+                    'insert': (508, 544 - i * 6, 0),  # -Y 6mm 간격
+                    'layer': 'default'  # 레이어 추가
+                }
+            )
+            print(f"Output chunk {i+1}: '{chunk}' at X=508, Y={544 - i * 6}")
+        
+        # SAT 텍스트 삭제
+        try:
+            msp.delete_entity(sat_text)
+            print("SAT text deleted successfully")
+        except Exception as e:
+            print(f"Error deleting SAT text: {e}")
+            # 삭제 실패 시 색상 변경으로 표시
+            try:
+                sat_text.dxf.color = 1  # RED
+                print("SAT text marked in RED (deletion failed)")
+            except:
+                pass
+    else:
+        print("No SAT text found at specified location")
+    
+    # 추가 텍스트 출력
+    print("\nAdding additional texts...")
+    additional_texts = [
+        (804, 546, 'MINERAL'),
+        (808, 540, 'FIBER'),
+        (804, 534, '(120kg/m)')
+    ]
+    
+    for x, y, text in additional_texts:
+        try:
+            text_entity = msp.add_text(
+                text,
+                dxfattribs={
+                    'style': 'ARIAL',
+                    'height': 4.3,
+                    'color': 2,  # YELLOW
+                    'width': 0.85,
+                    'halign': 0,  # LEFT
+                    'valign': 0,  # BASELINE
+                    'insert': (x, y, 0),
+                    'layer': 'default'  # 레이어 추가
+                }
+            )
+            print(f"Added text '{text}' at X={x}, Y={y}")
+        except Exception as e:
+            print(f"Error adding text '{text}': {e}")
+    
+    # 모든 TINFO 삭제
+    print("\nDeleting all TINFO texts...")
+    tinfo_delete_count = 0
+    tinfo_delete_failed = 0
+    for data in tinfo_data:
+        try:
+            msp.delete_entity(data['text_entity'])
+            tinfo_delete_count += 1
+        except Exception as e:
+            print(f"Error deleting TINFO: {e}")
+            tinfo_delete_failed += 1
+            # 삭제 실패 시 색상 변경으로 표시
+            try:
+                data['text_entity'].dxf.color = 1  # RED
+            except:
+                pass
+    
+    print(f"TINFO deletion: {tinfo_delete_count} deleted, {tinfo_delete_failed} failed")
+    
+    # 엔티티 업데이트
+    doc.entitydb.purge()  # 삭제된 엔티티 정리
+    
+    # I1~I9 텍스트 스타일 강제 변경 (파일 저장 전)
+    print("\nForcing ARIAL style for I values...")
+    
+    # 사용 가능한 스타일 확인
+    available_styles = list(doc.styles.names())
+    print(f"Available styles after processing: {available_styles}")
+    
+    # ARIAL이 대소문자로 있는지 확인
+    arial_style_name = None
+    for style_name in available_styles:
+        if style_name.upper() == 'ARIAL':
+            arial_style_name = style_name
+            print(f"Found ARIAL style as: {arial_style_name}")
+            break
+    
+    # 스타일이 없으면 첫 번째 non-STANDARD 스타일 사용
+    if not arial_style_name and len(available_styles) > 1:
+        for style in available_styles:
+            if style.upper() != 'STANDARD':
+                arial_style_name = style
+                print(f"Using alternative style: {arial_style_name}")
+                break
+    
+    # I1~I9 텍스트 찾아서 스타일 변경
+    i_text_count = 0
+    for entity in msp.query('TEXT'):
+        if entity.dxf.color == 2:  # YELLOW 텍스트
+            text_pos = entity.dxf.insert
+            # I1~I9 위치 범위 확인 (X: 540~800, Y: 530~560 범위)
+            if 540 <= text_pos[0] <= 800 and 450 <= text_pos[1] <= 560:
+                try:
+                    # I values 위치에 있는 텍스트인지 더 정확하게 확인
+                    for x_pos in [553, 631.5, 650.5, 670.5, 690.5, 713, 746.5, 765.5, 785.5]:
+                        if abs(text_pos[0] - x_pos) < 2:  # X 좌표가 거의 일치
+                            current_style = entity.dxf.style
+                            if arial_style_name:
+                                entity.dxf.style = arial_style_name
+                            entity.dxf.width = 0.85
+                            i_text_count += 1
+                            print(f"  Updated text '{entity.dxf.text}' at X={text_pos[0]:.1f}: style {current_style} -> {entity.dxf.style}")
+                            break
+                except Exception as e:
+                    print(f"  Error updating text style: {e}")
+    
+    print(f"Total I values texts updated: {i_text_count}")
     
     # 파일 저장
     base_name = os.path.splitext(os.path.basename(filepath))[0]
@@ -805,17 +1075,45 @@ def process_dxf_file(filepath):
     
     # 삭제할 엔티티들 제거 (entities_to_delete가 있는 경우에만)
     if entities_to_delete:
-        print(f"Deleting {len(entities_to_delete)} entities...")
+        print(f"\nPreparing to delete {len(entities_to_delete)} entities...")
+        deleted_count = 0
+        failed_count = 0
+        
         for entity in entities_to_delete:
             try:
-                msp.delete_entity(entity)
+                # 엔티티가 유효한지 확인
+                if entity.is_alive:
+                    msp.delete_entity(entity)
+                    deleted_count += 1
+                else:
+                    print(f"Entity already deleted or invalid")
+                    failed_count += 1
             except Exception as e:
                 print(f"Error deleting entity: {e}")
+                failed_count += 1
+        
+        print(f"Deletion complete: {deleted_count} deleted, {failed_count} failed")
     else:
         print("No entities to delete (no SN matches found)")
     
-    doc.saveas(output_path)
-    print(f"Saved: {output_path}")
+    # 문서 업데이트
+    try:
+        doc.entitydb.purge()
+    except:
+        pass
+    
+    # DXF 버전 확인 및 설정
+    print(f"\nDXF version: {doc.dxfversion}")
+    
+    # 파일 저장 (원본과 동일한 DXF 버전 유지)
+    try:
+        doc.saveas(output_path)
+    except Exception as e:
+        print(f"Error saving with original version, trying R2013: {e}")
+        # R2013 버전으로 저장 시도 (더 나은 호환성)
+        doc.saveas(output_path, dxfversion='AC1027')
+    
+    print(f"\nSaved: {output_path}")
 
 def main():
     """메인 함수"""
