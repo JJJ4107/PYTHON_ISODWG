@@ -401,35 +401,17 @@ def process_dxf_file(filepath):
     doc = ezdxf.readfile(filepath)
     msp = doc.modelspace()
     
-    # ARIAL 스타일 확인 및 생성 (더 확실한 방법)
+    # ARIAL 스타일 확인 및 생성 (최대한 간단하게)
     print("Checking text styles...")
     try:
-        # 기존 스타일 목록 출력
-        existing_styles = list(doc.styles.names())
-        print(f"Existing styles: {existing_styles}")
-        
-        # ARIAL 스타일이 없으면 생성
+        # ARIAL 스타일 생성 시도
         if 'ARIAL' not in doc.styles:
-            print("Creating ARIAL text style...")
-            style = doc.styles.new('ARIAL')
-            style.dxf.font = 'arial.ttf'
-            style.dxf.width = 1.0  # 스타일의 기본 width factor
-            print("ARIAL style created successfully")
+            doc.styles.new('ARIAL')
+            print("ARIAL style created")
         else:
             print("ARIAL style already exists")
-            # 기존 ARIAL 스타일 확인
-            arial_style = doc.styles.get('ARIAL')
-            print(f"ARIAL style font: {arial_style.dxf.font}")
     except Exception as e:
-        print(f"Warning: Could not create/check ARIAL style: {e}")
-        # STANDARD 스타일 사용을 시도
-        try:
-            if 'STANDARD' in doc.styles:
-                standard_style = doc.styles.get('STANDARD')
-                standard_style.dxf.font = 'arial.ttf'
-                print("Modified STANDARD style to use Arial font")
-        except:
-            pass
+        print(f"Style handling error (will use default): {e}")
     
     # 모든 TEXT 엔티티 개수 확인
     text_count = len(list(msp.query('TEXT')))
@@ -1026,46 +1008,28 @@ def process_dxf_file(filepath):
     # I1~I9 텍스트 스타일 강제 변경 (파일 저장 전)
     print("\nForcing ARIAL style for I values...")
     
-    # 사용 가능한 스타일 확인
-    available_styles = list(doc.styles.names())
-    print(f"Available styles after processing: {available_styles}")
-    
-    # ARIAL이 대소문자로 있는지 확인
-    arial_style_name = None
-    for style_name in available_styles:
-        if style_name.upper() == 'ARIAL':
-            arial_style_name = style_name
-            print(f"Found ARIAL style as: {arial_style_name}")
-            break
-    
-    # 스타일이 없으면 첫 번째 non-STANDARD 스타일 사용
-    if not arial_style_name and len(available_styles) > 1:
-        for style in available_styles:
-            if style.upper() != 'STANDARD':
-                arial_style_name = style
-                print(f"Using alternative style: {arial_style_name}")
-                break
-    
     # I1~I9 텍스트 찾아서 스타일 변경
     i_text_count = 0
     for entity in msp.query('TEXT'):
         if entity.dxf.color == 2:  # YELLOW 텍스트
             text_pos = entity.dxf.insert
-            # I1~I9 위치 범위 확인 (X: 540~800, Y: 530~560 범위)
+            # I1~I9 위치 범위 확인
             if 540 <= text_pos[0] <= 800 and 450 <= text_pos[1] <= 560:
                 try:
                     # I values 위치에 있는 텍스트인지 더 정확하게 확인
                     for x_pos in [553, 631.5, 650.5, 670.5, 690.5, 713, 746.5, 765.5, 785.5]:
                         if abs(text_pos[0] - x_pos) < 2:  # X 좌표가 거의 일치
-                            current_style = entity.dxf.style
-                            if arial_style_name:
-                                entity.dxf.style = arial_style_name
+                            # 스타일과 width 설정
+                            try:
+                                entity.dxf.style = 'ARIAL'
+                            except:
+                                pass
                             entity.dxf.width = 0.85
                             i_text_count += 1
-                            print(f"  Updated text '{entity.dxf.text}' at X={text_pos[0]:.1f}: style {current_style} -> {entity.dxf.style}")
+                            print(f"  Updated text '{entity.dxf.text}' at X={text_pos[0]:.1f}")
                             break
                 except Exception as e:
-                    print(f"  Error updating text style: {e}")
+                    print(f"  Error updating text: {e}")
     
     print(f"Total I values texts updated: {i_text_count}")
     
