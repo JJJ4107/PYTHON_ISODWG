@@ -110,14 +110,23 @@ def process_file(filepath):
         modified = False
         elbo_arcs = []
 
-        # 1. ELBO 레이어의 호(ARC) 찾기 (GREEN)
+        # 0. 모든 ELBO 레이어의 엔티티를 GREEN(3)으로 변경
+        elbo_count = 0
+        for e in msp:
+            if hasattr(e.dxf, 'layer') and 'ELBO' in e.dxf.layer.upper():
+                e.dxf.color = 3  # GREEN
+                elbo_count += 1
+                modified = True
+        
+        if elbo_count > 0:
+            print(f"✔ ELBO 레이어의 {elbo_count}개 엔티티를 GREEN으로 변경했습니다.")
+
+        # 1. ELBO 레이어의 호(ARC) 찾기 (이미 GREEN으로 변경됨)
         for e in msp:
             if is_elbo_arc(e):
-                e.dxf.color = 3  # GREEN
                 print_elbo_arc_info(e)
                 ep1, ep2 = get_arc_endpoints(e)
                 elbo_arcs.append((e, ep1, ep2))
-                modified = True
 
         # 2. ELBO 호 양쪽에 붙은 L1, L2 찾아서 교점 연장 처리
         for elbo, ep1, ep2 in elbo_arcs:
@@ -199,7 +208,7 @@ def process_file(filepath):
                         else:
                             l2_pts[-1] = (inter[0], inter[1], 0, 0, 0)
                         set_poly_points(l2, l2_pts)
-                        l2.dxf.color = 7
+                        l2.dxf.color = 3   # GREEN (ELBO 레이어이므로)
                         if elbo_layer:
                             l2.dxf.layer = elbo_layer  # ELBO 레이어로 변경
                     else:  # LINE
@@ -216,9 +225,12 @@ def process_file(filepath):
                     msp.delete_entity(elbo)
                     modified = True
 
-                    # 교차점에 원 3개 추가
+                    # 교차점에 원 3개 추가 (ELBO 레이어에 녹색으로)
                     for r in [0.1, 0.2, 0.3]:
-                        msp.add_circle(center=inter, radius=r, dxfattribs={"color": 7})
+                        circle_attribs = {"color": 3}  # GREEN
+                        if elbo_layer:
+                            circle_attribs["layer"] = elbo_layer
+                        msp.add_circle(center=inter, radius=r, dxfattribs=circle_attribs)
 
         # 3. PIPE 또는 ELBO를 포함하는 레이어의 POLYLINE/LWPOLYLINE 처리: DP → P1,P2 연결선 그리기 → 삭제
         for pl in list(msp):
@@ -234,6 +246,16 @@ def process_file(filepath):
                     modified = True
                     layer_name = pl.dxf.layer if hasattr(pl, 'dxf') and hasattr(pl.dxf, 'layer') else "Unknown"
                     print(f"✔ PIPE/ELBO 레이어 변환: {layer_name}")
+
+        # 저장 전 마지막으로 모든 ELBO 레이어 엔티티를 GREEN으로 재확인
+        final_elbo_count = 0
+        for e in msp:
+            if hasattr(e.dxf, 'layer') and 'ELBO' in e.dxf.layer.upper():
+                e.dxf.color = 3  # GREEN
+                final_elbo_count += 1
+        
+        if final_elbo_count > 0:
+            print(f"✔ 최종적으로 ELBO 레이어의 {final_elbo_count}개 엔티티가 GREEN으로 설정되었습니다.")
 
         # 저장
         if modified:

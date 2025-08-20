@@ -1,11 +1,10 @@
 import ezdxf
 from ezdxf.math import Vec2
-import tkinter as tk
-from tkinter import filedialog
 import os
 import math
 from collections import defaultdict
 import re
+import sys
 
 def get_polyline_points(entity):
     """폴리라인 또는 LW폴리라인의 점들을 가져오기"""
@@ -189,7 +188,6 @@ def find_tinfo_texts(msp):
     """TINFO 텍스트 찾기 및 파싱"""
     tinfo_list = []
     
-    print("\n=== Searching for TINFO texts ===")
     # X 20~30, Y 40~60 범위에서 'Line:' 포함 텍스트 모두 찾기
     initial_tinfos = []
     for entity in msp.query('TEXT'):
@@ -198,21 +196,16 @@ def find_tinfo_texts(msp):
         
         # 디버깅: 범위 내 모든 텍스트 확인
         if 20 <= text_pos[0] <= 30 and 5 <= text_pos[1] <= 150:
-            print(f"Found text at X={text_pos[0]}, Y={text_pos[1]}: {text_content[:50]}...")
-            
             # 'Line:' 포함 여부 확인
             if 'Line:' in text_content:
-                print(f"*** TINFO found at X={text_pos[0]}, Y={text_pos[1]}")
                 initial_tinfos.append(entity)
     
     # Y값으로 내림차순 정렬 (가장 높은 것부터)
     if initial_tinfos:
         initial_tinfos.sort(key=lambda e: e.dxf.insert[1], reverse=True)
         tinfo_list.append(initial_tinfos[0])  # 가장 높은 것을 첫 번째로
-        print(f"Starting from highest TINFO at Y={initial_tinfos[0].dxf.insert[1]}")
     
     if not tinfo_list:
-        print("No TINFO found in initial search!")
         return []
     
     # Y -6mm 간격으로 계속 찾기
@@ -234,7 +227,6 @@ def find_tinfo_texts(msp):
     for idx, tinfo in enumerate(tinfo_list):
         tno = idx + 1
         text = tinfo.dxf.text
-        print(f"TINFO {tno}: {text}")  # 디버깅용
         
         # ':' 구분자로 파싱 - 개선된 로직
         i_values = []
@@ -260,7 +252,6 @@ def find_tinfo_texts(msp):
                 
                 for key, value in matches:
                     i_values.append(value.strip())
-                    print(f"  {key}: {value.strip()}")  # 디버깅용
         
         # I1~I9까지 채우기 (없으면 빈 문자열)
         while len(i_values) < 9:
@@ -379,32 +370,24 @@ def add_grid_lines(msp):
 
 def process_dxf_file(filepath):
     """DXF 파일 처리"""
-    print(f"\n=== Processing DXF file: {filepath} ===")
     doc = ezdxf.readfile(filepath)
     msp = doc.modelspace()
     
     # ARIAL 스타일 확인 및 생성 (최대한 간단하게)
-    print("Checking text styles...")
     try:
         # ARIAL 스타일 생성 시도
         if 'ARIAL' not in doc.styles:
             doc.styles.new('ARIAL')
-            print("ARIAL style created")
-        else:
-            print("ARIAL style already exists")
     except Exception as e:
-        print(f"Style handling error (will use default): {e}")
+        pass
     
     # 모든 TEXT 엔티티 개수 확인
     text_count = len(list(msp.query('TEXT')))
-    print(f"Total TEXT entities in file: {text_count}")
     
     # 1차 작업: TINFO 찾기
     tinfo_data = find_tinfo_texts(msp)
-    print(f"\nTotal TINFO found: {len(tinfo_data)}")
     
     if not tinfo_data:
-        print("WARNING: No TINFO texts found!")
         return
     
     # 2차 작업을 먼저 수행하여 SN 매칭 정보 얻기
@@ -422,12 +405,9 @@ def process_dxf_file(filepath):
     if s1_polylines:
         # I1 값을 TNO에 매핑하는 딕셔너리 생성
         i1_to_tno = {}
-        print("\n=== TNO-I1 Mapping ===")
         for data in tinfo_data:
             if data['i_values'][0]:  # I1 값이 있으면
                 i1_to_tno[data['i_values'][0]] = data['tno']
-                print(f"TNO {data['tno']}: I1 = {data['i_values'][0]}")
-        print("===================\n")
         
         # 각 S1에 대한 정보 수집
         used_texts = set()
@@ -457,11 +437,9 @@ def process_dxf_file(filepath):
                 
                 # LINENO 찾기 - PT 값을 LINENO로 사용
                 lineno = info['pt']
-                print(f"S1 #{idx+1}: LINENO(PT) = {lineno}")
                 if lineno and lineno in i1_to_tno:
                     info['sn'] = i1_to_tno[lineno]
                     matched_tnos.add(info['sn'])  # 매칭된 TNO 저장
-                    print(f"  → Matched to TNO {info['sn']}")
                     
                     # SN이 있는 경우에만 색상 변경 및 삭제 목록에 추가
                     info['pa'].dxf.color = 4  # CYAN
@@ -472,8 +450,6 @@ def process_dxf_file(filepath):
                     if info.get('pt_text'):
                         info['pt_text'].dxf.color = 4  # CYAN
                         entities_to_delete.append(info['pt_text'])
-                else:
-                    print(f"  → No match found in I1 values")
                 
                 # PIPE 아래 영역에서 텍스트 찾기 (PP)
                 pipe_pos = pipe_text.dxf.insert
@@ -508,11 +484,6 @@ def process_dxf_file(filepath):
     # SN 매칭 여부에 따른 출력 결정
     # matched_tnos가 비어있으면 모든 TNO 출력, 아니면 매칭된 것만 출력
     output_all_tnos = len(matched_tnos) == 0
-    
-    if output_all_tnos:
-        print("\nNo SN matches found - outputting all TNOs")
-    else:
-        print(f"\nSN matches found - outputting {len(matched_tnos)} TNOs with SN")
     
     output_tno_count = 0
     for data in tinfo_data:
@@ -570,8 +541,6 @@ def process_dxf_file(filepath):
                          'layer': 'default'
                     }
                 )
-    
-    print(f"\nOutput TNO count: {output_tno_count}")
     
     # H4 복사 및 HF 처리 - output_tno_count가 1인 경우도 처리
     if output_tno_count >= 1:
@@ -632,7 +601,6 @@ def process_dxf_file(filepath):
     
     # 2차 작업: SN이 있는 S1에 대한 추가 처리
     if s1_polylines:
-        print(f"\n=== Processing S1 with SN ===")
         processed_count = 0
         
         for info in s1_info:
@@ -641,14 +609,9 @@ def process_dxf_file(filepath):
             
             # SN이 없거나 PA가 없으면 건너뛰기
             if not sn or not info['pa']:
-                if not sn:
-                    print(f"S1 skipped - No SN assigned (PT={info.get('pt')})")
-                if not info['pa']:
-                    print(f"S1 skipped - No PA found")
                 continue
             
             processed_count += 1
-            print(f"\nProcessing S1 with SN={sn}")
             
             # S1의 점들 가져오기
             s1_points = get_polyline_points(s1)
@@ -804,18 +767,11 @@ def process_dxf_file(filepath):
                 color=2,  # YELLOW
                 layer='spoolno'
             )
-        
-        print(f"\nTotal S1 processed with SN: {processed_count}")
-    else:
-        print(f"No polylines found in 'spoolno' layer in {filepath}")
     
     # 파일 저장 전에 추가 작업 수행
-    print("\n=== Additional Processing ===")
     
     # x 738 y 14 위치(공차 ±5mm)에서 '_'가 포함된 텍스트 찾기
     sat_text = None
-    print("\n=== Searching for SAT text ===")
-    print("Looking for text with '_' in range X=733-743, Y=9-19")
     
     # 범위 내의 모든 텍스트 확인
     found_count = 0
@@ -826,27 +782,16 @@ def process_dxf_file(filepath):
             4 <= text_pos[1] <= 24):        # 14 ± 10
             found_count += 1
             distance = ((text_pos[0] - 738)**2 + (text_pos[1] - 14)**2)**0.5
-            print(f"  Text near target: X={text_pos[0]:.1f}, Y={text_pos[1]:.1f}, Distance={distance:.1f}, Content: {entity.dxf.text[:30]}...")
             
             # 정확한 위치 확인
             if (733 <= text_pos[0] <= 743 and 9 <= text_pos[1] <= 19):
                 if '_' in entity.dxf.text:
                     sat_text = entity
-                    print(f"  *** EXACT MATCH - Selected as SAT!")
                     break
-    
-    if found_count == 0:
-        print("  No text found in the specified range!")
-    elif not sat_text:
-        print("  Text found but none contains '_'")
     
     if sat_text:
         # 텍스트 내의 숫자 이후의 텍스트 찾기
         text_content = sat_text.dxf.text
-        print(f"\nProcessing SAT text: {text_content}")
-        
-        # 숫자 이후의 텍스트 추출
-        print(f"Original text: {text_content}")
         
         # 연속된 숫자들을 찾고 마지막 숫자 그룹 이후부터 추출
         import re
@@ -858,24 +803,19 @@ def process_dxf_file(filepath):
             # 마지막 숫자 그룹의 끝 위치
             last_match = matches[-1]
             last_digit_end = last_match.end()
-            print(f"Last number found: '{last_match.group()}' at position {last_match.start()}-{last_match.end()}")
             
             if last_digit_end < len(text_content):
                 # 마지막 숫자 그룹 다음부터
                 text_after_number = text_content[last_digit_end:]
-                print(f"After last number: '{text_after_number}'")
             else:
                 # 숫자가 마지막에 있으면 빈 문자열
                 text_after_number = ""
-                print(f"Number is at the end, no text after")
         else:
             # 숫자가 없으면 전체 텍스트 사용
             text_after_number = text_content
-            print(f"No number found, using full text")
         
         # 모든 '_'를 공백으로 변경
         cleaned_text = text_after_number.replace('_', ' ')
-        print(f"After replacing '_' with space: '{cleaned_text}'")
         
         # 텍스트가 공백으로 시작하는지 확인
         starts_with_space = cleaned_text.startswith(' ')
@@ -906,8 +846,6 @@ def process_dxf_file(filepath):
                     text_chunks.append(chunk)
                     remaining_text = remaining_text[max_chunk_length:]
         
-        print(f"Text chunks: {text_chunks}")
-        
         # 텍스트 출력
         for i, chunk in enumerate(text_chunks):
             text_entity = msp.add_text(
@@ -923,25 +861,18 @@ def process_dxf_file(filepath):
                     'layer': 'default'  # 레이어 추가
                 }
             )
-            print(f"Output chunk {i+1}: '{chunk}' at X=508, Y={544 - i * 6}")
         
         # SAT 텍스트 삭제
         try:
             msp.delete_entity(sat_text)
-            print("SAT text deleted successfully")
         except Exception as e:
-            print(f"Error deleting SAT text: {e}")
             # 삭제 실패 시 색상 변경으로 표시
             try:
                 sat_text.dxf.color = 1  # RED
-                print("SAT text marked in RED (deletion failed)")
             except:
                 pass
-    else:
-        print("No SAT text found at specified location")
     
     # 추가 텍스트 출력
-    print("\nAdding additional texts...")
     additional_texts = [
         (804, 546, 'MINERAL'),
         (808, 540, 'FIBER'),
@@ -963,12 +894,10 @@ def process_dxf_file(filepath):
                     'layer': 'default'  # 레이어 추가
                 }
             )
-            print(f"Added text '{text}' at X={x}, Y={y}")
         except Exception as e:
-            print(f"Error adding text '{text}': {e}")
+            pass
     
     # 모든 TINFO 삭제
-    print("\nDeleting all TINFO texts...")
     tinfo_delete_count = 0
     tinfo_delete_failed = 0
     for data in tinfo_data:
@@ -976,7 +905,6 @@ def process_dxf_file(filepath):
             msp.delete_entity(data['text_entity'])
             tinfo_delete_count += 1
         except Exception as e:
-            print(f"Error deleting TINFO: {e}")
             tinfo_delete_failed += 1
             # 삭제 실패 시 색상 변경으로 표시
             try:
@@ -984,13 +912,10 @@ def process_dxf_file(filepath):
             except:
                 pass
     
-    print(f"TINFO deletion: {tinfo_delete_count} deleted, {tinfo_delete_failed} failed")
-    
     # 엔티티 업데이트
     doc.entitydb.purge()  # 삭제된 엔티티 정리
     
     # I1~I9 텍스트 스타일 강제 변경 (파일 저장 전)
-    print("\nForcing ARIAL style for I values...")
     
     # I1~I9 텍스트 찾아서 스타일 변경
     i_text_count = 0
@@ -1010,12 +935,9 @@ def process_dxf_file(filepath):
                                 pass
                             entity.dxf.width = 0.85
                             i_text_count += 1
-                            print(f"  Updated text '{entity.dxf.text}' at X={text_pos[0]:.1f}")
                             break
                 except Exception as e:
-                    print(f"  Error updating text: {e}")
-    
-    print(f"Total I values texts updated: {i_text_count}")
+                    pass
     
     # 파일 저장
     base_name = os.path.splitext(os.path.basename(filepath))[0]
@@ -1023,7 +945,6 @@ def process_dxf_file(filepath):
     
     # 삭제할 엔티티들 제거 (entities_to_delete가 있는 경우에만)
     if entities_to_delete:
-        print(f"\nPreparing to delete {len(entities_to_delete)} entities...")
         deleted_count = 0
         failed_count = 0
         
@@ -1034,15 +955,9 @@ def process_dxf_file(filepath):
                     msp.delete_entity(entity)
                     deleted_count += 1
                 else:
-                    print(f"Entity already deleted or invalid")
                     failed_count += 1
             except Exception as e:
-                print(f"Error deleting entity: {e}")
                 failed_count += 1
-        
-        print(f"Deletion complete: {deleted_count} deleted, {failed_count} failed")
-    else:
-        print("No entities to delete (no SN matches found)")
     
     # 문서 업데이트
     try:
@@ -1050,41 +965,28 @@ def process_dxf_file(filepath):
     except:
         pass
     
-    # DXF 버전 확인 및 설정
-    print(f"\nDXF version: {doc.dxfversion}")
-    
     # 파일 저장 (원본과 동일한 DXF 버전 유지)
     try:
         doc.saveas(output_path)
     except Exception as e:
-        print(f"Error saving with original version, trying R2013: {e}")
         # R2013 버전으로 저장 시도 (더 나은 호환성)
         doc.saveas(output_path, dxfversion='AC1027')
-    
-    print(f"\nSaved: {output_path}")
 
 def main():
     """메인 함수"""
-    # 파일 선택 다이얼로그
-    root = tk.Tk()
-    root.withdraw()
-    
-    file_paths = filedialog.askopenfilenames(
-        title="Select DXF files",
-        filetypes=[("DXF files", "*.dxf"), ("All files", "*.*")]
-    )
-    
-    if not file_paths:
-        print("No files selected")
+    if len(sys.argv) < 2:
+        print("Usage: python PLTONEWLINE.PY file1.dxf file2.dxf ...")
         return
     
     # 각 파일 처리
-    for filepath in file_paths:
-        try:
-            print(f"Processing: {filepath}")
-            process_dxf_file(filepath)
-        except Exception as e:
-            print(f"Error processing {filepath}: {str(e)}")
+    for filepath in sys.argv[1:]:
+        if os.path.exists(filepath):
+            try:
+                process_dxf_file(filepath)
+            except Exception as e:
+                pass
+        else:
+            pass
 
 if __name__ == "__main__":
     main()
