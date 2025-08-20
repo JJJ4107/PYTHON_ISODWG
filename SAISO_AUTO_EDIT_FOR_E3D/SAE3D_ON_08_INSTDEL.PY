@@ -1,8 +1,7 @@
 import ezdxf
-import tkinter as tk
-from tkinter import filedialog
 import math
 import os
+import sys
 from typing import List, Tuple, Optional, Dict, Set
 
 # ==================== 타입/상수 ====================
@@ -230,9 +229,7 @@ def hard_delete(doc, e, deleted: Set[str]) -> bool:
         if h:
             deleted.add(h)
         return True
-    except Exception as ex:
-        msg_h = h if h is not None else "unknown"
-        print(f"  [삭제 실패-hard] {etype} ({msg_h}): {ex}")
+    except Exception:
         return False
 
 # ==================== 공통 쿼리 유틸 (검증/탐색용) ====================
@@ -406,7 +403,6 @@ def find_related_entities_for_inst(inst, center: Point, all_polys, all_lines, al
 
 def process_dxf_file(filepath: str) -> bool:
     try:
-        print(f"[INFO] Processing: {os.path.basename(filepath)}")
         doc = ezdxf.readfile(filepath)
         msp = doc.modelspace()
 
@@ -427,8 +423,6 @@ def process_dxf_file(filepath: str) -> bool:
                 continue
             center = C if C else entity_center_for_inst(e)
             inst_entities.append((e, center))
-        
-        print(f"INST 엔티티: {len(inst_entities)}개")
 
         # 후보 모음 (모든 공간)
         all_polys = list(all_query(doc, "LWPOLYLINE POLYLINE"))
@@ -449,22 +443,13 @@ def process_dxf_file(filepath: str) -> bool:
         for inst, _ in inst_entities:
             all_to_delete["INST"].append(inst)
         
-        print("\n=== 각 INST별 관련 엔티티 찾기 ===")
-        print(f"[색상 필터] AD1: YELLOW 제외, 최대 {AD1_MAX_PER_INST}개 선택")
-        print(f"[색상 필터] AD3: CYAN 제외")
-        
         for inst_idx, (inst, center) in enumerate(inst_entities):
-            print(f"\n[INST #{inst_idx + 1}/{len(inst_entities)}]")
-            print(f"  중심좌표: ({center[0]:.2f}, {center[1]:.2f})")
-            
             # 이 INST에 대한 관련 엔티티 찾기
             related = find_related_entities_for_inst(inst, center, all_polys, all_lines, all_texts)
             
             # 각 카테고리별로 삭제 대상에 추가
             for category, entities in related.items():
                 all_to_delete[category].extend(entities)
-                if entities:
-                    print(f"  {category}: {len(entities)}개 찾음")
 
         # 고유 엔티티만 남기기 (중복 제거)
         unique_to_delete = {}
@@ -478,10 +463,6 @@ def process_dxf_file(filepath: str) -> bool:
                     unique_entities.append(e)
             unique_to_delete[category] = unique_entities
 
-        print("\n=== 삭제 대상 요약 (중복 제거) ===")
-        for category, entities in unique_to_delete.items():
-            print(f"{category}: {len(entities)}개")
-
         # ---------- 3) 삭제 실행 ----------
         deleted_handles: Set[str] = set()
         
@@ -493,12 +474,6 @@ def process_dxf_file(filepath: str) -> bool:
         cnt_del1 = sum(1 for e in unique_to_delete["DEL1"] if hard_delete(doc, e, deleted_handles))
         cnt_inst = sum(1 for e in unique_to_delete["INST"] if hard_delete(doc, e, deleted_handles))
 
-        total_deleted = cnt_ad2 + cnt_ad3 + cnt_ad4 + cnt_ad1 + cnt_del1 + cnt_inst
-        print(
-            f"\n삭제 결과: AD2 {cnt_ad2}, AD3 {cnt_ad3}, AD4 {cnt_ad4}, AD1 {cnt_ad1}, "
-            f"DEL1 {cnt_del1}, INST {cnt_inst} -> 총 {total_deleted}개"
-        )
-
         # ---------- 4) 검증 ----------
         base_name = os.path.splitext(os.path.basename(filepath))[0]
         dir_name = os.path.dirname(filepath)
@@ -506,14 +481,10 @@ def process_dxf_file(filepath: str) -> bool:
         # ---------- 5) 저장 ----------
         new_filename = os.path.join(dir_name, f"{base_name}_INDEL.DXF")
         doc.saveas(new_filename)
-        print(f"[OK] Saved: {new_filename}")
 
         return True
 
-    except Exception as e:
-        print(f"[ERROR] {os.path.basename(filepath)}: {e}")
-        import traceback
-        traceback.print_exc()
+    except Exception:
         return False
 
 # ==================== 검증(remaining scan) ====================
@@ -566,9 +537,6 @@ def verify_remaining(doc, report_path: str) -> None:
         return any(k in val for k in keys)
     del1_left = [safe_handle(t) for t in all_query(doc, "TEXT") if text_has_keys(t)]
 
-    print("[VERIFY] 남은 엔티티 수:",
-          f"INST {len(inst_left)}, AD1 {len(ad1_left)}, AD2 {len(ad2_left)}, AD3 {len(ad3_left)}, AD4 {len(ad4_left)}, DEL1 {len(del1_left)}")
-
     try:
         with open(report_path, "w", encoding="utf-8") as f:
             f.write("==== 삭제 후 남은 엔티티(핸들 기준) ====\n")
@@ -578,28 +546,22 @@ def verify_remaining(doc, report_path: str) -> None:
             f.write(f"AD3({len(ad3_left)}): {ad3_left}\n")
             f.write(f"AD4({len(ad4_left)}): {ad4_left}\n")
             f.write(f"DEL1({len(del1_left)}): {del1_left}\n")
-        print(f"[VERIFY] 리포트 저장: {report_path}")
-    except Exception as ex:
-        print(f"[VERIFY] 리포트 저장 실패: {ex}")
+    except Exception:
+        pass
 
 # ==================== 진입점 ====================
 
 def main():
-    root = tk.Tk()
-    root.withdraw()
-    filepaths = filedialog.askopenfilenames(
-        title="DXF 파일 선택",
-        filetypes=[("DXF files", "*.dxf"), ("All files", "*.*")]
-    )
-    if not filepaths:
-        print("[CANCEL] 파일이 선택되지 않았습니다.")
-        return
+    if len(sys.argv) < 2:
+        sys.exit(1)
+    
+    filepaths = sys.argv[1:]
+    
     for filepath in filepaths:
         try:
             process_dxf_file(filepath)
-        except Exception as e:
-            print(f"[ERROR] {os.path.basename(filepath)}: {e}")
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()
-    

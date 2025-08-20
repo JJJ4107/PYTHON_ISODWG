@@ -4,9 +4,6 @@ import ezdxf
 import math
 import numpy as np
 from ezdxf.entities import Line, LWPolyline, Polyline, Text
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from tkinter import ttk
 
 # ─────────────── 설정 값 ───────────────
 ANGLE_TOLERANCE = 5.0  # 각도 허용 오차 (°)
@@ -14,78 +11,6 @@ DIM_LAYER_PREFIXES = ("GT_", "PL2")  # 치수선 레이어 접두사들
 
 # TBOX 캐시를 위한 전역 딕셔너리
 TBOX_CACHE = {}
-
-# ─────────────── 파일 선택 GUI ───────────────
-def select_dxf_files():
-    """
-    Windows 파일 선택 다이얼로그를 열어 DXF 파일들을 선택
-    Returns: 선택된 파일 경로들의 리스트
-    """
-    root = tk.Tk()
-    root.withdraw()
-    
-    file_paths = filedialog.askopenfilenames(
-        title="DXF 파일을 선택하세요 (여러 개 선택 가능)",
-        filetypes=[
-            ("DXF files", "*.dxf"),
-            ("All files", "*.*")
-        ],
-        multiple=True
-    )
-    
-    root.destroy()
-    return list(file_paths)
-
-def show_progress_window(total_files):
-    """
-    진행 상황을 보여주는 프로그레스 윈도우 생성
-    """
-    progress_window = tk.Tk()
-    progress_window.title("DXF 처리 진행 상황")
-    progress_window.geometry("500x150")
-    progress_window.resizable(False, False)
-    
-    progress_window.eval('tk::PlaceWindow . center')
-    
-    label = tk.Label(progress_window, text="DXF 파일을 처리 중입니다...", font=("Arial", 12))
-    label.pack(pady=10)
-    
-    file_label = tk.Label(progress_window, text="", font=("Arial", 10), fg="blue")
-    file_label.pack(pady=5)
-    
-    progress_var = tk.DoubleVar()
-    progress_bar = ttk.Progressbar(
-        progress_window, 
-        variable=progress_var, 
-        maximum=total_files, 
-        length=400,
-        mode='determinate'
-    )
-    progress_bar.pack(pady=10)
-    
-    progress_text = tk.Label(progress_window, text=f"0 / {total_files}", font=("Arial", 10))
-    progress_text.pack()
-    
-    progress_window.update()
-    
-    return progress_window, progress_var, file_label, progress_text
-
-def update_progress(window, progress_var, file_label, progress_text, current, total, current_file):
-    """
-    프로그레스 업데이트
-    """
-    if window and window.winfo_exists():
-        progress_var.set(current)
-        file_label.config(text=f"처리 중: {os.path.basename(current_file)}")
-        progress_text.config(text=f"{current} / {total}")
-        window.update()
-
-def close_progress_window(window):
-    """
-    프로그레스 윈도우 닫기
-    """
-    if window and window.winfo_exists():
-        window.destroy()
 
 # ─────────────── 유틸 함수 ───────────────
 def to2d(pt):
@@ -805,11 +730,6 @@ def find_ct_texts(msp, g1_entities, text_entities, dim_pair, search_radius=10.0)
             closest_txt = selected_candidate[1]
             ct_texts.append(closest_txt)
             
-            # 디버깅 정보 출력 (선택사항)
-            print(f"CT 선택: 텍스트={closest_txt.dxf.text}, "
-                  f"TBOX까지 거리={selected_candidate[0]:.2f}mm, "
-                  f"텍스트 크기={selected_candidate[3]['text_length']:.2f}x{selected_candidate[3]['text_height']:.2f}")
-            
             break
     
     return ct_texts
@@ -1429,7 +1349,7 @@ def process_dimension_system(msp, text_entities):
     return all_processed_entities, all_ct_texts, all_ct1_texts
 
 
-    # ─────────────── 메인 파이프라인 ───────────────
+# ─────────────── 메인 파이프라인 ───────────────
 def auto_align_dxf(input_dxf, output_dxf):
     """
     DB1, CH1만 처리하는 단일 DXF 파일 처리 함수 (로그 최소화)
@@ -1463,52 +1383,31 @@ def auto_align_dxf(input_dxf, output_dxf):
         clear_tbox_cache()
         return False
 
-def process_multiple_files():
+def process_multiple_files(input_files):
     """
-    여러 DXF 파일을 처리하는 메인 함수 (로그 최소화)
+    여러 DXF 파일을 처리하는 메인 함수
     """
-    selected_files = select_dxf_files()
-    
-    if not selected_files:
-        return
-    
-    progress_window, progress_var, file_label, progress_text = show_progress_window(len(selected_files))
-    
     success_count = 0
     failed_files = []
     
-    try:
-        for i, input_file in enumerate(selected_files):
-            update_progress(progress_window, progress_var, file_label, progress_text, 
-                          i, len(selected_files), input_file)
-            
-            file_dir = os.path.dirname(input_file)
-            file_name = os.path.splitext(os.path.basename(input_file))[0]
-            output_file = os.path.join(file_dir, f"{file_name}_DIM.dxf")
-            
-            if auto_align_dxf(input_file, output_file):
-                success_count += 1
-            else:
-                failed_files.append(os.path.basename(input_file))
+    for input_file in input_files:
+        file_dir = os.path.dirname(input_file)
+        file_name = os.path.splitext(os.path.basename(input_file))[0]
+        output_file = os.path.join(file_dir, f"{file_name}_DIM.dxf")
         
-        update_progress(progress_window, progress_var, file_label, progress_text, 
-                      len(selected_files), len(selected_files), "완료")
-        
-    finally:
-        close_progress_window(progress_window)
+        if auto_align_dxf(input_file, output_file):
+            success_count += 1
+        else:
+            failed_files.append(os.path.basename(input_file))
     
-    # 최종 결과 출력
-    print(f"✅ 성공: {success_count}개 파일")
-    if failed_files:
-        print(f"❌ 실패: {len(failed_files)}개 파일")
-        for file_name in failed_files:
-            print(f"  - {file_name}")
-    
-    print("프로그램이 완료되었습니다.")
-
+    return success_count, failed_files
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3:
-        auto_align_dxf(sys.argv[1], sys.argv[2])
-    else:
-        process_multiple_files()
+    if len(sys.argv) < 2:
+        sys.exit(1)
+    
+    # 커맨드 라인에서 입력받은 DXF 파일들
+    input_files = sys.argv[1:]
+    
+    # 파일 처리
+    success_count, failed_files = process_multiple_files(input_files)

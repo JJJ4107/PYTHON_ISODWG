@@ -1,33 +1,16 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox
 import ezdxf
 import os
 import sys
 import math
 
-def process_dxf_files():
+def process_dxf_files(file_paths):
     """DXF 파일 선택 및 처리 메인 함수"""
-    # 파일 선택 다이얼로그 열기
-    root = tk.Tk()
-    root.withdraw()  # 메인 윈도우 숨기기
-    
-    file_paths = filedialog.askopenfilenames(
-        title="DXF 파일을 선택하세요",
-        filetypes=[("DXF files", "*.dxf"), ("All files", "*.*")]
-    )
-    
-    if not file_paths:
-        print("파일이 선택되지 않았습니다.")
-        return
-    
     # 선택된 각 파일 처리
     for file_path in file_paths:
         try:
             process_single_dxf(file_path)
-            print(f"처리 완료: {file_path}")
         except Exception as e:
-            print(f"에러 발생 ({file_path}): {str(e)}")
-            messagebox.showerror("에러", f"파일 처리 중 에러 발생:\n{file_path}\n{str(e)}")
+            pass
 
 def process_single_dxf(file_path):
     """단일 DXF 파일 처리"""
@@ -145,7 +128,6 @@ def process_single_dxf(file_path):
                     entity.dxf.color = 3  # GREEN
                     
         except Exception as e:
-            print(f"색상 변경 중 오류: {e}")
             pass
     
     # SFW 레이어 관련 복잡한 작업
@@ -159,7 +141,6 @@ def process_single_dxf(file_path):
     sfw_entities = []   # SFW 레이어의 모든 엔티티 (유지됨)
     
     # 1단계: SFW 레이어의 점 수집 및 SFW 엔티티 수집
-    print("\nSFW 레이어 검색 중...")
     for entity in msp:
         if hasattr(entity.dxf, 'layer'):
             layer_name = entity.dxf.layer.upper()  # 대소문자 구분 없이 비교
@@ -169,25 +150,18 @@ def process_single_dxf(file_path):
                 if entity.dxftype() == 'POINT':
                     if hasattr(entity.dxf, 'location'):
                         sfw_points.append((entity.dxf.location[0], entity.dxf.location[1]))
-                        print(f"  SFW POINT 발견: ({entity.dxf.location[0]:.2f}, {entity.dxf.location[1]:.2f})")
                 elif entity.dxftype() in ['TEXT', 'MTEXT']:
                     if hasattr(entity.dxf, 'insert'):
                         sfw_points.append((entity.dxf.insert[0], entity.dxf.insert[1]))
-                        print(f"  SFW TEXT 발견: ({entity.dxf.insert[0]:.2f}, {entity.dxf.insert[1]:.2f})")
                 elif entity.dxftype() in ['CIRCLE', 'ARC']:
                     if hasattr(entity.dxf, 'center'):
                         sfw_points.append((entity.dxf.center[0], entity.dxf.center[1]))
-                        print(f"  SFW CIRCLE/ARC 발견: ({entity.dxf.center[0]:.2f}, {entity.dxf.center[1]:.2f})")
                 elif entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
                     # 폴리라인의 모든 점을 SFW 점으로 추가
                     if entity.dxftype() == 'LWPOLYLINE':
                         points = list(entity.get_points())
                         for p in points:
                             sfw_points.append((p[0], p[1]))
-                            print(f"  SFW POLYLINE 점 발견: ({p[0]:.2f}, {p[1]:.2f})")
-    
-    print(f"\n총 {len(sfw_points)}개의 SFW 점 발견")
-    print(f"총 {len(sfw_entities)}개의 SFW 엔티티 발견")
     
     # 2단계: 각 SFW 점 주변 10mm 범위에서 엔티티 검색 (2mm에서 10mm로 변경)
     for sfw_x, sfw_y in sfw_points:
@@ -331,15 +305,6 @@ def process_single_dxf(file_path):
     
     # SFW 엔티티는 삭제하지 않음 (삭제에서 제외)
     
-    print(f"\nSFW 관련 처리 결과:")
-    print(f"  - SFW 엔티티 발견: {len(sfw_entities)}개 (삭제하지 않음)")
-    print(f"  - PL18 삭제 (10mm 범위): {len(pl18_to_delete)}개")
-    print(f"  - DEL2(2점 PL2) RED 변경: {len(del2_entities)}개")
-    print(f"  - DEL3(3점 폴리라인/LINE) RED 변경: {len(del3_entities)}개")
-    print(f"  - AD1(7mm+ 폴리라인) RED 변경: {len(ad1_entities)}개")
-    print(f"  - DEL4(CON 텍스트) RED 변경: {len(del4_entities)}개")
-    print(f"  - DEL5(DEL4 아래 텍스트) RED 변경: {len(del5_entities)}개")
-    
     # 모든 객체의 레이어를 ACE01로 변경
     for entity in msp:
         try:
@@ -364,7 +329,6 @@ def process_single_dxf(file_path):
     
     # 파일 저장
     doc.saveas(new_file_path)
-    print(f"저장 완료: {new_file_path}")
 
     for txt in msp.query('TEXT'):
         if not txt.dxf.text:
@@ -374,82 +338,34 @@ def process_single_dxf(file_path):
         txt.dxf.style = "ARIAL"  # 폰트 스타일
         txt.dxf.color = 2        # 색상 (2 = 노란색)
 
-
         if "ARIAL" not in doc.styles:
             doc.styles.new("ARIAL", dxfattribs={"font": "arial.ttf"})
 
 def main():
     """프로그램 실행"""
-    print("DXF 파일 처리 프로그램")
-    print("=" * 50)
-    print("처리 내용:")
-    print("1. 조건부 삭제")
-    print("   - X: 0~50, Y: 550~590 범위: PL16, PL8 레이어와 텍스트 'N' 삭제")
-    print("   - X: 820~860, Y: 0~20 범위: PL4 레이어 삭제")
-    print("2. 색상 변경")
-    print("   - 모든 CYAN TEXT → YELLOW")
-    print("   - GT-1 레이어의 YELLOW 폴리라인 (길이 ≤ 5) → WHITE")
-    print("   - PL2 레이어의 CYAN 폴리라인 → WHITE")
-    print("   - ELBO 레이어의 CYAN 객체 → GREEN")
-    print("3. SFW 레이어 관련 작업")
-    print("   - SFW 레이어는 유지 (삭제하지 않음)")
-    print("   - SFW 점 주변 10mm 내의 PL18 레이어 삭제")
-    print("   - SFW 점 주변 2mm 내의 엔티티를 RED로 변경:")
-    print("     * DEL2: 7mm 이하 2점 PL2 폴리라인")
-    print("     * DEL3: 3점 폴리라인과 LINE")
-    print("     * AD1: 7mm 이상 폴리라인")
-    print("     * DEL4: AD1 끝점 50mm 내 CON 텍스트")
-    print("     * DEL5: DEL4 아래 8mm 내 텍스트")
-    print("4. 모든 레이어 → ACE01")
-    print("5. 파일명 변경: *PL 이전 + SA.DXF")
-    print("=" * 50)
+    # 커맨드 라인 인수 확인
+    if len(sys.argv) < 2:
+        sys.exit(1)
+    
+    # 커맨드 라인에서 입력받은 파일 경로들
+    file_paths = sys.argv[1:]
+    
+    # 파일 존재 확인
+    valid_files = []
+    for file_path in file_paths:
+        if os.path.exists(file_path) and file_path.lower().endswith('.dxf'):
+            valid_files.append(file_path)
+    
+    if not valid_files:
+        sys.exit(1)
     
     # 필요한 라이브러리 확인
     try:
         import ezdxf
     except ImportError:
-        print("ezdxf 라이브러리가 설치되지 않았습니다.")
-        print("다음 명령어로 설치하세요: pip install ezdxf")
-        input("엔터키를 눌러 종료...")
         sys.exit(1)
     
-    process_dxf_files()
-    
-    print("\n모든 처리가 완료되었습니다.")
-    input("엔터키를 눌러 종료...")
+    process_dxf_files(valid_files)
 
 if __name__ == "__main__":
     main()
-
-# ========================================
-# DXF 파일 처리 프로그램 사용 설명서
-# ========================================
-#
-# 이 프로그램은 다음과 같은 기능을 수행합니다:
-#
-# 1. Windows 파일 선택 창을 열어 하나 또는 여러 개의 DXF 파일 선택
-#
-# 2. 조건부 삭제:
-#    - X: 0~50, Y: 550~590 범위: PL16, PL8 레이어와 텍스트 'N' 삭제
-#    - X: 820~860, Y: 0~20 범위: PL4 레이어 삭제
-#
-# 3. 색상 변경:
-#    - 모든 CYAN TEXT를 YELLOW로 변경
-#    - GT-1 레이어의 YELLOW 폴리라인 중 길이 5 이하는 WHITE로 변경
-#    - PL2 레이어의 CYAN 폴리라인은 WHITE로 변경
-#    - ELBO 레이어의 CYAN 객체는 GREEN으로 변경
-#
-# 4. SFW 레이어 관련 작업:
-#    - SFW 레이어는 유지 (삭제하지 않음)
-#    - SFW 점 주변 100mm 내의 PL18 레이어 삭제
-#    - SFW 점 주변 2mm 내의 다른 엔티티들은 RED로 변경
-#
-# 5. 레이어 변경: 모든 객체의 레이어를 ACE01로 변경
-#
-# 6. 파일 저장: 원본 파일명의 'PL' 이전 부분 + 'SA.DXF'로 저장
-#
-# 필수 설치 항목:
-# pip install ezdxf
-#
-# 실행 방법:
-# python dxf_processor.py
