@@ -257,13 +257,14 @@ def process_file(filepath):
         if final_elbo_count > 0:
             print(f"✔ 최종적으로 ELBO 레이어의 {final_elbo_count}개 엔티티가 GREEN으로 설정되었습니다.")
 
-        # 저장
+        # 항상 저장 (변경사항 유무와 관계없이)
+        new_path = os.path.splitext(filepath)[0] + "_elbo.dxf"
+        doc.saveas(new_path)
+        
         if modified:
-            new_path = os.path.splitext(filepath)[0] + "_elbo.dxf"
-            doc.saveas(new_path)
-            print(f"✔ 저장 완료: {new_path}")
+            print(f"✔ 변경사항이 적용되어 저장되었습니다: {new_path}")
         else:
-            print(f"⚠ 조건 일치 없음: {os.path.basename(filepath)}")
+            print(f"✔ 변경사항은 없지만 파일이 저장되었습니다: {new_path}")
 
     except Exception as e:
         print(f"❌ 오류 - {filepath}: {e}")

@@ -567,6 +567,56 @@ def delete_boxes_by_layer(msp, layer_names):
         print(f"   [BOX 삭제] {len(entities_to_delete)}개 BOX LINE 삭제")
 
 
+# -------------------------
+# A1 필터: 원/호 접촉 배제 유틸
+# -------------------------
+def angle_in_arc(theta, start_deg, end_deg):
+    """각도 theta(도)가 ARC의 start~end 스윕 안에 있는지 판단 (시계/반시계 모두 대응)"""
+    # 0~360 정규화
+    def norm(a):
+        a = a % 360.0
+        return a + 360.0 if a < 0 else a
+    t = norm(theta)
+    s = norm(start_deg)
+    e = norm(end_deg)
+    if s <= e:
+        return s - 1e-9 <= t <= e + 1e-9
+    else:
+        # 랩어라운드 (예: s=300, e=30)
+        return t >= s - 1e-9 or t <= e + 1e-9
+
+
+def is_point_near_any_circle_or_arc(msp, pt: Vec2, tol: float = 0.5) -> bool:
+    """포인트가 CIRCLE/ARC의 둘레에 tol(mm) 이내로 접하는지 검사"""
+    # CIRCLE
+    for c in msp.query("CIRCLE"):
+        try:
+            center = Vec2(c.dxf.center.x, c.dxf.center.y)
+            r = float(c.dxf.radius)
+            d = abs(distance(pt, center) - r)
+            if d <= tol:
+                return True
+        except Exception:
+            continue
+    # ARC
+    for a in msp.query("ARC"):
+        try:
+            center = Vec2(a.dxf.center.x, a.dxf.center.y)
+            r = float(a.dxf.radius)
+            # 반지름 근접
+            d_rad = abs(distance(pt, center) - r)
+            if d_rad > tol:
+                continue
+            # 각도 스윕 안에 있는지
+            vec = Vec2(pt.x - center.x, pt.y - center.y)
+            theta = math.degrees(math.atan2(vec.y, vec.x))  # -180~180
+            if angle_in_arc(theta, float(a.dxf.start_angle), float(a.dxf.end_angle)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def check_interference(itno_entities, msp, exclude_entities, threshold=0.5, draw_all_itno_boxes=True):
     """ITEMNO 그룹이 다른 TEXT 및 모든 LINE과 간섭하는지 BOX 기준으로 확인"""
     # ITNO 그룹에서 TEXT만 추출하여 BOX 계산
@@ -856,21 +906,38 @@ def process_dxf(file_path):
         # 제외할 엔티티 목록 (ITNO 자신의 LINE + 이미 선택된 A1들)
         exclude_entities_for_a1 = line_st2s + used_a1_lines
         
-        found_A1, AP1, AP2 = TextBoxLineFinder.find_closest_line_to_group(
-            entities=itno_entities,
-            lines=msp.query('LINE'),
-            exclude_entities=exclude_entities_for_a1,
-            exclude_layers=exclude_layers_for_a1,
-            min_length=None,
-            max_distance=25.0,  # ITNO BOX 중심에서 25mm 이내
-            debug=True
-        )
+        # ---- A1 재시도 루프: 원/호 0.5mm 접촉 배제 ----
+        rejected_a1 = []
+        while True:
+            found_A1, AP1, AP2 = TextBoxLineFinder.find_closest_line_to_group(
+                entities=itno_entities,
+                lines=msp.query('LINE'),
+                exclude_entities=exclude_entities_for_a1,
+                exclude_layers=exclude_layers_for_a1,
+                min_length=None,
+                max_distance=25.0,  # ITNO BOX 중심에서 25mm 이내
+                debug=True
+            )
+            
+            if not found_A1:
+                break
+            
+            # A1 끝점이 원/호 둘레에 0.5mm 이내면 후보 제외하고 다음 후보 탐색
+            if is_point_near_any_circle_or_arc(msp, AP1, 0.5) or is_point_near_any_circle_or_arc(msp, AP2, 0.5):
+                print(f"   [A1 제외] 끝점이 원/호에 0.5mm 이내 접촉 → LINE {found_A1.dxf.handle} 제외")
+                rejected_a1.append(found_A1)
+                exclude_entities_for_a1.append(found_A1)
+                continue
+            else:
+                # 조건 통과
+                break
         
         if not found_A1:
-            print(f"   [A1 없음] ITNO BOX에서 가장 가까운 LINE을 찾을 수 없습니다")
+            print(f"   [A1 없음] ITNO BOX에서 조건을 만족하는 LINE을 찾을 수 없습니다 (원/호 접촉 배제 포함)")
             continue
-            
-        found_A1.dxf.layer = "ITEMPOS"
+        
+        # A1: 레이어 유지(변경하지 않음), 색상만 CYAN
+        # found_A1.dxf.layer = "ITEMPOS"  # ← 변경 금지
         set_entity_color(found_A1, 4)  # CYAN
         
         # 선택된 A1을 사용된 목록에 추가
@@ -910,9 +977,9 @@ def process_dxf(file_path):
             if len(del1_lines) >= 3:
                 break
         
-        # DEL1 설정 - CYAN 색상, ITEMPOS 레이어
+        # DEL1: 레이어 유지(변경하지 않음), 색상만 CYAN
         for i, line in enumerate(del1_lines):
-            line.dxf.layer = "ITEMPOS"
+            # line.dxf.layer = "ITEMPOS"  # ← 변경 금지
             set_entity_color(line, 4)  # CYAN
             print(f"   [DEL1-{i+1}] LINE {line.dxf.handle}")
         

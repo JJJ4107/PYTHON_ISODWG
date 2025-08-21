@@ -1,0 +1,59 @@
+<StyleFragment>
+<!-- This is the style fragment file for Metric Final-basic -->
+
+	<!-- Properties tag contains individual style object properties to be set
+	     Supply the full path name to the property -->
+
+	<Properties
+
+
+    Supplementary.DetailSketches.SketchHeight = '50'
+    Supplementary.DetailSketches.SketchWidth =  '50'
+    Supplementary.DetailSketches.LabelX = '38'
+    Supplementary.DetailSketches.LabelY = '1.65'
+    Supplementary.DetailSketches.TextHeight = '3'
+    Supplementary.DetailSketches.NoteHeight = '36'
+    Supplementary.DetailSketches.NoteWidth = '16'
+    DrawingFrame.DXFUnits = 'MM'
+    Drawing.Controls.Drawingsize ='A2'
+    Drawing.Controls.Units = 'Metric / Inch Bores'
+    Drawing.Controls.DateFormat = 'British'
+
+	/>
+
+	<!-- Collections tag contains new Collection members to be added with the specified member properties
+	     Note that this will overwrite any existing Collection members -->
+
+	<Collections>
+
+
+
+		<!-- Drawing Frame Attributes (TextPos) -->
+		<Collection Object='DrawingFrame.Attributes'>
+
+
+
+		  <Member AttributeName="PROJECT-IDENTIFIER" XPos="382" YPos="36.2" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="BATCH" XPos="382" YPos="21.5" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="PIPING-SPEC" XPos="310" YPos="43.6" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="NOMINAL-CLASS" XPos="310" YPos="7.5" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="DATE-DMY" XPos="100" YPos="13" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="INSULATION-SPEC" XPos="310" YPos="36.2" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="PAINTING-SPEC" XPos="310" YPos="21.5" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="PIPELINE-TEMP" XPos="382" YPos="43.6" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="ATTRIBUTE3" XPos="310" YPos="29" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="ATTRIBUTE5" XPos="382" YPos="29" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="ATTRIBUTE6" XPos="382" YPos="7.5" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="ATTRIBUTE7" XPos="382" YPos="14.4" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="ATTRIBUTE17" XPos="310" YPos="14.4" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="DRG" XPos="563" YPos="9" CharHeight="4" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+		  <Member AttributeName="DRAWINGS-TOTAL" XPos="579" YPos="9" CharHeight="4" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+
+
+
+
+
+		</Collection>
+	</Collections>
+
+</StyleFragment>

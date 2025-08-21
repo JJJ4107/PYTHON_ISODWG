@@ -1,0 +1,60 @@
+<StyleFragment>
+<!-- This is the style fragment file for Imperial Final-basic -->
+
+	<!-- Properties tag contains individual style object properties to be set
+	     Supply the full path name to the property -->
+
+	<Properties
+
+    Supplementary.DetailSketches.SketchHeight = '50'
+    Supplementary.DetailSketches.SketchWidth =  '50'
+    Supplementary.DetailSketches.LabelX = '38'
+    Supplementary.DetailSketches.LabelY = '1.65'
+    Supplementary.DetailSketches.TextHeight = '3'
+    Supplementary.DetailSketches.NoteHeight = '36'
+    Supplementary.DetailSketches.NoteWidth = '16'
+    MaterialList.UserDefined.StartX = '380'
+    MaterialList.UserDefined.StartY = '396'
+    DrawingFrame.DXFUnits = 'Inch'
+    Drawing.Controls.Drawingsize ='ANSI "C"'
+    Drawing.Controls.Units = 'Imperial / Inch Bores'
+    Drawing.Controls.DateFormat = 'American'
+
+	/>
+
+	<!-- Collections tag contains new Collection members to be added with the specified member properties
+	     Note that this will overwrite any existing Collection members -->
+
+	<Collections>
+
+
+
+
+		<!-- Drawing Frame Attributes (TextPos) -->
+		<Collection Object='DrawingFrame.Attributes'>
+
+  <Member AttributeName="PIPELINE-REFERENCE" XPos="383" YPos="10" CharHeight="6" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="REVISION" XPos="535" YPos="33" CharHeight="4" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="REVISION" XPos="10" YPos="13" CharHeight="3" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="PROJECT-IDENTIFIER" XPos="343" YPos="36.2" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="BATCH" XPos="343" YPos="21.5" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="PIPING-SPEC" XPos="269" YPos="43.6" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="NOMINAL-CLASS" XPos="269" YPos="7.5" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="DATE-DMY" XPos="81" YPos="13" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="INSULATION-SPEC" XPos="269" YPos="36.2" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="PAINTING-SPEC" XPos="269" YPos="21.5" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="PIPELINE-TEMP" XPos="343" YPos="43.6" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="ATTRIBUTE3" XPos="269" YPos="29" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="ATTRIBUTE5" XPos="343" YPos="29" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="ATTRIBUTE6" XPos="343" YPos="7.5" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="ATTRIBUTE7" XPos="343" YPos="14.4" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="ATTRIBUTE17" XPos="269" YPos="14.4" CharHeight="2.8" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="DRG" XPos="528" YPos="9" CharHeight="4" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+  <Member AttributeName="DRAWINGS-TOTAL" XPos="543" YPos="9" CharHeight="4" CharWidth="0" Justification="Left" RotationAngle="0" Layer="0" Colour="0" TextWeight="0" Font="" BarCode="0" TruncationLength="0" />
+
+
+
+		</Collection>
+	</Collections>
+
+</StyleFragment>
