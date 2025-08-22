@@ -35,11 +35,46 @@ def process_single_dxf(file_path):
     doc = ezdxf.readfile(file_path)
     msp = doc.modelspace()
     
+    # DXF 버전 확인
+    dxf_version = doc.dxfversion
+    print(f"\nDXF 파일 버전: {dxf_version}")
+    
+    # 파일의 모든 레이어 확인
+    all_layers = set()
+    for entity in msp:
+        if hasattr(entity.dxf, 'layer'):
+            all_layers.add(entity.dxf.layer)
+    
+    print(f"파일에 있는 모든 레이어: {sorted(all_layers)}")
+    
+    # PIPE, TEE, ELBO가 포함된 레이어 이름 찾기
+    pipe_tee_elbo_layers = set()
+    for entity in msp:
+        if hasattr(entity.dxf, 'layer'):
+            layer_upper = entity.dxf.layer.upper()
+            if 'PIPE' in layer_upper or 'TEE' in layer_upper or 'ELBO' in layer_upper:
+                pipe_tee_elbo_layers.add(entity.dxf.layer)
+    
+    # 중복 제거하고 정렬하여 출력
+    for layer in sorted(pipe_tee_elbo_layers):
+        print(f"  PIPE/TEE/ELBO가 포함된 레이어 발견: {layer}")
+    
     # 삭제할 엔티티를 저장할 리스트
     entities_to_delete = []
     
+    # SUPP 레이어의 LINE을 변환할 리스트
+    supp_lines_to_convert = []
+    
     # 모든 엔티티 검토
     for entity in msp:
+        # SUPP 레이어의 LINE 찾기 (SUPP가 포함된 모든 레이어)
+        if entity.dxftype() == 'LINE' and hasattr(entity.dxf, 'layer'):
+            layer_upper = entity.dxf.layer.upper()
+            if 'SUPP' in layer_upper:  # 정확한 일치가 아닌 포함 여부 확인
+                supp_lines_to_convert.append(entity)
+                print(f"  SUPP LINE 발견: 레이어={entity.dxf.layer}, 시작점={entity.dxf.start}")
+                continue
+        
         # 엔티티의 위치 확인
         if hasattr(entity, 'dxf'):
             # 점 위치 가져오기
@@ -99,13 +134,80 @@ def process_single_dxf(file_path):
         except:
             pass
     
+    # SUPP 레이어의 LINE을 POLYLINE으로 변환
+    print(f"\nSUPP 레이어의 LINE 변환 중... (총 {len(supp_lines_to_convert)}개)")
+    converted_count = 0
+    for line in supp_lines_to_convert:
+        try:
+            # LINE의 시작점과 끝점 가져오기
+            start = line.dxf.start
+            end = line.dxf.end
+            
+            print(f"  변환 중: {start} → {end}")
+            
+            # DXF 버전에 따라 적절한 폴리라인 생성
+            try:
+                # R2000 이상에서는 LWPOLYLINE 사용
+                polyline = msp.add_lwpolyline([(start[0], start[1]), (end[0], end[1])])
+                polyline.dxf.const_width = 0.3
+            except:
+                # R2000 미만에서는 POLYLINE 사용
+                polyline = msp.add_polyline2d([(start[0], start[1]), (end[0], end[1])])
+                # POLYLINE의 경우 각 정점에 폭 설정
+                for vertex in polyline.vertices:
+                    vertex.dxf.start_width = 0.3
+                    vertex.dxf.end_width = 0.3
+            
+            # 속성 복사
+            polyline.dxf.layer = line.dxf.layer
+            if hasattr(line.dxf, 'color'):
+                polyline.dxf.color = line.dxf.color
+            
+            # 기존 LINE 삭제
+            msp.delete_entity(line)
+            converted_count += 1
+            
+        except Exception as e:
+            print(f"  LINE 변환 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    print(f"  변환 완료: {converted_count}개의 LINE이 POLYLINE으로 변환됨")
+    
+    # 변환 후 SUPP 레이어의 폴리라인 확인
+    supp_polylines = 0
+    for entity in msp:
+        if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE'] and hasattr(entity.dxf, 'layer'):
+            if 'SUPP' in entity.dxf.layer.upper():
+                supp_polylines += 1
+    print(f"  현재 SUPP 레이어의 폴리라인 개수: {supp_polylines}개")
+    
     # 색상 변경 작업 (ACE01 레이어 변경 전에 수행)
-    # AutoCAD 색상 인덱스: CYAN=4, YELLOW=2, WHITE=7, GREEN=3
+    # AutoCAD 색상 인덱스: RED=1, YELLOW=2, GREEN=3, CYAN=4, BLUE=5, MAGENTA=6, WHITE=7
     for entity in msp:
         try:
             if hasattr(entity.dxf, 'color'):
                 current_color = entity.dxf.color
                 current_layer = entity.dxf.layer if hasattr(entity.dxf, 'layer') else ''
+                
+                # ELBO 레이어의 모든 객체를 BLUE로 변경 (최우선)
+                if current_layer == 'ELBO':
+                    entity.dxf.color = 5  # BLUE
+                
+                # ARROW 레이어의 모든 객체를 흰색으로 변경
+                elif current_layer == 'ARROW':
+                    entity.dxf.color = 7  # WHITE
+                
+                # PIPE, TEE, ELBO가 레이어 이름에 포함된 폴리라인을 BLUE로 변경
+                elif current_layer in pipe_tee_elbo_layers:
+                    if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
+                        entity.dxf.color = 5  # BLUE
+                
+                # AD1, G1 레이어의 CYAN이나 GREEN 폴리라인을 흰색으로
+                elif current_layer in ['AD1', 'G1']:
+                    if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
+                        if current_color == 4 or current_color == 3:  # CYAN(4) or GREEN(3)
+                            entity.dxf.color = 7  # WHITE
                 
                 # 1. 모든 CYAN TEXT를 YELLOW로 변경
                 if entity.dxftype() in ['TEXT', 'MTEXT'] and current_color == 4:
@@ -139,10 +241,6 @@ def process_single_dxf(file_path):
                 elif current_layer == 'PL2' and current_color == 4:
                     if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
                         entity.dxf.color = 7  # WHITE
-                
-                # 4. CYAN이고 레이어가 ELBO인 것은 GREEN으로
-                elif current_color == 4 and current_layer == 'ELBO':
-                    entity.dxf.color = 3  # GREEN
                     
         except Exception as e:
             print(f"색상 변경 중 오류: {e}")
@@ -362,10 +460,7 @@ def process_single_dxf(file_path):
     
     new_file_path = os.path.join(dir_name, new_name)
     
-    # 파일 저장
-    doc.saveas(new_file_path)
-    print(f"저장 완료: {new_file_path}")
-
+    # TEXT 속성 설정
     for txt in msp.query('TEXT'):
         if not txt.dxf.text:
             continue
@@ -374,9 +469,16 @@ def process_single_dxf(file_path):
         txt.dxf.style = "ARIAL"  # 폰트 스타일
         txt.dxf.color = 2        # 색상 (2 = 노란색)
 
-
-        if "ARIAL" not in doc.styles:
-            doc.styles.new("ARIAL", dxfattribs={"font": "arial.ttf"})
+    if "ARIAL" not in doc.styles:
+        doc.styles.new("ARIAL", dxfattribs={"font": "arial.ttf"})
+    
+    # 파일 저장 (원본과 동일한 DXF 버전으로)
+    try:
+        doc.saveas(new_file_path)
+    except:
+        # 버전 문제가 있으면 R2000으로 저장
+        doc.saveas(new_file_path, fmt='R2000')
+    print(f"저장 완료: {new_file_path}")
 
 def main():
     """프로그램 실행"""
@@ -390,8 +492,13 @@ def main():
     print("   - 모든 CYAN TEXT → YELLOW")
     print("   - GT-1 레이어의 YELLOW 폴리라인 (길이 ≤ 5) → WHITE")
     print("   - PL2 레이어의 CYAN 폴리라인 → WHITE")
-    print("   - ELBO 레이어의 CYAN 객체 → GREEN")
-    print("3. SFW 레이어 관련 작업")
+    print("   - ELBO 레이어의 모든 객체 → BLUE")  
+    print("   - ARROW 레이어의 모든 객체 → WHITE")
+    print("   - PIPE/TEE/ELBO가 레이어 이름에 포함된 폴리라인 → BLUE")
+    print("   - AD1, G1 레이어의 CYAN/GREEN 폴리라인 → WHITE")
+    print("3. SUPP 레이어 변환")
+    print("   - SUPP 레이어의 LINE → POLYLINE (선폭 0.3mm)")
+    print("4. SFW 레이어 관련 작업")
     print("   - SFW 레이어는 유지 (삭제하지 않음)")
     print("   - SFW 점 주변 10mm 내의 PL18 레이어 삭제")
     print("   - SFW 점 주변 2mm 내의 엔티티를 RED로 변경:")
@@ -400,8 +507,8 @@ def main():
     print("     * AD1: 7mm 이상 폴리라인")
     print("     * DEL4: AD1 끝점 50mm 내 CON 텍스트")
     print("     * DEL5: DEL4 아래 8mm 내 텍스트")
-    print("4. 모든 레이어 → ACE01")
-    print("5. 파일명 변경: *PL 이전 + SA.DXF")
+    print("5. 모든 레이어 → ACE01")
+    print("6. 파일명 변경: *PL 이전 + SA.DXF")
     print("=" * 50)
     
     # 필요한 라이브러리 확인
@@ -437,16 +544,22 @@ if __name__ == "__main__":
 #    - 모든 CYAN TEXT를 YELLOW로 변경
 #    - GT-1 레이어의 YELLOW 폴리라인 중 길이 5 이하는 WHITE로 변경
 #    - PL2 레이어의 CYAN 폴리라인은 WHITE로 변경
-#    - ELBO 레이어의 CYAN 객체는 GREEN으로 변경
+#    - ELBO 레이어의 모든 객체는 BLUE로 변경
+#    - ARROW 레이어의 모든 객체는 WHITE로 변경
+#    - PIPE/TEE/ELBO가 레이어 이름에 포함된 폴리라인은 BLUE로 변경
+#    - AD1, G1 레이어의 CYAN/GREEN 폴리라인은 WHITE로 변경
 #
-# 4. SFW 레이어 관련 작업:
+# 4. SUPP 레이어 변환:
+#    - SUPP 레이어의 LINE을 POLYLINE으로 변환 (선폭 0.3mm)
+#
+# 5. SFW 레이어 관련 작업:
 #    - SFW 레이어는 유지 (삭제하지 않음)
 #    - SFW 점 주변 100mm 내의 PL18 레이어 삭제
 #    - SFW 점 주변 2mm 내의 다른 엔티티들은 RED로 변경
 #
-# 5. 레이어 변경: 모든 객체의 레이어를 ACE01로 변경
+# 6. 레이어 변경: 모든 객체의 레이어를 ACE01로 변경
 #
-# 6. 파일 저장: 원본 파일명의 'PL' 이전 부분 + 'SA.DXF'로 저장
+# 7. 파일 저장: 원본 파일명의 'PL' 이전 부분 + 'SA.DXF'로 저장
 #
 # 필수 설치 항목:
 # pip install ezdxf
