@@ -177,12 +177,16 @@ def check_line_circle_intersection(line, circle):
     return distance <= radius + 0.001
 
 def find_ilines_near_circle(inno_circle, lines):
-    """INNO 원 중심에서 15mm 내에서 3~5mm 길이의 ISOTEXT 레이어 LINE 4개 찾기"""
+    """
+    INNO 원 중심에서 15mm 내에서 3~5mm 길이의 ILINE 최대 4개 찾기.
+    [변경] 레이어: ISOTEXT 또는 ITEMPOS 허용.
+    """
     inno_center = (inno_circle.dxf.center.x, inno_circle.dxf.center.y)
     ilines = []
 
     for line in lines:
-        if line.dxf.layer != 'ISOTEXT':
+        # ---- 변경 부분: 레이어 허용 확장 ----
+        if line.dxf.layer not in ('ISOTEXT', 'ITEMPOS'):
             continue
 
         length = get_line_length(line)
@@ -194,7 +198,7 @@ def find_ilines_near_circle(inno_circle, lines):
         if get_distance(inno_center, line_center) <= 15:
             ilines.append(line)
 
-            # [NEW] ILINE을 찾는 즉시 CYAN 지정 (추가 요청)
+            # [NEW] ILINE을 찾는 즉시 CYAN 지정 (추가 요청 유지)
             try:
                 line.dxf.color = 4  # CYAN
             except:
@@ -206,7 +210,10 @@ def find_ilines_near_circle(inno_circle, lines):
     return ilines
 
 def find_text_near_lines(ilines, texts, max_distance=3.0):
-    """ILINE 중심에서 3mm 내의 기울기 0인 숫자 텍스트 찾기"""
+    """
+    ILINE 중심에서 3mm 내의 기울기 0인 숫자 텍스트 찾기.
+    [참고] 본 함수는 레이어 제한 없음 -> ITEMPOS 레이어 텍스트도 자연스럽게 선택됨.
+    """
     it_texts = []
 
     for line in ilines:
