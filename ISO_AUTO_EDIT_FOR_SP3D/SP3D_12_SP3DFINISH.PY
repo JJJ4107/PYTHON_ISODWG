@@ -2,7 +2,8 @@ import ezdxf
 import tkinter as tk
 from tkinter import filedialog
 import os
-from ezdxf.colors import DXF_DEFAULT_COLORS, RED, YELLOW, CYAN, WHITE
+import math
+from ezdxf.colors import DXF_DEFAULT_COLORS, RED, YELLOW, CYAN, WHITE, BLUE
 
 def process_dxf_files():
     """DXF 파일을 선택하고 처리하는 메인 함수"""
@@ -28,14 +29,36 @@ def process_dxf_files():
         except Exception as e:
             print(f"오류 발생 ({file_path}): {str(e)}")
 
+def calculate_line_length(line_entity):
+    """LINE 엔티티의 길이를 계산하는 함수"""
+    start = line_entity.dxf.start
+    end = line_entity.dxf.end
+    
+    # 3D 거리 계산
+    length = math.sqrt(
+        (end[0] - start[0])**2 + 
+        (end[1] - start[1])**2 + 
+        (end[2] - start[2])**2
+    )
+    return length
+
 def process_single_dxf(file_path):
     """단일 DXF 파일을 처리하는 함수"""
     # DXF 파일 읽기
     doc = ezdxf.readfile(file_path)
     msp = doc.modelspace()
     
-    # 1단계: 색상 변경 작업 수행
+    # PIPE, TEE, ELBO 레이어의 LINE을 변환할 리스트
+    lines_to_convert = []
+    
+    # 색상 변경 작업 수행
     for entity in msp:
+        # PIPE, TEE, ELBO가 포함된 레이어의 LINE은 나중에 변환
+        layer_name = entity.dxf.layer.upper()
+        if entity.dxftype() == 'LINE' and ('PIPE' in layer_name or 'TEE' in layer_name or 'ELBO' in layer_name):
+            lines_to_convert.append(entity)
+            continue
+        
         # WDC 레이어의 원을 흰색으로
         if entity.dxftype() == 'CIRCLE' and entity.dxf.layer.upper() == 'WDC':
             entity.dxf.color = WHITE
@@ -84,17 +107,51 @@ def process_single_dxf(file_path):
             # WDT 레이어의 "0" 텍스트는 방금 빨간색으로 변경했으므로 제외
             if not (entity.dxf.layer.upper() == 'WDT' and get_text_value(entity).strip() == "0"):
                 entity.dxf.color = YELLOW
+        
+        # SUPP 레이어의 길이가 6~9인 LINE을 CYAN으로
+        elif entity.dxftype() == 'LINE' and entity.dxf.layer.upper() == 'SUPP':
+            line_length = calculate_line_length(entity)
+            if 6 <= line_length <= 9:
+                entity.dxf.color = CYAN
     
-    # 2단계: 모든 객체를 ACE_SP3D 레이어로 변경
-    # ACE_SP3D 레이어가 없으면 생성
-    if 'ACE_SP3D' not in doc.layers:
-        doc.layers.add('ACE_SP3D')
+    # PIPE, TEE, ELBO 레이어의 LINE을 POLYLINE으로 변환
+    for line in lines_to_convert:
+        # LINE의 시작점과 끝점 가져오기
+        start = line.dxf.start
+        end = line.dxf.end
+        
+        # 2D 좌표로 변환 (LWPOLYLINE은 2D만 지원)
+        points = [(start[0], start[1]), (end[0], end[1])]
+        
+        # 레이어 이름 확인
+        layer_name = line.dxf.layer.upper()
+        
+        # PIPE 레이어의 경우 길이 확인
+        if 'PIPE' in layer_name:
+            line_length = calculate_line_length(line)
+            if line_length <= 2:  # 2mm 이하
+                # POLYLINE 생성 (폭 0.3, 색상 YELLOW)
+                pline = msp.add_lwpolyline(points)
+                pline.dxf.const_width = 0.3
+                pline.dxf.color = YELLOW
+                pline.dxf.layer = line.dxf.layer
+            else:
+                # POLYLINE 생성 (폭 0.6, 색상 BLUE)
+                pline = msp.add_lwpolyline(points)
+                pline.dxf.const_width = 0.6
+                pline.dxf.color = BLUE
+                pline.dxf.layer = line.dxf.layer
+        else:
+            # TEE, ELBO 레이어는 기존대로 (폭 0.6, 색상 BLUE)
+            pline = msp.add_lwpolyline(points)
+            pline.dxf.const_width = 0.6
+            pline.dxf.color = BLUE
+            pline.dxf.layer = line.dxf.layer
+        
+        # 원본 LINE 삭제
+        msp.delete_entity(line)
     
-    # 모든 엔티티의 레이어를 ACE_SP3D로 변경
-    for entity in msp:
-        entity.dxf.layer = 'ACE_SP3D'
-    
-    # 3단계: 새 파일명 생성 및 저장
+    # 새 파일명 생성 및 저장
     dir_name = os.path.dirname(file_path)
     base_name = os.path.basename(file_path)
     name_without_ext = os.path.splitext(base_name)[0]
@@ -123,7 +180,7 @@ def get_text_value(entity):
     return ""
 
 if __name__ == "__main__":
-    print("DXF 파일 색상 및 레이어 변환 프로그램")
+    print("DXF 파일 색상 및 객체 변환 프로그램")
     print("=====================================")
     print("처리 내용:")
     print("1. WDC 레이어의 원 → 흰색")
@@ -136,7 +193,11 @@ if __name__ == "__main__":
     print("8. YELLOW 색상의 원 → 흰색")
     print("9. WDT 레이어의 '0' 텍스트 → 빨간색")
     print("10. RED 색상의 TEXT → 노란색")
-    print("11. 모든 객체 → ACE_SP3D 레이어로 이동")
+    print("11. SUPP 레이어의 길이 6~9인 LINE → CYAN색")
+    print("12. PIPE, TEE, ELBO가 포함된 레이어의 LINE → POLYLINE으로 변환")
+    print("    - PIPE 레이어의 2mm 이하 LINE: 폭 0.3, 노란색")
+    print("    - PIPE 레이어의 2mm 초과 LINE: 폭 0.6, 파란색")
+    print("    - TEE, ELBO 레이어의 LINE: 폭 0.6, 파란색")
     print("=====================================\n")
     
     try:

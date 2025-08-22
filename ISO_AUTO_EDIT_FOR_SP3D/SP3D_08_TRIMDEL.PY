@@ -493,7 +493,7 @@ def process_dxf(file_path):
         print(f"\n삭제할 엔티티가 없습니다.")
 
     # 파일 저장
-    save_path = os.path.splitext(file_path)[0] + "TRIMDEL.dxf"
+    save_path = os.path.splitext(file_path)[0] + "_TRIMD.dxf"
     try:
         doc.saveas(save_path)
         print(f"\n[✔] 저장 완료: {os.path.basename(save_path)}")

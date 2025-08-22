@@ -587,12 +587,17 @@ def angle_in_arc(theta, start_deg, end_deg):
 
 
 def is_point_near_any_circle_or_arc(msp, pt: Vec2, tol: float = 0.5) -> bool:
-    """포인트가 CIRCLE/ARC의 둘레에 tol(mm) 이내로 접하는지 검사"""
+    """포인트가 지름 4mm 이상 CIRCLE/ARC의 둘레에 tol(mm) 이내로 접하는지 검사"""
     # CIRCLE
     for c in msp.query("CIRCLE"):
         try:
             center = Vec2(c.dxf.center.x, c.dxf.center.y)
             r = float(c.dxf.radius)
+            
+            # 지름 4mm 이상만 체크 (반지름 2mm 이상)
+            if r < 2.0:
+                continue
+                
             d = abs(distance(pt, center) - r)
             if d <= tol:
                 return True
@@ -603,6 +608,11 @@ def is_point_near_any_circle_or_arc(msp, pt: Vec2, tol: float = 0.5) -> bool:
         try:
             center = Vec2(a.dxf.center.x, a.dxf.center.y)
             r = float(a.dxf.radius)
+            
+            # 지름 4mm 이상만 체크 (반지름 2mm 이상)
+            if r < 2.0:
+                continue
+                
             # 반지름 근접
             d_rad = abs(distance(pt, center) - r)
             if d_rad > tol:
@@ -690,11 +700,11 @@ def check_interference(itno_entities, msp, exclude_entities, threshold=0.5, draw
             continue
         
         # FRAME, PIPE 및 ITNO 관련 레이어는 간섭 체크에서 제외
-        if line.dxf.layer.upper() in ["FRAME", "ITNO", "ITEMPOS", "PIPE"]:
+        if line.dxf.layer.upper() in ["FRAME", "ITNO", "ITEMPOS"]:
             continue
             
         # 간섭 체크 관련 레이어들 제외
-        if line.dxf.layer in ["ITEMNO_BOX", "INTERFERENCE_ITNO", "INTERFERENCE_TEXT", "INTERFERENCE_LINE", "ITNO", "ITEMPOS", "PIPE"]:
+        if line.dxf.layer in ["ITEMNO_BOX", "INTERFERENCE_ITNO", "INTERFERENCE_TEXT", "INTERFERENCE_LINE", "ITNO", "ITEMPOS"]:
             continue
         
         # 거리 체크 - 40mm 범위 밖은 건너뜀
