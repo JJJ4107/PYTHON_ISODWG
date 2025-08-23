@@ -4,6 +4,7 @@ import math
 import os
 import sys
 import numpy as np
+import time
 
 class PipeLayerRenamer:
     def __init__(self):
@@ -1016,6 +1017,44 @@ class PipeLayerRenamer:
         self.psize_array = []
         self.pbox_entities = []
     
+    def save_dxf_with_retry(self, doc, filename, max_retries=3):
+        """DXF 파일을 저장하고, 실패 시 재시도"""
+        for retry in range(max_retries):
+            try:
+                doc.saveas(filename)
+                return True, filename
+            except PermissionError:
+                if retry < max_retries - 1:
+                    # 파일이 사용 중일 수 있으므로 잠시 대기
+                    time.sleep(0.5)
+                    
+                    # 다른 파일명으로 시도
+                    base_name = os.path.splitext(filename)[0]
+                    extension = os.path.splitext(filename)[1]
+                    new_filename = f"{base_name}_{retry+1}{extension}"
+                    
+                    try:
+                        doc.saveas(new_filename)
+                        return True, new_filename
+                    except:
+                        continue
+                else:
+                    # 마지막 시도는 임시 디렉토리에 저장
+                    import tempfile
+                    temp_dir = tempfile.gettempdir()
+                    temp_filename = os.path.join(temp_dir, os.path.basename(filename))
+                    try:
+                        doc.saveas(temp_filename)
+                        return True, temp_filename
+                    except:
+                        return False, None
+            except Exception as e:
+                if retry == max_retries - 1:
+                    return False, None
+                time.sleep(0.5)
+        
+        return False, None
+    
     def process_dxf(self, filename):
         """DXF 파일 처리"""
         try:
@@ -1124,14 +1163,26 @@ class PipeLayerRenamer:
             # 6. TEE 연결부 처리 (새로 추가된 기능)
             self.process_tee_connections()
             
-            # 7. 파일 저장
-            output_filename = filename.replace('.dxf', '_WDLA.dxf')
-            self.doc.saveas(output_filename)
+            # 7. 파일 저장 (대소문자 처리 및 권한 오류 처리 개선)
+            # 파일 확장자를 대소문자 구분 없이 처리
+            base_name = os.path.splitext(filename)[0]
+            extension = os.path.splitext(filename)[1]
+            output_filename = f"{base_name}_WDLA{extension}"
             
-            return True, output_filename
+            # 재시도 로직을 포함한 저장
+            success, saved_filename = self.save_dxf_with_retry(self.doc, output_filename)
+            
+            if success:
+                if saved_filename != output_filename:
+                    print(f"  ※ 원래 파일명({output_filename})으로 저장 실패, 대체 파일명으로 저장: {saved_filename}")
+                return True, saved_filename
+            else:
+                print(f"  ※ 파일 저장 실패: {filename}")
+                return False, None
             
         except Exception as e:
             import traceback
+            print(f"  ※ 처리 중 오류 발생: {str(e)}")
             traceback.print_exc()
             return False, None
 
@@ -1153,6 +1204,7 @@ def main():
     processor = PipeLayerRenamer()
     
     for i, filename in enumerate(filenames):
+        print(f"\n처리 중: {filename} ({i+1}/{len(filenames)})")
         success, output_file = processor.process_dxf(filename)
         
         if success:
@@ -1163,12 +1215,14 @@ def main():
             results.append(f"✗ {os.path.basename(filename)} - 처리 실패")
     
     # 최종 결과 출력
-    print(f"\n총 {len(filenames)}개 파일 중:")
+    print(f"\n{'='*60}")
+    print(f"총 {len(filenames)}개 파일 중:")
     print(f"- 성공: {len(successful_files)}개")
     print(f"- 실패: {len(failed_files)}개")
     print(f"\n상세 결과:")
     for result in results:
         print(result)
+    print(f"{'='*60}")
 
 if __name__ == "__main__":
     main()
