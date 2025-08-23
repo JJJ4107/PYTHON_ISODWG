@@ -34,10 +34,43 @@ def get_xy(e):
 
 def get_text(e):
     try:
+        text = ''
         if hasattr(e, 'dxf') and hasattr(e.dxf, 'text'):
-            return e.dxf.text
+            text = e.dxf.text
         elif hasattr(e, 'text'):
-            return e.text
+            text = e.text
+        
+        # 특수 유니코드 공백 문자들을 일반 공백으로 치환
+        if text:
+            # 문자열로 표현된 유니코드 이스케이프 시퀀스 처리
+            # 예: "\\U+2004" 문자열을 공백으로 변환
+            text = re.sub(r'\\U\+[0-9A-Fa-f]{4}', ' ', text)
+            
+            # 다양한 유니코드 공백 문자들
+            unicode_spaces = [
+                '\u2000',  # En Quad
+                '\u2001',  # Em Quad
+                '\u2002',  # En Space
+                '\u2003',  # Em Space
+                '\u2004',  # Three-Per-Em Space
+                '\u2005',  # Four-Per-Em Space
+                '\u2006',  # Six-Per-Em Space
+                '\u2007',  # Figure Space
+                '\u2008',  # Punctuation Space
+                '\u2009',  # Thin Space
+                '\u200A',  # Hair Space
+                '\u202F',  # Narrow No-Break Space
+                '\u205F',  # Medium Mathematical Space
+                '\u3000',  # Ideographic Space
+                '\xa0',    # Non-breaking space
+            ]
+            for space in unicode_spaces:
+                text = text.replace(space, ' ')
+            
+            # 연속된 공백을 하나로 축소
+            text = ' '.join(text.split())
+            
+        return text
     except Exception:
         pass
     return ''
@@ -47,9 +80,13 @@ def get_text_from_blocks(doc, msp):
     all_texts = []
     # 1) 모델공간 TEXT/MTEXT
     for e in msp.query('TEXT MTEXT'):
-        txt = get_text(e).strip()
+        txt = get_text(e)  # 이미 처리된 텍스트
         x, y = get_xy(e)
         if txt:
+            # 디버깅: ERECTION/FABRICATION 포함 텍스트 출력
+            txt_upper = txt.upper()
+            if 'ERECTION' in txt_upper or 'FABRICATION' in txt_upper:
+                print(f"  [DEBUG] ERECTION/FABRICATION 텍스트 발견: '{txt}' at ({x:.1f}, {y:.1f}) from normal")
             all_texts.append((x, y, txt, 'normal'))
     # 2) INSERT 블록 내부 TEXT/MTEXT
     for insert in msp.query('INSERT'):
@@ -62,7 +99,7 @@ def get_text_from_blocks(doc, msp):
             block = doc.blocks[block_name]
             for entity in block:
                 if entity.dxftype() in ['TEXT', 'MTEXT']:
-                    txt = get_text(entity).strip()
+                    txt = get_text(entity)  # 이미 처리된 텍스트
                     if not txt:
                         continue
                     local_x, local_y = get_xy(entity)
@@ -75,6 +112,10 @@ def get_text_from_blocks(doc, msp):
                     else:
                         abs_x = insert_point[0] + local_x * x_scale
                         abs_y = insert_point[1] + local_y * y_scale
+                    # 디버깅: ERECTION/FABRICATION 포함 텍스트 출력
+                    txt_upper = txt.upper()
+                    if 'ERECTION' in txt_upper or 'FABRICATION' in txt_upper:
+                        print(f"  [DEBUG] ERECTION/FABRICATION 텍스트 발견: '{txt}' at ({abs_x:.1f}, {abs_y:.1f}) from block '{block_name}'")
                     all_texts.append((abs_x, abs_y, txt, 'block'))
     return all_texts
 
@@ -123,25 +164,99 @@ def is_numeric_text(s: str) -> bool:
     s = str(s).strip()
     return bool(re.fullmatch(r'\d+(\.\d+)?', s))
 
+def clean_text_for_excel(text):
+    """Excel 저장 전 텍스트 정리"""
+    if not text:
+        return ''
+    
+    # 문자열로 변환
+    text = str(text)
+    
+    # 문자열로 표현된 유니코드 이스케이프 시퀀스 처리
+    # 예: "\\U+2004" 문자열을 공백으로 변환
+    import re
+    text = re.sub(r'\\U\+[0-9A-Fa-f]{4}', ' ', text)
+    
+    # 특수 유니코드 공백 문자들을 일반 공백으로 치환
+    unicode_spaces = [
+        '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+        '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F',
+        '\u205F', '\u3000', '\xa0',
+        '\u00A0',  # Non-breaking space
+        '\u1680',  # Ogham Space Mark
+        '\u180E',  # Mongolian Vowel Separator
+        '\u2028',  # Line Separator
+        '\u2029',  # Paragraph Separator
+        '\u200B',  # Zero Width Space
+        '\u200C',  # Zero Width Non-Joiner
+        '\u200D',  # Zero Width Joiner
+        '\uFEFF',  # Zero Width No-Break Space
+    ]
+    
+    cleaned = text
+    for space in unicode_spaces:
+        if space in cleaned:
+            cleaned = cleaned.replace(space, ' ')
+    
+    # 탭과 줄바꿈을 공백으로
+    cleaned = cleaned.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+    
+    # 연속된 공백을 하나로 축소
+    cleaned = ' '.join(cleaned.split())
+    
+    # 모든 제어 문자 제거
+    import unicodedata
+    cleaned = ''.join(char for char in cleaned if not unicodedata.category(char).startswith('C'))
+    
+    return cleaned.strip()
+
 def split_text_by_distance(texts_with_pos, threshold=10):
     """X 거리 기준 분리"""
     if not texts_with_pos:
         return []
     texts_with_pos.sort(key=lambda t: t[0])
     result = []
-    current_group = [texts_with_pos[0][2]]
+    current_group = [clean_text_for_excel(texts_with_pos[0][2])]
     last_x = texts_with_pos[0][0]
     for i in range(1, len(texts_with_pos)):
         x, y, txt = texts_with_pos[i]
+        cleaned_txt = clean_text_for_excel(txt)
         if x - last_x >= threshold:
             result.append(' '.join(current_group))
-            current_group = [txt]
+            current_group = [cleaned_txt]
         else:
-            current_group.append(txt)
+            current_group.append(cleaned_txt)
         last_x = x
     if current_group:
         result.append(' '.join(current_group))
     return result
+
+def assign_values_by_header_position(row_texts, header_positions, tolerance=20):
+    """헤더 위치를 기반으로 각 텍스트를 적절한 컬럼에 할당"""
+    values = {header: '' for header in header_positions.keys()}
+    
+    # 각 텍스트를 가장 가까운 헤더에 할당
+    for x, y, txt in row_texts:
+        cleaned_txt = clean_text_for_excel(txt)
+        if not cleaned_txt:
+            continue
+            
+        closest_header = None
+        min_distance = float('inf')
+        
+        for header, header_x in header_positions.items():
+            distance = abs(x - header_x)
+            if distance < min_distance and distance < tolerance:
+                min_distance = distance
+                closest_header = header
+        
+        if closest_header:
+            if values[closest_header]:  # 이미 값이 있으면 추가
+                values[closest_header] += ' ' + cleaned_txt
+            else:
+                values[closest_header] = cleaned_txt
+    
+    return values
 
 # 파일 선택
 root = tk.Tk()
@@ -189,6 +304,15 @@ REVNO_FALLBACK   = (803.0, 20.0, 10.0, 10.0)
 
 for file_path in file_paths:
     print(f"\n처리 중: {os.path.basename(file_path)}")
+    print("=" * 80)
+    print("디버깅 모드: ERECTION/FABRICATION 관련 텍스트 추적")
+    print("  [DEBUG] - DXF에서 읽은 모든 ERECTION/FABRICATION 텍스트")
+    print("  [DEBUG-ROW] - 테이블 행에서 발견된 ERECTION/FABRICATION")
+    print("  [DEBUG-SEARCH] - 추가 검색에서 발견된 ERECTION/FABRICATION")
+    print("  [DEBUG-MERGE] - 병합 처리 중인 ERECTION/FABRICATION")
+    print("  [DEBUG-FINAL] - 최종 처리 중인 ERECTION/FABRICATION")
+    print("=" * 80)
+    
     try:
         doc = ezdxf.readfile(file_path)
         msp = doc.modelspace()
@@ -230,7 +354,7 @@ for file_path in file_paths:
     # 3) 제목/설명/시트/리비전 1차 추출
     dwgno = find_text_in_rect_with_blocks(doc, msp, 720, 750, 30, 40) or '-'
     isodesc = find_text_in_rect_with_blocks(doc, msp, 650, 750, 40, 50) or '-'
-    sheetno = find_text_in_rect_with_blocks(doc, msp, 790, 810, 40, 50,  lambda t: ('OF' in t.upper()) or ('/' in t)) or '-'
+    sheetno = find_text_in_rect_with_blocks(doc, msp, 790, 820, 30, 50, lambda t: ('OF' in t.upper()) or ('/' in t)) or '-'
     revno = find_text_in_rect_with_blocks(doc, msp, 800, 850, 5, 20, lambda t: t.isdigit()) or '-'
 
     # 3-보정) ISO DWG NO / SH'T NO / REV NO 보정 (값 없거나 '-'일 때만)
@@ -261,51 +385,97 @@ for file_path in file_paths:
     print(f"  - SHEETNO: {sheetno}")
     print(f"  - REVNO: {revno}")
 
-    # 4) 헤더 찾기
-    headers = ['PT', 'COMPONENT', 'SIZE', "Q'TY", 'WEIGHT']
+    # 4) 헤더 찾기 - 순서대로 PT, COMPONENT, SIZE, Q'TY, WEIGHT
+    headers_order = ['PT', 'COMPONENT', 'SIZE', "Q'TY", 'WEIGHT']
     header_positions = {}
     all_texts = get_text_from_blocks(doc, msp)
 
-    # COMPONENT 헤더
+    # 1단계: PT 헤더 찾기
+    pt_header = None
+    pt_x, pt_y = None, None
+    for x, y, txt, source in all_texts:
+        txt_upper = txt.upper()
+        if txt_upper == 'PT' or (txt_upper.startswith('PT') and len(txt_upper) <= 5):
+            pt_header = True
+            pt_x, pt_y = x, y
+            header_positions['PT'] = pt_x
+            print(f"  - PT 헤더 발견 at ({pt_x:.1f}, {pt_y:.1f}) from {source}")
+            break
+
+    # 2단계: COMPONENT 헤더 찾기
     comp_header = None
     comp_x, comp_y = None, None
-    for x, y, txt, source in all_texts:
-        if 'COMPONENT' in txt.upper():
-            comp_header = True
-            comp_x, comp_y = x, y
-            header_positions['COMPONENT'] = comp_x
-            print(f"  - COMPONENT 헤더 발견 at ({comp_x:.1f}, {comp_y:.1f}) from {source}")
-            break
+    base_y = None
+    
+    if pt_header:
+        # PT가 있으면 PT와 같은 Y선상에서 COMPONENT 찾기
+        base_y = pt_y
+        for x, y, txt, source in all_texts:
+            if 'COMPONENT' in txt.upper() and abs(y - pt_y) <= 5:
+                comp_header = True
+                comp_x, comp_y = x, y
+                header_positions['COMPONENT'] = comp_x
+                print(f"  - COMPONENT 헤더 발견 at ({comp_x:.1f}, {comp_y:.1f}) from {source}")
+                break
+    else:
+        # PT가 없으면 COMPONENT 독립적으로 찾기
+        for x, y, txt, source in all_texts:
+            if 'COMPONENT' in txt.upper():
+                comp_header = True
+                comp_x, comp_y = x, y
+                header_positions['COMPONENT'] = comp_x
+                base_y = comp_y
+                print(f"  - COMPONENT 헤더 발견 at ({comp_x:.1f}, {comp_y:.1f}) from {source}")
+                break
 
     # 헤더 미검출 시 고정 좌표 사용
     use_fallback = False
-    if not comp_header:
-        print("  - COMPONENT 헤더 미검출 ▶ 고정 좌표(±2mm) 대체 스캔 사용")
+    if not comp_header and not pt_header:
+        print("  - 헤더 미검출 ▶ 고정 좌표(±2mm) 대체 스캔 사용")
         use_fallback = True
         header_positions = {k: v for k, v in FALLBACK_COLS.items()}
         comp_x = FALLBACK_COLS['COMPONENT']
         comp_y = FALLBACK_Y_HEADER
+        base_y = comp_y
 
-    # 다른 헤더는 정상 경로에서만 자동 탐색
-    if not use_fallback:
+    # 3단계: 나머지 헤더들 찾기 (SIZE, Q'TY, WEIGHT)
+    if not use_fallback and base_y:
         for x, y, txt, source in all_texts:
             txt_upper = txt.upper()
-            if abs(y - comp_y) <= 5:
-                if txt_upper == 'PT' or (txt_upper.startswith('PT') and len(txt_upper) <= 5):
-                    header_positions['PT'] = x
-                elif 'SIZE' in txt_upper:
+            if abs(y - base_y) <= 5:
+                if 'SIZE' in txt_upper and 'SIZE' not in header_positions:
                     header_positions['SIZE'] = x
-                elif "Q'TY" in txt_upper or 'QTY' in txt_upper:
+                elif ("Q'TY" in txt_upper or 'QTY' in txt_upper) and "Q'TY" not in header_positions:
                     header_positions["Q'TY"] = x
-                elif 'WEIGHT' in txt_upper and 'T.WEIGHT' not in txt_upper:
+                elif 'WEIGHT' in txt_upper and 'T.WEIGHT' not in txt_upper and 'WEIGHT' not in header_positions:
                     header_positions['WEIGHT'] = x
-        print(f"  - 찾은 헤더들: {list(header_positions.keys())}")
+        
+        # 헤더 순서 검증
+        found_headers = [h for h in headers_order if h in header_positions]
+        print(f"  - 찾은 헤더들: {found_headers}")
+        
+        # X 좌표 순서 확인
+        if len(found_headers) >= 3:
+            x_coords = [header_positions[h] for h in found_headers]
+            if x_coords != sorted(x_coords):
+                print("  - 경고: 헤더 X 좌표 순서가 예상과 다릅니다!")
+                for h in found_headers:
+                    print(f"    {h}: X={header_positions[h]:.1f}")
+            else:
+                print(f"  - 헤더 순서 확인: {'→'.join(found_headers)}")
     else:
         print(f"  - 고정 헤더 X: { {k: round(v,1) for k,v in header_positions.items()} }")
         print(f"  - Y 스캔: {comp_y:.1f} → {FALLBACK_Y_LIMIT:.1f}")
 
     # 5) 테이블 행 스캔
     all_rows_data = []
+    
+    # 변수 초기화 (정상/대체 경로 모두에서 사용)
+    erection_materials_found = False
+    erection_materials_index = -1
+    fabrication_weight_found = False
+    fabrication_weight_index = -1
+    erection_weight_found = False
 
     if not use_fallback:
         y_limit = comp_y - 250
@@ -318,8 +488,13 @@ for file_path in file_paths:
         comp_data_y_positions = sorted(list(set(comp_data_y_positions)), reverse=True)
         print(f"  - 발견된 행: {len(comp_data_y_positions)}")
 
+        # ERECTION MATERIALS/WEIGHT 찾기
+        erection_materials_found = False
+        erection_materials_index = -1
         erection_weight_found = False
-        for data_y in comp_data_y_positions:
+        last_pt_y = None  # 마지막 PT가 있는 Y 좌표 저장
+        
+        for idx, data_y in enumerate(comp_data_y_positions):
             row_texts = []
             for x, y, txt, source in all_texts:
                 if abs(y - data_y) <= 2 and comp_x - 20 <= x <= comp_x + 180 and txt:
@@ -327,39 +502,66 @@ for file_path in file_paths:
             if not row_texts:
                 continue
             row_texts.sort(key=lambda t: t[0])
-            totxt = ' '.join([t[2] for t in row_texts])
+            # 각 텍스트를 정리한 후 합치기
+            cleaned_texts = []
+            for x, y, txt in row_texts:
+                cleaned = clean_text_for_excel(txt)
+                if cleaned:
+                    cleaned_texts.append(cleaned)
+            totxt = ' '.join(cleaned_texts)
 
+            # ERECTION MATERIALS 체크
+            if 'ERECTION MATERIAL' in totxt.upper():
+                print(f"\n!!! ERECTION MATERIALS 발견 at index {idx}: {clean_text_for_excel(totxt)}")
+                erection_materials_found = True
+                erection_materials_index = idx
+                
+            # ERECTION WEIGHT 체크
             if 'ERECTION WEIGHT' in totxt.upper():
-                print(f"\n!!! ERECTION WEIGHT 발견: {totxt}")
+                print(f"\n!!! ERECTION WEIGHT 발견: {clean_text_for_excel(totxt)}")
                 erection_weight_found = True
                 break
 
-            separated_values = split_text_by_distance(row_texts, 10)
-            pt_value = ''
-            comp_value = ''
-            size_value = ''
-            qty_value = ''
-            weight_value = ''
+            # 헤더 위치 기반 값 할당
+            if header_positions:
+                row_values = assign_values_by_header_position(row_texts, header_positions)
+                pt_value = row_values.get('PT', '')
+                comp_value = row_values.get('COMPONENT', '')
+                size_value = row_values.get('SIZE', '')
+                qty_value = row_values.get("Q'TY", '')
+                weight_value = row_values.get('WEIGHT', '')
+            else:
+                # 기존 방식 (거리 기반)
+                separated_values = split_text_by_distance(row_texts, 10)
+                pt_value = ''
+                comp_value = ''
+                size_value = ''
+                qty_value = ''
+                weight_value = ''
 
-            if len(separated_values) > 0:
-                if separated_values[0].isdigit():
-                    pt_value = separated_values[0]
-                    if len(separated_values) > 1:
-                        comp_value = separated_values[1]
-                    if len(separated_values) > 2:
-                        size_value = separated_values[2]
-                    if len(separated_values) > 3:
-                        qty_value = separated_values[3]
-                    if len(separated_values) > 4:
-                        weight_value = separated_values[4]
-                else:
-                    comp_value = ' '.join(separated_values[:2]) if len(separated_values) > 1 else separated_values[0]
-                    if len(separated_values) > 2:
-                        size_value = separated_values[2]
-                    if len(separated_values) > 3:
-                        qty_value = separated_values[3]
-                    if len(separated_values) > 4:
-                        weight_value = separated_values[4]
+                if len(separated_values) > 0:
+                    if separated_values[0].isdigit():
+                        pt_value = separated_values[0]
+                        if len(separated_values) > 1:
+                            comp_value = separated_values[1]
+                        if len(separated_values) > 2:
+                            size_value = separated_values[2]
+                        if len(separated_values) > 3:
+                            qty_value = separated_values[3]
+                        if len(separated_values) > 4:
+                            weight_value = separated_values[4]
+                    else:
+                        comp_value = ' '.join(separated_values[:2]) if len(separated_values) > 1 else separated_values[0]
+                        if len(separated_values) > 2:
+                            size_value = separated_values[2]
+                        if len(separated_values) > 3:
+                            qty_value = separated_values[3]
+                        if len(separated_values) > 4:
+                            weight_value = separated_values[4]
+
+            # PT가 있고 숫자인 경우 마지막 PT Y 좌표 업데이트
+            if pt_value and is_numeric_text(pt_value):
+                last_pt_y = data_y
 
             row_data = {
                 'totxt': totxt,
@@ -368,9 +570,113 @@ for file_path in file_paths:
                 'size': size_value,
                 'qty': qty_value,
                 'weight': weight_value,
-                'y_pos': data_y
+                'y_pos': data_y,
+                'index': idx  # 인덱스 추가
             }
             all_rows_data.append(row_data)
+
+        # 특수 텍스트(ERECTION WEIGHT, FABRICATION WEIGHT, ERECTION MATERIALS) 추가 검색
+        # X 범위: PT X값 ~ WEIGHT X값 (또는 가장 왼쪽/오른쪽 헤더)
+        # Y 범위: 마지막 PT Y값 - 20mm까지
+        if not erection_weight_found and last_pt_y and header_positions:
+            # X 범위 결정
+            header_x_values = list(header_positions.values())
+            search_x_min = min(header_x_values) - 10  # 가장 왼쪽 헤더
+            search_x_max = max(header_x_values) + 10  # 가장 오른쪽 헤더
+            
+            # PT와 WEIGHT가 있으면 그것을 사용
+            if 'PT' in header_positions and 'WEIGHT' in header_positions:
+                search_x_min = header_positions['PT'] - 10
+                search_x_max = header_positions['WEIGHT'] + 10
+            
+            search_y_min = last_pt_y - 20
+            search_y_max = last_pt_y
+            
+            print(f"  - 특수 텍스트 추가 검색 범위:")
+            print(f"    X: {search_x_min:.1f} ~ {search_x_max:.1f}")
+            print(f"    Y: {search_y_min:.1f} ~ {search_y_max:.1f}")
+            
+            for x, y, txt, source in all_texts:
+                if search_x_min <= x <= search_x_max and search_y_min <= y <= search_y_max:
+                    txt_upper = txt.upper()
+                    # 디버깅: 범위 내 모든 ERECTION/FABRICATION 텍스트 출력
+                    if 'ERECTION' in txt_upper or 'FABRICATION' in txt_upper:
+                        print(f"  [DEBUG-SEARCH] 추가 검색 범위 내 발견: '{clean_text_for_excel(txt)}' at ({x:.1f}, {y:.1f})")
+                    
+                    if 'ERECTION WEIGHT' in txt_upper and not erection_weight_found:
+                        erection_weight_found = True
+                        print(f"\n!!! ERECTION WEIGHT 발견 (추가 검색): {clean_text_for_excel(txt)}")
+                    elif 'FABRICATION WEIGHT' in txt_upper and not fabrication_weight_found:
+                        fabrication_weight_found = True
+                        # Y 좌표를 기준으로 인덱스 찾기
+                        for i, row in enumerate(all_rows_data):
+                            if row['y_pos'] < y:  # FABRICATION WEIGHT보다 아래에 있는 첫 번째 행
+                                fabrication_weight_index = i
+                                break
+                        if fabrication_weight_index == -1:
+                            fabrication_weight_index = len(all_rows_data)
+                        print(f"\n!!! FABRICATION WEIGHT 발견 (추가 검색): {clean_text_for_excel(txt)}")
+                        print(f"    Y 좌표: {y:.1f}, 추정 인덱스: {fabrication_weight_index}")
+                        if 'TOTAL' in txt_upper:
+                            print(f"    ※ 주의: TOTAL이 포함되어 있음")
+                    elif 'ERECTION MATERIAL' in txt_upper and not erection_materials_found:
+                        erection_materials_found = True
+                        # Y 좌표를 기준으로 인덱스 찾기
+                        for i, row in enumerate(all_rows_data):
+                            if row['y_pos'] < y:  # ERECTION MATERIALS보다 아래에 있는 첫 번째 행
+                                erection_materials_index = i
+                                break
+                        if erection_materials_index == -1:
+                            erection_materials_index = len(all_rows_data)
+                        print(f"\n!!! ERECTION MATERIALS 발견 (추가 검색): {clean_text_for_excel(txt)}")
+
+        # 분류 정보 출력
+        if erection_materials_found:
+            print(f"\n  - ERECTION MATERIALS 기준으로 FAB/EREC 분류")
+            print(f"    인덱스 {erection_materials_index} 이전: FAB MATERIAL")
+            print(f"    인덱스 {erection_materials_index} 이후: EREC MATERIAL")
+        elif fabrication_weight_found:
+            print(f"\n  - FABRICATION WEIGHT 기준으로 FAB/EREC 분류")
+            print(f"    인덱스 {fabrication_weight_index} 이전: FAB MATERIAL")
+            print(f"    인덱스 {fabrication_weight_index} 이후: EREC MATERIAL")
+        else:
+            print(f"\n  - ERECTION MATERIALS/FABRICATION WEIGHT 없음: 모두 FAB MATERIAL로 분류")
+        
+        # 전체 텍스트에서 FABRICATION WEIGHT, ERECTION MATERIALS 찾기
+        # 테이블 영역 내외 모두 검색
+        fabrication_weight_y = None
+        erection_materials_y = None
+        
+        print(f"\n  - 전체 텍스트에서 FABRICATION WEIGHT/ERECTION MATERIALS 검색:")
+        for x, y, txt, source in all_texts:
+            txt_upper = txt.upper()
+            # 테이블 X 범위 근처에서만 검색 (±50mm 여유)
+            if comp_x - 70 <= x <= comp_x + 230:
+                if 'FABRICATION WEIGHT' in txt_upper and not fabrication_weight_y:
+                    fabrication_weight_y = y
+                    print(f"    FABRICATION WEIGHT 발견: '{clean_text_for_excel(txt)}' at ({x:.1f}, {y:.1f})")
+                    if 'TOTAL' in txt_upper:
+                        print(f"      ※ TOTAL 포함")
+                elif 'ERECTION MATERIAL' in txt_upper and not erection_materials_y:
+                    erection_materials_y = y
+                    print(f"    ERECTION MATERIALS 발견: '{clean_text_for_excel(txt)}' at ({x:.1f}, {y:.1f})")
+        
+        # Y 좌표 기준으로 인덱스 결정
+        if fabrication_weight_y:
+            for i, row in enumerate(all_rows_data):
+                if row['y_pos'] < fabrication_weight_y:  # FABRICATION WEIGHT보다 아래
+                    fabrication_weight_found = True
+                    fabrication_weight_index = i
+                    print(f"    → FABRICATION WEIGHT 기준 인덱스: {i} (Y={fabrication_weight_y:.1f} 이하)")
+                    break
+        
+        if erection_materials_y:
+            for i, row in enumerate(all_rows_data):
+                if row['y_pos'] < erection_materials_y:  # ERECTION MATERIALS보다 아래
+                    erection_materials_found = True
+                    erection_materials_index = i
+                    print(f"    → ERECTION MATERIALS 기준 인덱스: {i} (Y={erection_materials_y:.1f} 이하)")
+                    break
 
         fabrication_found = any('FABRICATION' in r['totxt'].upper() for r in all_rows_data)
 
@@ -398,7 +704,9 @@ for file_path in file_paths:
                 merged_y_positions.append(y)
         print(f"  - (대체) 발견된 행: {len(merged_y_positions)}")
 
-        for data_y in merged_y_positions:
+        last_pt_y = None  # 마지막 PT가 있는 Y 좌표 저장
+        
+        for idx, data_y in enumerate(merged_y_positions):
             per_col_tokens = {k: [] for k in col_windows.keys()}
             row_tokens_for_totxt = []
             for x, y, txt, source in all_texts:
@@ -417,14 +725,44 @@ for file_path in file_paths:
             for col in per_col_tokens:
                 per_col_tokens[col].sort(key=lambda t: t[0])
 
-            pt_value = ' '.join([t[2] for t in per_col_tokens['PT']]).strip()
-            comp_value = ' '.join([t[2] for t in per_col_tokens['COMPONENT']]).strip()
-            size_value = ' '.join([t[2] for t in per_col_tokens['SIZE']]).strip()
-            qty_value = ' '.join([t[2] for t in per_col_tokens["Q'TY"]]).strip()
-            weight_value = ' '.join([t[2] for t in per_col_tokens['WEIGHT']]).strip()
+            pt_value = ' '.join([clean_text_for_excel(t[2]) for t in per_col_tokens['PT']]).strip()
+            comp_value = ' '.join([clean_text_for_excel(t[2]) for t in per_col_tokens['COMPONENT']]).strip()
+            size_value = ' '.join([clean_text_for_excel(t[2]) for t in per_col_tokens['SIZE']]).strip()
+            qty_value = ' '.join([clean_text_for_excel(t[2]) for t in per_col_tokens["Q'TY"]]).strip()
+            weight_value = ' '.join([clean_text_for_excel(t[2]) for t in per_col_tokens['WEIGHT']]).strip()
+
+            # PT가 있고 숫자인 경우 마지막 PT Y 좌표 업데이트
+            if pt_value and is_numeric_text(pt_value):
+                last_pt_y = data_y
 
             row_tokens_for_totxt.sort(key=lambda t: t[0])
-            totxt = ' '.join([t[2] for t in row_tokens_for_totxt]).strip()
+            # 각 텍스트를 정리한 후 합치기
+            cleaned_texts = []
+            for x, y, txt in row_tokens_for_totxt:
+                cleaned = clean_text_for_excel(txt)
+                if cleaned:
+                    cleaned_texts.append(cleaned)
+            totxt = ' '.join(cleaned_texts)
+            
+            # 디버깅: ERECTION/FABRICATION 포함된 행 출력
+            if 'ERECTION' in totxt.upper() or 'FABRICATION' in totxt.upper():
+                print(f"\n  [DEBUG-ROW-ALT] ERECTION/FABRICATION 행 발견 at Y={data_y:.1f}, idx={idx}")
+                print(f"    전체 텍스트: '{totxt}'")
+
+            # ERECTION MATERIALS 체크
+            if 'ERECTION MATERIAL' in totxt.upper():
+                print(f"\n!!! ERECTION MATERIALS 발견 at index {idx}: {clean_text_for_excel(totxt)}")
+                erection_materials_found = True
+                erection_materials_index = idx
+            
+            # FABRICATION WEIGHT 체크
+            if 'FABRICATION WEIGHT' in totxt.upper():
+                print(f"\n!!! FABRICATION WEIGHT 발견 at index {idx}: {clean_text_for_excel(totxt)}")
+                fabrication_weight_found = True
+                fabrication_weight_index = idx
+                # TOTAL이 포함되어 있는지 추가 체크
+                if 'TOTAL' in totxt.upper():
+                    print(f"    ※ 주의: TOTAL이 포함되어 있음")
 
             row_data = {
                 'totxt': totxt,
@@ -433,15 +771,105 @@ for file_path in file_paths:
                 'size': size_value,
                 'qty': qty_value,
                 'weight': weight_value,
-                'y_pos': data_y
+                'y_pos': data_y,
+                'index': idx  # 인덱스 추가
             }
             all_rows_data.append(row_data)
 
-        erection_weight_found = any('ERECTION WEIGHT' in r['totxt'].upper() for r in all_rows_data)
+        # 특수 텍스트(ERECTION WEIGHT, FABRICATION WEIGHT, ERECTION MATERIALS) 추가 검색
+        # X 범위: PT X값 ~ WEIGHT X값
+        # Y 범위: 마지막 PT Y값 - 20mm까지
+        if last_pt_y and 'PT' in header_positions and 'WEIGHT' in header_positions:
+            search_x_min = header_positions['PT'] - FALLBACK_X_TOL
+            search_x_max = header_positions['WEIGHT'] + FALLBACK_X_TOL
+            search_y_min = last_pt_y - 20
+            search_y_max = last_pt_y
+            
+            print(f"  - 특수 텍스트 추가 검색 범위:")
+            print(f"    X: {search_x_min:.1f} ~ {search_x_max:.1f}")
+            print(f"    Y: {search_y_min:.1f} ~ {search_y_max:.1f}")
+            
+            for x, y, txt, source in all_texts:
+                if search_x_min <= x <= search_x_max and search_y_min <= y <= search_y_max:
+                    txt_upper = txt.upper()
+                    if 'ERECTION WEIGHT' in txt_upper and not erection_weight_found:
+                        erection_weight_found = True
+                        print(f"\n!!! ERECTION WEIGHT 발견 (추가 검색): {clean_text_for_excel(txt)}")
+                    elif 'FABRICATION WEIGHT' in txt_upper and not fabrication_weight_found:
+                        fabrication_weight_found = True
+                        # 현재 행 위치를 인덱스로 추정 (마지막 데이터 행 + 1)
+                        fabrication_weight_index = len(all_rows_data)
+                        print(f"\n!!! FABRICATION WEIGHT 발견 (추가 검색): {clean_text_for_excel(txt)}")
+                    elif 'ERECTION MATERIAL' in txt_upper and not erection_materials_found:
+                        erection_materials_found = True
+                        erection_materials_index = len(all_rows_data)
+                        print(f"\n!!! ERECTION MATERIALS 발견 (추가 검색): {clean_text_for_excel(txt)}")
+
+        # 전체 텍스트에서 FABRICATION WEIGHT, ERECTION MATERIALS 찾기 (대체 경로)
+        # 테이블 영역 내외 모두 검색
+        fabrication_weight_y = None
+        erection_materials_y = None
+        
+        print(f"\n  - (대체) 전체 텍스트에서 FABRICATION WEIGHT/ERECTION MATERIALS 검색:")
+        
+        # 테이블 X 범위 결정
+        x_min = min(header_positions.values()) - 50
+        x_max = max(header_positions.values()) + 50
+        
+        for x, y, txt, source in all_texts:
+            txt_upper = txt.upper()
+            # 테이블 X 범위 근처에서만 검색
+            if x_min <= x <= x_max:
+                if 'FABRICATION WEIGHT' in txt_upper and not fabrication_weight_y:
+                    fabrication_weight_y = y
+                    print(f"    FABRICATION WEIGHT 발견: '{clean_text_for_excel(txt)}' at ({x:.1f}, {y:.1f})")
+                    if 'TOTAL' in txt_upper:
+                        print(f"      ※ TOTAL 포함")
+                elif 'ERECTION MATERIAL' in txt_upper and not erection_materials_y:
+                    erection_materials_y = y
+                    print(f"    ERECTION MATERIALS 발견: '{clean_text_for_excel(txt)}' at ({x:.1f}, {y:.1f})")
+        
+        # Y 좌표 기준으로 인덱스 결정
+        if fabrication_weight_y:
+            for i, row in enumerate(all_rows_data):
+                if row['y_pos'] < fabrication_weight_y:  # FABRICATION WEIGHT보다 아래
+                    fabrication_weight_found = True
+                    fabrication_weight_index = i
+                    print(f"    → FABRICATION WEIGHT 기준 인덱스: {i} (Y={fabrication_weight_y:.1f} 이하)")
+                    break
+        
+        if erection_materials_y:
+            for i, row in enumerate(all_rows_data):
+                if row['y_pos'] < erection_materials_y:  # ERECTION MATERIALS보다 아래
+                    erection_materials_found = True
+                    erection_materials_index = i
+                    print(f"    → ERECTION MATERIALS 기준 인덱스: {i} (Y={erection_materials_y:.1f} 이하)")
+                    break
+
+        erection_weight_found = erection_weight_found or any('ERECTION WEIGHT' in r['totxt'].upper() for r in all_rows_data)
         if erection_weight_found:
             print("\n!!! ERECTION WEIGHT 발견: 이후 행 무시")
-            cut_idx = next(i for i, r in enumerate(all_rows_data) if 'ERECTION WEIGHT' in r['totxt'].upper())
-            all_rows_data = all_rows_data[:cut_idx]
+            # ERECTION WEIGHT가 있는 행 찾기
+            cut_idx = -1
+            for i, r in enumerate(all_rows_data):
+                if 'ERECTION WEIGHT' in r['totxt'].upper():
+                    cut_idx = i
+                    break
+            if cut_idx >= 0:
+                all_rows_data = all_rows_data[:cut_idx]
+        
+        # 분류 정보 출력
+        if erection_materials_found:
+            print(f"\n  - ERECTION MATERIALS 기준으로 FAB/EREC 분류")
+            print(f"    인덱스 {erection_materials_index} 이전: FAB MATERIAL")
+            print(f"    인덱스 {erection_materials_index} 이후: EREC MATERIAL")
+        elif fabrication_weight_found:
+            print(f"\n  - FABRICATION WEIGHT 기준으로 FAB/EREC 분류")
+            print(f"    인덱스 {fabrication_weight_index} 이전: FAB MATERIAL")
+            print(f"    인덱스 {fabrication_weight_index} 이후: EREC MATERIAL")
+        else:
+            print(f"\n  - ERECTION MATERIALS/FABRICATION WEIGHT 없음: 모두 FAB MATERIAL로 분류")
+        
         fabrication_found = any('FABRICATION' in r['totxt'].upper() for r in all_rows_data)
 
     # 6) FABRICATION 컷
@@ -462,26 +890,33 @@ for file_path in file_paths:
 
     for row in all_rows_data:
         totxt_upper = row['totxt'].upper()
+        # 디버깅: FABRICATION/ERECTION 포함 행
         if 'FABRICATION' in totxt_upper or 'ERECTION' in totxt_upper:
-            print(f"    FABRICATION/ERECTION 행 스킵: {row['totxt'][:50]}...")
+            print(f"\n  [DEBUG-MERGE] FABRICATION/ERECTION 행 처리 중: idx={row.get('index', 'N/A')}, PT='{row['pt']}'")
+            print(f"    텍스트: '{clean_text_for_excel(row['totxt'][:100])}'")
+            
+        if 'FABRICATION' in totxt_upper or 'ERECTION' in totxt_upper:
+            print(f"    FABRICATION/ERECTION 행 스킵: {clean_text_for_excel(row['totxt'][:50])}...")
             continue
 
         if row['pt']:  # PT 문자열 존재
             # === 추가: PT가 숫자가 아니면 SKIP ===
             if not is_numeric_text(row['pt']):
-                print(f"    [SKIP] 비숫자 PT 행: PT='{row['pt']}' | {row['totxt'][:50]}...")
+                print(f"    [SKIP] 비숫자 PT 행: PT='{row['pt']}' | {clean_text_for_excel(row['totxt'][:50])}...")
                 continue
 
             # 이전 PT에 모여있던 빈 행 병합
             if last_pt_data and empty_lines:
                 for empty_row in empty_lines:
                     if empty_row['totxt'].strip():
-                        tupper = empty_row['totxt'].upper()
+                        cleaned_empty_text = clean_text_for_excel(empty_row['totxt'])
+                        tupper = cleaned_empty_text.upper()
                         if 'FABRICATION' not in tupper and 'ERECTION' not in tupper:
-                            last_pt_data['comp'] += ' ' + empty_row['totxt'].strip()
-                            print(f"    공백 라인 병합: {empty_row['totxt'].strip()}")
+                            # comp 값도 다시 정리
+                            last_pt_data['comp'] = clean_text_for_excel(last_pt_data['comp'] + ' ' + cleaned_empty_text)
+                            print(f"    공백 라인 병합: {cleaned_empty_text}")
                         else:
-                            print(f"    공백 FAB/EREC 라인 병합 제외: {empty_row['totxt'].strip()}")
+                            print(f"    공백 FAB/EREC 라인 병합 제외: {cleaned_empty_text}")
 
             last_pt_data = row.copy()
             merged_data.append(last_pt_data)
@@ -495,25 +930,35 @@ for file_path in file_paths:
     if last_pt_data and empty_lines:
         for empty_row in empty_lines:
             if empty_row['totxt'].strip():
-                tupper = empty_row['totxt'].upper()
+                cleaned_empty_text = clean_text_for_excel(empty_row['totxt'])
+                tupper = cleaned_empty_text.upper()
                 if 'FABRICATION' not in tupper and 'ERECTION' not in tupper:
-                    last_pt_data['comp'] += ' ' + empty_row['totxt'].strip()
-                    print(f"    공백 라인 병합: {empty_row['totxt'].strip()}")
+                    # comp 값도 다시 정리
+                    last_pt_data['comp'] = clean_text_for_excel(last_pt_data['comp'] + ' ' + cleaned_empty_text)
+                    print(f"    공백 라인 병합: {cleaned_empty_text}")
                 else:
-                    print(f"    공백 FAB/EREC 라인 병합 제외: {empty_row['totxt'].strip()}")
+                    print(f"    공백 FAB/EREC 라인 병합 제외: {cleaned_empty_text}")
 
     # 8) 최종 전처리 → 레코드화
     all_totxt = []
     for data in merged_data:
-        pt_value = data['pt']
-        comp_value = data['comp']
-        size_value = data['size']
-        qty_value = data['qty']
-        weight_value = data['weight']
-        totxt = data['totxt']
+        # 각 값을 clean_text_for_excel로 정리
+        pt_value = clean_text_for_excel(data['pt'])
+        comp_value = clean_text_for_excel(data['comp'])
+        size_value = clean_text_for_excel(data['size'])
+        qty_value = clean_text_for_excel(data['qty'])
+        weight_value = clean_text_for_excel(data['weight'])
+        totxt = clean_text_for_excel(data['totxt'])
 
         totxt_upper = totxt.upper()
         comp_upper = comp_value.upper()
+        
+        # 디버깅: FABRICATION/ERECTION 포함 데이터
+        if 'FABRICATION' in totxt_upper or 'ERECTION' in totxt_upper or 'FABRICATION' in comp_upper or 'ERECTION' in comp_upper:
+            print(f"\n  [DEBUG-FINAL] FABRICATION/ERECTION 최종 처리:")
+            print(f"    TOTXT: '{totxt[:80]}...'")
+            print(f"    COMP: '{comp_value[:80]}...'")
+            
         if ('FABRICATION' in totxt_upper or 'ERECTION' in totxt_upper or
             'FABRICATION' in comp_upper or 'ERECTION' in comp_upper):
             print(f"\n  - FAB/EREC 라인 제외: {totxt[:50]}...")
@@ -528,40 +973,40 @@ for file_path in file_paths:
             print(f"    SPIRAL 처리: {comp_value}")
             comp_parts = comp_value.split(',')
             if len(comp_parts) >= 3:
-                item_value = comp_parts[0].strip()
+                item_value = clean_text_for_excel(comp_parts[0])
                 if len(comp_parts) > 1:
-                    item_value += ', ' + comp_parts[1].strip()
+                    item_value += ', ' + clean_text_for_excel(comp_parts[1])
                 if len(comp_parts) > 2:
-                    item_value += ', ' + comp_parts[2].strip()
+                    item_value += ', ' + clean_text_for_excel(comp_parts[2])
             if len(comp_parts) > 3:
-                mate_value = comp_parts[3].strip()
+                mate_value = clean_text_for_excel(comp_parts[3])
             if len(comp_parts) > 4:
-                sch_value = comp_parts[4].strip()
+                sch_value = clean_text_for_excel(comp_parts[4])
         elif 'BOLT' in comp_upper or 'NUT' in comp_upper:
             print(f"    BOLT/NUT 처리: {comp_value}")
             comp_parts = comp_value.split(',')
             if len(comp_parts) > 0:
-                item_value = comp_parts[0].strip()
+                item_value = clean_text_for_excel(comp_parts[0])
             if len(comp_parts) > 1:
-                second_part = comp_parts[1].strip()
+                second_part = clean_text_for_excel(comp_parts[1])
                 if '-' in second_part:
                     dash_pos = second_part.find('-')
-                    mate_value = second_part[:dash_pos].strip()
-                    sch_value = second_part[dash_pos+1:].strip()
+                    mate_value = clean_text_for_excel(second_part[:dash_pos])
+                    sch_value = clean_text_for_excel(second_part[dash_pos+1:])
                 else:
                     mate_value = second_part
                     if len(comp_parts) > 2:
-                        sch_value = comp_parts[2].strip()
+                        sch_value = clean_text_for_excel(comp_parts[2])
         else:
             comp_parts = comp_value.split(',')
             if len(comp_parts) > 0:
-                item_value = comp_parts[0].strip()
+                item_value = clean_text_for_excel(comp_parts[0])
             if len(comp_parts) > 1:
-                endtype_value = comp_parts[1].strip()
+                endtype_value = clean_text_for_excel(comp_parts[1])
             if len(comp_parts) > 2:
-                mate_value = comp_parts[2].strip()
+                mate_value = clean_text_for_excel(comp_parts[2])
             if len(comp_parts) > 3:
-                sch_value = comp_parts[3].strip()
+                sch_value = clean_text_for_excel(comp_parts[3])
 
         # T.WEIGHT = U.WEIGHT * QTY
         tweight_value = ''
@@ -595,40 +1040,38 @@ for file_path in file_paths:
             'U.WEIGHT': weight_value,
             'T.WEIGHT': tweight_value,
             'INSU. THK': insu,
-            'REMARK': ''
+            'REMARK': '',
+            'original_index': data.get('index', -1)  # 원본 인덱스 저장
         }
         all_totxt.append(data_row)
 
-    # 9) 시트 분류
-    fabmat_last_index = -1
-    for i, row in enumerate(all_rows_data):
-        if 'FABRICATION' in row['totxt'].upper():
-            fabmat_last_index = i
-            print(f"  - FABRICATION 위치 index {i}: {row['totxt'][:50]}...")
-
+    # 9) 시트 분류 - ERECTION MATERIALS 기준으로 개선
     for totxt_data in all_totxt:
         data_copy = totxt_data.copy()
         if 'TOTXT' in data_copy:
             del data_copy['TOTXT']
-
-        # 원본 위치(PT & SIZE)로 FAB/EREC 구분 시도
-        orig_index = -1
-        for i, row in enumerate(all_rows_data):
-            if (row['pt'] == totxt_data['ITEM NO'] and 
-                row['size'] == totxt_data['SIZE'] and
-                row['pt'] != ''):
-                orig_index = i
-                break
-
-        is_fabmat = False
-        is_erecmat = False
-        if fabmat_last_index >= 0 and orig_index >= 0:
-            if orig_index <= fabmat_last_index:
-                is_fabmat = True
-            else:
-                is_erecmat = True
+        if 'original_index' in data_copy:
+            orig_idx = data_copy['original_index']
+            del data_copy['original_index']
         else:
-            is_fabmat = True
+            orig_idx = -1
+
+        # ERECTION MATERIALS가 있으면 그 이후는 모두 ERECMAT
+        # ERECTION MATERIALS가 없고 FABRICATION WEIGHT가 있으면 그 이후는 모두 ERECMAT
+        is_fabmat = True
+        is_erecmat = False
+        
+        if erection_materials_found and erection_materials_index >= 0 and orig_idx >= 0:
+            if orig_idx > erection_materials_index:
+                is_fabmat = False
+                is_erecmat = True
+                print(f"  - EREC MATERIAL로 분류 (ERECTION MATERIALS 기준): {clean_text_for_excel(data_copy.get('ITEM', '')[:30])}...")
+        elif not erection_materials_found and fabrication_weight_found and fabrication_weight_index >= 0 and orig_idx >= 0:
+            # ERECTION MATERIALS를 찾지 못했지만 FABRICATION WEIGHT를 찾은 경우
+            if orig_idx > fabrication_weight_index:
+                is_fabmat = False
+                is_erecmat = True
+                print(f"  - EREC MATERIAL로 분류 (FABRICATION WEIGHT 기준): {clean_text_for_excel(data_copy.get('ITEM', '')[:30])}...")
         
         if is_fabmat:
             sheet_data['FABMAT'].append(data_copy)
@@ -686,6 +1129,8 @@ if all_data:
     for row_idx, data in enumerate(all_data, 2):
         for col_idx, header in enumerate(headers, 1):
             value = data.get(header, '')
+            # Excel 저장 전 텍스트 정리
+            value = clean_text_for_excel(value)
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.font = data_font
             cell.alignment = data_alignment
@@ -731,6 +1176,8 @@ if all_data:
         qty_str = str(int(qty)) if qty and float(qty).is_integer() else (str(round(qty, 1)) if qty else '')
         row_data = [item, endtype, material, sch, size, qty_str, data['(M/EA)'], tweight_str]
         for col_idx, value in enumerate(row_data, 1):
+            # Excel 저장 전 텍스트 정리
+            value = clean_text_for_excel(value)
             cell = ws_total.cell(row=row_idx, column=col_idx, value=value)
             cell.font = data_font
             cell.alignment = data_alignment
@@ -784,6 +1231,8 @@ if all_data:
                 for row_idx, data in enumerate(sheet_data[data_key], 2):
                     for col_idx, header in enumerate(headers, 1):
                         value = data.get(header, '')
+                        # Excel 저장 전 텍스트 정리
+                        value = clean_text_for_excel(value)
                         cell = ws_sheet.cell(row=row_idx, column=col_idx, value=value)
                         cell.font = data_font
                         cell.alignment = data_alignment
@@ -814,9 +1263,16 @@ if all_data:
     print(f"- VALV: {len(sheet_data['VALV'])}행")
     print(f"- BOLT-NUT: {len(sheet_data['BOLT-NUT'])}행")
     print(f"\n=== 주요 변경사항 ===")
-    print(f"1) PT가 숫자가 아니면 해당 행 완전 SKIP")
-    print(f"2) ISO DWG NO 없거나 '-' → X708,Y42.5(±10mm) 재탐색")
-    print(f"3) SH'T NO 없거나 '-' → X799,Y42.5(±10mm) 재탐색")
-    print(f"4) REV NO 없거나 '-' → X803,Y20(±10mm) 재탐색(숫자 우선)")
+    print(f"1) 헤더 순서: PT → COMPONENT → SIZE → Q'TY → WEIGHT")
+    print(f"2) 헤더 위치 기반 데이터 추출 함수 추가")
+    print(f"3) 헤더 X 좌표 순서 검증 기능")
+    print(f"4) ERECTION MATERIALS 이후 데이터는 EREC MATERIAL로 분류")
+    print(f"5) ERECTION MATERIALS 없을 시 FABRICATION WEIGHT 이후를 EREC MATERIAL로 분류")
+    print(f"6) PT가 숫자가 아니면 해당 행 완전 SKIP")
+    print(f"7) ISO DWG NO, SH'T NO, REV NO 보정 기능")
+    print(f"8) SH'T NO 검색 범위 확대: X 790-820, Y 30-50")
+    print(f"9) 유니코드 특수 공백 문자(\\u2004 등) 및 문자열 형태(\\U+2004) 완전 제거")
+    print(f"10) 특수 텍스트 추가 검색: 마지막 PT Y값 -20mm 범위에서 ERECTION/FABRICATION WEIGHT 탐색")
+    print(f"11) 디버깅 모드: ERECTION/FABRICATION 포함 텍스트 터미널 출력")
 else:
     print("\n추출된 데이터가 없습니다.")

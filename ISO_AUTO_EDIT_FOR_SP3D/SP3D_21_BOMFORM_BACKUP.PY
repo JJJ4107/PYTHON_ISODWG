@@ -926,10 +926,30 @@ def process_file(path):
     vv2 = vv_sorted[1] if len(vv_sorted) >= 2 else None
     vv3 = vv_sorted[2] if len(vv_sorted) >= 3 else None
     vv4 = vv_sorted[3] if len(vv_sorted) >= 4 else None
+    vv5 = vv_sorted[4] if len(vv_sorted) >= 5 else None
+    vv6 = vv_sorted[5] if len(vv_sorted) >= 6 else None
     
     print(f" - VV 라인 발견: {len(vv_sorted)}개 (15~25mm 수평선)")
     
-    # VV1 삭제
+    # VV1~VV6 레이어 부여
+    vv_lines_list = [
+        (vv1, "VV1"),
+        (vv2, "VV2"),
+        (vv3, "VV3"),
+        (vv4, "VV4"),
+        (vv5, "VV5"),
+        (vv6, "VV6")
+    ]
+    
+    for vv_line, layer_name in vv_lines_list:
+        if vv_line:
+            try:
+                vv_line.dxf.layer = layer_name
+                print(f" - {layer_name} 레이어 부여")
+            except Exception:
+                pass
+    
+    # VV1 삭제 (레이어 부여 후)
     if vv1:
         try:
             msp.delete_entity(vv1)
@@ -989,7 +1009,7 @@ def process_file(path):
                 
                 print(f" - {name} 복사 및 끝점 수정: Y={vv3_y:.2f}")
     
-    # VV2, VV4를 +X 5mm 이동
+    # VV2, VV4, VV5를 +X 5mm 이동
     if vv2:
         move_line_x(vv2, 5.0)
         print(" - VV2를 +X 5mm 이동")
@@ -997,6 +1017,10 @@ def process_file(path):
     if vv4:
         move_line_x(vv4, 5.0)
         print(" - VV4를 +X 5mm 이동")
+    
+    if vv5:
+        move_line_x(vv5, 5.0)
+        print(" - VV5를 +X 5mm 이동")
 
     # ══════════════════════════════════════════════════════════════════════════
     # V5와 H1 간의 거리 계산 및 STRETCH 처리
