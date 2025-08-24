@@ -5,6 +5,57 @@ import tkinter as tk
 from tkinter import filedialog
 from collections import defaultdict
 import shutil
+import tempfile
+
+# === 저장 보조 유틸리티(로직 영향 없음) ===
+def ensure_parent_dir(path: str):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except Exception:
+        pass
+
+def next_unique_path(path: str):
+    """
+    path가 존재하거나 저장 실패할 때, '파일명_FIX(1).dxf' 식으로 다음 유효 경로를 생성
+    """
+    base, ext = os.path.splitext(path)
+    i = 1
+    while True:
+        cand = f"{base}({i}){ext}"
+        if not os.path.exists(cand):
+            return cand
+        i += 1
+
+def safe_save_dxf(doc, target_path: str):
+    """
+    어떤 경우에도 저장을 시도. 실패 시 대체 경로/임시 폴더까지 사용.
+    """
+    try:
+        ensure_parent_dir(target_path)
+        doc.saveas(target_path)
+        print(f"[SAVE] {os.path.basename(target_path)} 저장 완료")
+        return target_path
+    except Exception as e:
+        # 1차 대체: 같은 폴더 내 유니크 경로
+        try:
+            alt_path = next_unique_path(target_path)
+            ensure_parent_dir(alt_path)
+            doc.saveas(alt_path)
+            print(f"[SAVE-ALT] {os.path.basename(target_path)} 실패 → {os.path.basename(alt_path)} 로 저장")
+            return alt_path
+        except Exception as e2:
+            # 2차 대체: 임시 폴더
+            try:
+                tmpdir = tempfile.gettempdir()
+                fallback = os.path.join(tmpdir, os.path.basename(target_path))
+                if os.path.exists(fallback):
+                    fallback = next_unique_path(fallback)
+                doc.saveas(fallback)
+                print(f"[SAVE-TMP] {os.path.basename(target_path)} 실패 → 임시폴더로 저장: {fallback}")
+                return fallback
+            except Exception as e3:
+                print(f"[ERROR] 저장 실패: {target_path}\n  - {e}\n  - {e2}\n  - {e3}")
+                return None
 
 # === 공통 유틸리티 함수들 ===
 def get_xy(e): 
@@ -276,7 +327,7 @@ for f in fdno_list:
             # 1. DLNO는 이동하지 않고 색상만 노란색으로 변경
             if dlno_e is not None:
                 try:
-                    dlno_e.dxf.color = yellow
+                    dlno_e.dxf.color = 2
                 except Exception:
                     pass
 
@@ -284,7 +335,7 @@ for f in fdno_list:
             if cont_entity is not None:
                 try:
                     cont_entity.dxf.insert = (cont_x, cont_y + cont_height * 1.3)
-                    cont_entity.dxf.color = yellow
+                    cont_entity.dxf.color = 2
                 except Exception:
                     pass
 
@@ -294,7 +345,7 @@ for f in fdno_list:
                     fdno_to_output,
                     dxfattribs={
                         'insert': (cont_x, cont_y),
-                        'color': yellow,  # YELLOW
+                        'color': 2,
                         'height': cont_height,
                         'style': cont_style,
                         'layer': cont_layer,
@@ -343,7 +394,7 @@ for f in fdno_list:
                     fdno_for_file,
                     dxfattribs={
                         'insert': (fname_x, fname_y),
-                        'color': 2,  # YELLOW
+                        'color': 2,
                         'height': height,
                         'style': style,
                         'layer': layer,
@@ -421,7 +472,7 @@ for path in file_paths:
         continue
     msp = doc.modelspace()
     
-    # RED 색상의 모든 도형 요소를 흰색으로 추가 변경 (일관성을 위해)
+    # RED 색상의 모든 도형 요소를 흰색으로 추가 변경 (일관성 유지)
     for e in msp.query('POLYLINE LWPOLYLINE LINE CIRCLE ARC'):
         try:
             if hasattr(e.dxf, 'color') and e.dxf.color == 1:  # RED
@@ -505,13 +556,33 @@ print("\n=== STEP 3: 최종 저장 ===")
 for path, fdno in fdno_mapping.items():
     doc = doc_cache.get(path)
     if not doc:
-        continue
+        # 캐시에 없더라도 반드시 저장되도록 재시도
+        try:
+            doc = ezdxf.readfile(path)
+        except Exception as e:
+            print(f"[ERROR] {os.path.basename(path)} 재오픈 실패: {e}")
+            continue
     fix_path = os.path.join(os.path.dirname(path), f"{fdno}_FIX.dxf")
-    try:
-        doc.saveas(fix_path)
-        print(f"[SAVE] {os.path.basename(path)} → {os.path.basename(fix_path)}")
-    except Exception as e:
-        print(f"[ERROR] {os.path.basename(path)} 저장 오류: {e}")
+    saved = safe_save_dxf(doc, fix_path)
+    if not saved:
+        print(f"[ERROR] {os.path.basename(path)} 저장 실패(최종)")
+
+# === 보강: 매핑에 없던 파일도 무조건 저장 ===
+unmapped = [p for p in file_paths if p not in fdno_mapping]
+for path in unmapped:
+    doc = doc_cache.get(path)
+    if not doc:
+        try:
+            doc = ezdxf.readfile(path)
+        except Exception as e:
+            print(f"[ERROR] {os.path.basename(path)} 재오픈 실패: {e}")
+            continue
+    base = filename_base(path)
+    # FDNO를 못 만들었어도 원본명 기준으로 FIX 저장 보장
+    fallback_fix = os.path.join(os.path.dirname(path), f"{base}_FIX.dxf")
+    saved = safe_save_dxf(doc, fallback_fix)
+    if not saved:
+        print(f"[ERROR] {os.path.basename(path)} 저장 실패(최종)")
 
 # 최종 ALLCHK 결과 표로 출력
 print("\n최종 결과:")

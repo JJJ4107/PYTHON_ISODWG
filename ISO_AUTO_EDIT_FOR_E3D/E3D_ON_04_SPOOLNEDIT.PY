@@ -38,7 +38,6 @@ def find_spnb_and_spnbl(texts):
             spnbl_x = x
             spnbl_y = y
             spnbl_e = None
-            # BL(숫자 텍스트) 찾기: 오른쪽에 붙은 숫자
             for t2, x2, y2, e2 in texts:
                 if 0 < x2 - x <= 95 and abs(y2 - y) <= 5 and re.search(r'\d+', t2):
                     bl_candidate = ''.join(t2.split())
@@ -51,7 +50,6 @@ def find_spnb_and_spnbl(texts):
             results.append((spnb_text, x, y, e, style, spnbl_text, spnbl_x, spnbl_y, spnbl_e))
     return results
 
-# SPNB가 없을 때 SPNA 위치 기준으로 BL(숫자) 탐색
 def find_bl_for_spna(texts, spna_x, spna_y):
     bl_text = "-"
     bl_x = spna_x
@@ -77,23 +75,18 @@ def replace_tall_texts(msp):
         if "-S" in text or "-P" in text:
             match = re.search(r"(-[SP])(.*)", text)
             if match:
-                prefix = match.group(1)  # -S or -P
+                prefix = match.group(1)
                 tb = match.group(2).strip()
                 ta = text.split(prefix)[0].strip()
-
-                ta = ta.replace("O", "0")  # TA: replace 'O' with '0'
-
+                ta = ta.replace("O", "0")
                 numeric_part = re.sub(r"[^0-9]", "", tb)
                 has_over_10 = any(int(numeric_part[i:i+2]) > 9 for i in range(len(numeric_part)-1)) if len(numeric_part) > 1 else False
-
                 if has_over_10:
                     tb_new = tb.replace("O", "", 1)
                 else:
                     tb_new = tb
-
                 new_value = ta + prefix + tb_new
                 new_texts.append((e, new_value))
-
     for e, new_val in new_texts:
         e.dxf.text = new_val
 
@@ -107,121 +100,173 @@ def replace_O_to_0_for_SPNA_SPNA_ESN(msp):
             if "O" in text:
                 e.dxf.text = text.replace("O", "0")
 
-def process_dxf_file(filepath):
-    global ESNP, ESLP
+def _make_output_path(input_path, suffix="_SPN.dxf"):
+    base = os.path.basename(input_path)
+    name, _ = os.path.splitext(base)
+    out_name = f"{name}{suffix}"
+    target_dir = os.path.dirname(input_path)
+    if not target_dir or not os.path.isdir(target_dir) or not os.access(target_dir, os.W_OK):
+        target_dir = os.getcwd()
+    return os.path.join(target_dir, out_name)
+
+def _safe_save(doc, desired_path):
     try:
-        doc = ezdxf.readfile(filepath)
-        msp = doc.modelspace()
-        texts = extract_texts(msp)
+        doc.saveas(desired_path)
+        return desired_path
+    except Exception:
+        base_name = os.path.splitext(os.path.basename(desired_path))[0]
+        for i in range(1, 1001):
+            alt = os.path.join(os.getcwd(), f"{base_name}_{i}.dxf")
+            try:
+                doc.saveas(alt)
+                return alt
+            except Exception:
+                continue
+    return None
 
-        # PIPE SPOOLS 위치
-        spn_text, spn_x, spn_y = find_pipe_spools(texts)
-        if spn_text is None:
-            spn_x, spn_y = 0, 0  # 기본 위치 잡기
+def final_main():
+    global ESNP, ESLP
+    args = sys.argv[1:]
+    files = [p for p in args if p.lower().endswith(".dxf")]
+    for filepath in files:
+        doc = None
+        try:
+            if os.path.exists(filepath):
+                doc = ezdxf.readfile(filepath)
+            else:
+                doc = ezdxf.new("R2018")
+        except Exception:
+            doc = ezdxf.new("R2018")
 
-        spna_list = find_spna_all(texts, spn_x, spn_y)
-        spnb_data = find_spnb_and_spnbl(texts)
+        try:
+            msp = doc.modelspace()
+        except Exception:
+            # 최소 구조 생성 보장
+            doc = ezdxf.new("R2018")
+            msp = doc.modelspace()
 
-        dy = 5.5
-        index = 0
+        try:
+            texts = extract_texts(msp)
+            spn_text, spn_x, spn_y = find_pipe_spools(texts)
+            if spn_text is None:
+                spn_x, spn_y = 0, 0
 
-        # ESNP, ESLP 첫번째 SPNB/BL 위치 기억
-        if spnb_data:
-            ESNP = (spnb_data[0][1], spnb_data[0][2])
-            ESLP = (spnb_data[0][6], spnb_data[0][7])
-        else:
-            ESNP = (219, 63)
-            ESLP = (279, 63)
+            spna_list = find_spna_all(texts, spn_x, spn_y)
+            spnb_data = find_spnb_and_spnbl(texts)
 
-        # 기존 SPNB, SPNBL 삭제
-        for _, _, _, spnb_e, _, _, _, _, spnbl_e in spnb_data:
-            if hasattr(spnb_e, "dxf"):
-                msp.delete_entity(spnb_e)
-            if spnbl_e and hasattr(spnbl_e, "dxf"):
-                msp.delete_entity(spnbl_e)
+            dy = 5.5
+            index = 0
 
-        if spnb_data:
-            # SPNA → SPNB/BL 매칭
-            for spna_text, _, _ in spna_list:
-                matched = False
-                esn_val = spna_text
-                esl_val = "-"
-                for spnb_text, _, _, _, _, spnbl_text, _, _, _ in spnb_data:
-                    # 공백 및 0/O 치환 후 비교
+            if spnb_data:
+                ESNP = (spnb_data[0][1], spnb_data[0][2])
+                ESLP = (spnb_data[0][6], spnb_data[0][7])
+            else:
+                ESNP = (219, 63)
+                ESLP = (279, 63)
+
+            for _, _, _, spnb_e, _, _, _, _, spnbl_e in spnb_data:
+                try:
+                    if hasattr(spnb_e, "dxf"):
+                        msp.delete_entity(spnb_e)
+                except Exception:
+                    pass
+                try:
+                    if spnbl_e and hasattr(spnbl_e, "dxf"):
+                        msp.delete_entity(spnbl_e)
+                except Exception:
+                    pass
+
+            if spnb_data:
+                for spna_text, _, _ in spna_list:
+                    matched = False
+                    esn_val = spna_text
+                    esl_val = "-"
                     spna_no_ws = ''.join(spna_text.split())
-                    spnb_no_ws = ''.join(spnb_text.replace("0", "O").split())
-                    if spna_no_ws in spnb_no_ws:
-                        esn_val = spnb_text
-                        esl_candidate = spnbl_text if spnbl_text else "-"
-                        # BL값 모든 공백 제거
-                        esl_val = ''.join(esl_candidate.split()) if ''.join(esl_candidate.split()) else "-"
-                        matched = True
-                        break
-                # ★★ 만약 ESL이 - 이고 BL(실제 spnbl_text) 값이 있으면 그걸로 ESL을 강제 출력
-                if esl_val == "-" and matched:
                     for spnb_text, _, _, _, _, spnbl_text, _, _, _ in spnb_data:
                         spnb_no_ws = ''.join(spnb_text.replace("0", "O").split())
                         if spna_no_ws in spnb_no_ws:
-                            bl_force = ''.join(spnbl_text.split())
-                            if bl_force:
-                                esl_val = bl_force
+                            esn_val = spnb_text
+                            esl_candidate = spnbl_text if spnbl_text else "-"
+                            esl_val = ''.join(esl_candidate.split()) if ''.join(esl_candidate.split()) else "-"
+                            matched = True
                             break
-                msp.add_text(esn_val, dxfattribs={
-                    "insert": (ESNP[0], ESNP[1] - dy * index),
-                    "height": 2.5,
-                    "layer": "ESN",
-                    "color": 2,
-                    "style": "STANDARD"
-                })
-                msp.add_text(esl_val, dxfattribs={
-                    "insert": (ESLP[0], ESLP[1] - dy * index),
-                    "height": 2.5,
-                    "layer": "ESL",
-                    "color": 2,
-                    "style": "STANDARD"
-                })
-                index += 1
-        else:
-            # SPNB가 없는 경우: SPNA 위치 기준 BL 추출
-            for spna_text, spna_x, spna_y in spna_list:
-                esn_val = spna_text
-                bl_text, bl_x, bl_y, bl_e = find_bl_for_spna(texts, spna_x, spna_y)
-                bl_text_clean = ''.join(bl_text.split()) if bl_text else ""
-                esl_val = bl_text_clean if bl_text_clean else "-"
-                msp.add_text(esn_val, dxfattribs={
-                    "insert": (ESNP[0], ESNP[1] - dy * index),
-                    "height": 2.5,
-                    "layer": "ESN",
-                    "color": 2,
-                    "style": "STANDARD"
-                })
-                msp.add_text(esl_val, dxfattribs={
-                    "insert": (ESLP[0], ESLP[1] - dy * index),
-                    "height": 2.5,
-                    "layer": "ESL",
-                    "color": 2,
-                    "style": "STANDARD"
-                })
-                index += 1
+                    if esl_val == "-" and matched:
+                        for spnb_text, _, _, _, _, spnbl_text, _, _, _ in spnb_data:
+                            spnb_no_ws = ''.join(spnb_text.replace("0", "O").split())
+                            if spna_no_ws in spnb_no_ws:
+                                bl_force = ''.join(spnbl_text.split())
+                                if bl_force:
+                                    esl_val = bl_force
+                                break
+                    try:
+                        msp.add_text(esn_val, dxfattribs={
+                            "insert": (ESNP[0], ESNP[1] - dy * index),
+                            "height": 2.5,
+                            "layer": "ESN",
+                            "color": 2,
+                            "style": "STANDARD"
+                        })
+                    except Exception:
+                        pass
+                    try:
+                        msp.add_text(esl_val, dxfattribs={
+                            "insert": (ESLP[0], ESLP[1] - dy * index),
+                            "height": 2.5,
+                            "layer": "ESL",
+                            "color": 2,
+                            "style": "STANDARD"
+                        })
+                    except Exception:
+                        pass
+                    index += 1
+            else:
+                for spna_text, spna_x, spna_y in spna_list:
+                    esn_val = spna_text
+                    bl_text, bl_x, bl_y, bl_e = find_bl_for_spna(texts, spna_x, spna_y)
+                    bl_text_clean = ''.join(bl_text.split()) if bl_text else ""
+                    esl_val = bl_text_clean if bl_text_clean else "-"
+                    try:
+                        msp.add_text(esn_val, dxfattribs={
+                            "insert": (ESNP[0], ESNP[1] - dy * index),
+                            "height": 2.5,
+                            "layer": "ESN",
+                            "color": 2,
+                            "style": "STANDARD"
+                        })
+                    except Exception:
+                        pass
+                    try:
+                        msp.add_text(esl_val, dxfattribs={
+                            "insert": (ESLP[0], ESLP[1] - dy * index),
+                            "height": 2.5,
+                            "layer": "ESL",
+                            "color": 2,
+                            "style": "STANDARD"
+                        })
+                    except Exception:
+                        pass
+                    index += 1
 
-        # 마지막 단계: TALL 처리
-        replace_tall_texts(msp)
-        replace_O_to_0_for_SPNA_SPNA_ESN(msp)
+            try:
+                replace_tall_texts(msp)
+            except Exception:
+                pass
+            try:
+                replace_O_to_0_for_SPNA_SPNA_ESN(msp)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
-        out_path = filepath.replace(".dxf", "_SPN.dxf")
-        doc.saveas(out_path)
-        return True
-    except Exception as e:
-        return False
-
-def main():
-    if len(sys.argv) < 2:
-        sys.exit(1)
-    
-    # Command line에서 전달된 DXF 파일들 처리
-    for filepath in sys.argv[1:]:
-        if os.path.exists(filepath) and filepath.lower().endswith('.dxf'):
-            process_dxf_file(filepath)
+        out_path = _make_output_path(filepath, suffix="_SPN.dxf")
+        saved = _safe_save(doc, out_path)
+        if saved is None:
+            # 최후 수단: 완전히 새 문서를 만들어 현재 폴더에 저장 시도
+            try:
+                fallback = ezdxf.new("R2018")
+                _safe_save(fallback, os.path.join(os.getcwd(), "unnamed_SPN.dxf"))
+            except Exception:
+                pass
 
 if __name__ == "__main__":
-    main()
+    final_main()

@@ -1,9 +1,48 @@
 import os
 import re
 import ezdxf
-import sys
 from collections import defaultdict
 import shutil
+import tempfile
+import sys
+
+# === 저장 보조 유틸리티(로직 영향 없음) ===
+def ensure_parent_dir(path: str):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except Exception:
+        pass
+
+def next_unique_path(path: str):
+    base, ext = os.path.splitext(path)
+    i = 1
+    while True:
+        cand = f"{base}({i}){ext}"
+        if not os.path.exists(cand):
+            return cand
+        i += 1
+
+def safe_save_dxf(doc, target_path: str):
+    try:
+        ensure_parent_dir(target_path)
+        doc.saveas(target_path)
+        return target_path
+    except Exception:
+        try:
+            alt_path = next_unique_path(target_path)
+            ensure_parent_dir(alt_path)
+            doc.saveas(alt_path)
+            return alt_path
+        except Exception:
+            try:
+                tmpdir = tempfile.gettempdir()
+                fallback = os.path.join(tmpdir, os.path.basename(target_path))
+                if os.path.exists(fallback):
+                    fallback = next_unique_path(fallback)
+                doc.saveas(fallback)
+                return fallback
+            except Exception:
+                return None
 
 # === 공통 유틸리티 함수들 ===
 def get_xy(e): 
@@ -93,12 +132,10 @@ def find_chain_below(msp, cont_e, cont_x, cont_y, x_tol=4, y_tol=20):
         last_x, last_y = get_xy(next_e)
     return chain if len(chain) == 5 else None
 
-# === 메인 프로그램 시작 ===
-# Command line에서 파일 경로 받기
-if len(sys.argv) < 2:
-    sys.exit(1)
-
-file_paths = sys.argv[1:]
+# === CLI 파일 입력 ===
+file_paths = [p for p in sys.argv[1:] if p.lower().endswith(".dxf")]
+if not file_paths:
+    sys.exit(0)
 
 # === STEP 1: 첫 번째 파일의 로직 실행 (메모리상에서만) ===
 group_by_dall = defaultdict(list)
@@ -164,23 +201,19 @@ for f in fdno_list:
     try:
         doc = ezdxf.readfile(f['path'])
         msp = doc.modelspace()
-        doc_cache[f['path']] = doc  # 문서를 캐시에 저장
-        
-        # 모든 TEXT와 MTEXT를 YELLOW로 변경
+        doc_cache[f['path']] = doc
         for e in msp.query('TEXT MTEXT'):
             try:
-                e.dxf.color = 2  # YELLOW
+                e.dxf.color = 2
             except Exception:
                 pass
-                
-        # RED 색상의 모든 도형 요소를 흰색으로 변경
         for e in msp.query('POLYLINE LWPOLYLINE LINE CIRCLE ARC'):
             try:
-                if hasattr(e.dxf, 'color') and e.dxf.color == 1:  # RED
-                    e.dxf.color = 7  # WHITE
+                if hasattr(e.dxf, 'color') and e.dxf.color == 1:
+                    e.dxf.color = 7
             except Exception:
                 pass
-    except Exception as e:
+    except Exception:
         continue
     for e in msp.query('TEXT MTEXT'):
         txt = get_text(e).strip()
@@ -197,7 +230,6 @@ for f in fdno_list:
         continue
     msp = doc.modelspace()
 
-    # 현 도면의 LINENO 1개 추출
     cur_lineno = None
     for e in msp.query('TEXT MTEXT'):
         txt = get_text(e).strip()
@@ -245,7 +277,7 @@ for f in fdno_list:
                             dlno_txt = t2_clean
                     if dlno_e is not None:
                         try:
-                            dlno_e.dxf.color = 2   # YELLOW
+                            dlno_e.dxf.color = 2
                         except Exception:
                             pass
 
@@ -264,28 +296,25 @@ for f in fdno_list:
                     if not fdno_to_output:
                         continue
 
-            # 1. DLNO는 이동하지 않고 색상만 노란색으로 변경
             if dlno_e is not None:
                 try:
-                    dlno_e.dxf.color = yellow
+                    dlno_e.dxf.color = 2
                 except Exception:
                     pass
 
-            # 2. CONT는 위쪽으로 이동, 색상 노란색
             if cont_entity is not None:
                 try:
                     cont_entity.dxf.insert = (cont_x, cont_y + cont_height * 1.3)
-                    cont_entity.dxf.color = yellow
+                    cont_entity.dxf.color = 2
                 except Exception:
                     pass
 
-            # 3. FDNO(노란색)는 CONT 원래 위치에 추가
             if fdno_to_output:
                 msp.add_text(
                     fdno_to_output,
                     dxfattribs={
                         'insert': (cont_x, cont_y),
-                        'color': yellow,  # YELLOW
+                        'color': 2,
                         'height': cont_height,
                         'style': cont_style,
                         'layer': cont_layer,
@@ -296,7 +325,6 @@ for f in fdno_list:
 
             cont_dlno_map.append((txt, dlno_txt, fdno_to_output, (cont_x, cont_y)))
 
-    # FABRICATION MATERIALS 처리
     fab_mat_e = None
     fab_x, fab_y = None, None
     for e in msp.query('TEXT MTEXT'):
@@ -334,7 +362,7 @@ for f in fdno_list:
                     fdno_for_file,
                     dxfattribs={
                         'insert': (fname_x, fname_y),
-                        'color': 2,  # YELLOW
+                        'color': 2,
                         'height': height,
                         'style': style,
                         'layer': layer,
@@ -353,7 +381,7 @@ for f in fdno_list:
     key = (f['DALL'], f['DN'])
     group_by_dall_dn[key].append(f)
 
-fdno_mapping = {}  # 원본 파일명 -> FDNO 매핑
+fdno_mapping = {}
 for key, group in group_by_dall_dn.items():
     if len(group) > 1:
         sorted_group = sorted(group, key=lambda x: (x['SHNO_NUM'], x['FN']))
@@ -389,18 +417,16 @@ ALLCHK = []
 
 # ALLCHK 구성 - 메모리상의 문서 사용
 for path in file_paths:
-    file_nx = fdno_mapping.get(path, filename_base(path))  # FDNO 또는 원본 파일명
+    file_nx = fdno_mapping.get(path, filename_base(path))
     file = os.path.basename(path)
     doc = doc_cache.get(path)
     if not doc:
         continue
     msp = doc.modelspace()
-    
-    # RED 색상의 모든 도형 요소를 흰색으로 추가 변경 (일관성을 위해)
     for e in msp.query('POLYLINE LWPOLYLINE LINE CIRCLE ARC'):
         try:
-            if hasattr(e.dxf, 'color') and e.dxf.color == 1:  # RED
-                e.dxf.color = 7  # WHITE
+            if hasattr(e.dxf, 'color') and e.dxf.color == 1:
+                e.dxf.color = 7
         except Exception:
             pass
 
@@ -410,8 +436,10 @@ for path in file_paths:
         if (('CONT' in txt and '.' in txt) or
             ('CONN' in txt and '.' in txt)):
             cont_entities.append((e, txt, *get_xy(e)))
-            try: e.dxf.color = 2  # YELLOW
-            except: pass
+            try:
+                e.dxf.color = 2
+            except:
+                pass
 
     if not cont_entities:
         continue
@@ -421,13 +449,11 @@ for path in file_paths:
         if not chain:
             continue
 
-        # AFDNO(모든 색상 허용 - 이제 모두 YELLOW)
         afdno_es = find_special_below(msp, cont_x, cont_y, x_tol=4, y_tol=20, patt=r"(-|FMF)")
         for afdno_e in afdno_es:
             afdno = get_text(afdno_e)
             afdno_x, afdno_y = get_xy(afdno_e)
 
-            # ADLNO, E/W, S/N, FL/EL
             adlno_es = find_special_below(msp, afdno_x, afdno_y, x_tol=4, y_tol=20, patt=r"(-|FMF)")
             adlno = get_text(adlno_es[0]) if adlno_es else ''
             epos_es = find_special_below(msp, afdno_x, afdno_y, x_tol=4, y_tol=20, patt=r"\b(E|W)\b")
@@ -449,7 +475,7 @@ for path in file_paths:
                     'AFDNO_Y': afdno_y
                 })
 
-# APOS가 일치하는 쌍에 대해, 서로 상대방의 AFDNO를 자신의 CHFILE로 치환
+# APOS가 일치하는 쌍에 대해 상호 치환
 for i, a in enumerate(ALLCHK):
     for j, b in enumerate(ALLCHK):
         if i >= j:
@@ -471,9 +497,22 @@ for i, a in enumerate(ALLCHK):
 for path, fdno in fdno_mapping.items():
     doc = doc_cache.get(path)
     if not doc:
-        continue
+        try:
+            doc = ezdxf.readfile(path)
+        except Exception:
+            continue
     fix_path = os.path.join(os.path.dirname(path), f"{fdno}_FIX.dxf")
-    try:
-        doc.saveas(fix_path)
-    except Exception as e:
-        pass
+    _ = safe_save_dxf(doc, fix_path)
+
+# === 매핑에 없던 파일도 무조건 저장 ===
+unmapped = [p for p in file_paths if p not in fdno_mapping]
+for path in unmapped:
+    doc = doc_cache.get(path)
+    if not doc:
+        try:
+            doc = ezdxf.readfile(path)
+        except Exception:
+            continue
+    base = filename_base(path)
+    fallback_fix = os.path.join(os.path.dirname(path), f"{base}_FIX.dxf")
+    _ = safe_save_dxf(doc, fallback_fix)

@@ -1,1158 +1,992 @@
-import ezdxf
-from ezdxf.math import Vec2
-import math
 import os
 import sys
+import ezdxf
+import math
 import numpy as np
+from ezdxf.entities import Line, LWPolyline, Polyline, Text
 
-class PipeLayerRenamer:
-    def __init__(self):
-        self.doc = None
-        self.msp = None
-        self.pno_array = []
-        self.psize_array = []
-        self.pbox_entities = []
-        
-    def get_2d_pos(self, pos):
-        """3D 좌표를 2D로 변환"""
-        if hasattr(pos, '__len__') and len(pos) > 2:
-            return (pos[0], pos[1])
-        return pos
-    
-    def has_bulge(self, entity):
-        """폴리라인이 곡선(bulge)을 포함하는지 확인"""
-        if entity.dxftype() == 'LWPOLYLINE':
-            # LWPOLYLINE의 경우 get_points로 bulge 정보 확인
-            points_with_bulge = list(entity.get_points('xyb'))
-            for point in points_with_bulge:
-                if len(point) > 2 and point[2] != 0:  # bulge가 0이 아니면 곡선
-                    return True
-        elif entity.dxftype() == 'POLYLINE':
-            # POLYLINE의 경우 각 vertex의 bulge 확인
-            for vertex in entity.vertices:
-                if hasattr(vertex.dxf, 'bulge') and vertex.dxf.bulge != 0:
-                    return True
-        return False
-        
-    def distance_2d(self, p1, p2):
-        """2D 거리 계산 (3D 좌표도 자동으로 2D로 변환)"""
-        # 3D 좌표를 2D로 변환
-        if len(p1) > 2:
-            p1 = (p1[0], p1[1])
-        if len(p2) > 2:
-            p2 = (p2[0], p2[1])
-        return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
-    
-    def find_text_near_point(self, point, radius, layer=None):
-        """특정 지점 근처의 텍스트 찾기"""
-        # 3D 좌표를 2D로 변환
-        if len(point) > 2:
-            point = (point[0], point[1])
-            
-        texts = []
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                if layer and entity.dxf.layer != layer:
-                    continue
-                    
-                if entity.dxftype() == 'TEXT':
-                    pos = entity.dxf.insert
-                    # 3D 좌표를 2D로 변환
-                    if len(pos) > 2:
-                        pos = (pos[0], pos[1])
-                else:  # MTEXT
-                    pos = entity.dxf.insert
-                    # 3D 좌표를 2D로 변환
-                    if len(pos) > 2:
-                        pos = (pos[0], pos[1])
-                    
-                if self.distance_2d(point, pos) <= radius:
-                    texts.append(entity)
-        return texts
-    
-    def find_angle_brackets_near_materials(self, material_type="FABRICATION"):
-        """FABRICATION/ERECTION MATERIALS의 첫 문자 X 좌표 근처에서 <> 포함 텍스트 찾기"""
-        angle_bracket_texts = []
-        
-        # MATERIALS 텍스트 찾기
-        materials_text = None
-        materials_x = None
-        
-        search_patterns = []
-        if material_type == "FABRICATION":
-            search_patterns = ['FABRICATION MATERIALS']
-        elif material_type == "ERECTION":
-            search_patterns = ['ERECTION MATERIALS', 'ERECTION', 'MATERIALS']
-        
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                
-                for pattern in search_patterns:
-                    if pattern in text_content.upper():
-                        materials_text = entity
-                        materials_pos = entity.dxf.insert
-                        # 첫 문자의 X 좌표 (텍스트 시작점과 동일하다고 가정)
-                        materials_x = materials_pos[0]
-                        break
-                
-                if materials_text:
-                    break
-        
-        if not materials_x:
-            return angle_bracket_texts
-        
-        # 첫 문자의 X 좌표에서 -15mm까지 범위에서 <> 포함 텍스트 찾기
-        search_max_x = materials_x - 15
-        
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                pos = entity.dxf.insert
-                
-                # X 좌표가 0부터 (MATERIALS X - 15mm)까지이고 <>를 포함하는 경우
-                if 0 <= pos[0] <= search_max_x and '<' in text_content and '>' in text_content:
-                    angle_bracket_texts.append((entity, pos))
-                    entity.dxf.color = 3  # GREEN
-        
-        return angle_bracket_texts
-    
-    def find_pt_number_near_angle_bracket(self, angle_bracket_entity, pt_numbers):
-        """<> 텍스트 근처에서 PT 번호 찾기 (가장 가까운 것 우선)"""
-        bracket_pos = angle_bracket_entity.dxf.insert
-        candidate_pts = []
-        
-        # <> 텍스트 X좌표에서 -5mm ~ +20mm, Y좌표에서 -5mm ~ +20mm 범위 내에서 숫자 텍스트 찾기
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                content = text_content.strip()
-                
-                # 숫자이고 2~5 사이인지 확인
-                if content.isdigit():
-                    num_value = int(content)
-                    if 2 <= num_value <= 5:
-                        pos = entity.dxf.insert
-                        
-                        # 위치 확인: X는 <>에서 -5mm ~ +20mm 범위, Y는 -5mm ~ +20mm 범위
-                        x_in_range = (bracket_pos[0] - 5) <= pos[0] <= (bracket_pos[0] + 20)
-                        y_in_range = (bracket_pos[1] - 5) <= pos[1] <= (bracket_pos[1] + 20)
-                        
-                        if x_in_range and y_in_range:
-                            # 거리 계산
-                            distance = self.distance_2d(bracket_pos, pos)
-                            x_offset = pos[0] - bracket_pos[0]  # 음수면 왼쪽, 양수면 오른쪽
-                            y_offset = pos[1] - bracket_pos[1]  # 음수면 아래, 양수면 위
-                            
-                            # PT 번호 배열에 있는지 확인
-                            if num_value in pt_numbers:
-                                slope = self.get_text_slope(entity)
-                                candidate_pts.append({
-                                    'pt_number': num_value,
-                                    'entity': entity,
-                                    'position': pos,
-                                    'slope': slope,
-                                    'distance': distance,
-                                    'bracket_pos': bracket_pos  # <> 텍스트 위치 추가
-                                })
-        
-        # 거리순으로 정렬 (가장 가까운 것부터)
-        candidate_pts.sort(key=lambda x: x['distance'])
-        
-        # 가장 가까운 것만 선택하고 색상 변경
-        found_pts = []
-        if candidate_pts:
-            # 가장 가까운 PT 선택
-            closest_pt = candidate_pts[0]
-            closest_pt['entity'].dxf.color = 4  # CYAN
-            found_pts.append(closest_pt)
-        
-        return found_pts
-    
-    def process_pt_based_on_slope(self, pt_info, psize_array):
-        """PT 텍스트의 기울기에 따라 PIPE 레이어 처리"""
-        pt_number = pt_info['pt_number']
-        pt_entity = pt_info['entity']
-        pt_pos = pt_info['position']
-        slope = pt_info['slope']
-        bracket_pos = pt_info.get('bracket_pos', pt_pos)  # <> 위치 가져오기
-        
-        # PT 번호에 해당하는 SIZE 찾기
-        pt_index = None
-        for idx, pno in enumerate(self.pno_array):
-            if pno == pt_number:
-                pt_index = idx
-                break
-        
-        if pt_index is None or pt_index >= len(psize_array):
-            return
-        
-        pipe_size = psize_array[pt_index]
-        new_layer_name = f"PIPE_{pipe_size}"
-        
-        if slope != 0:
-            # 기울기가 0이 아니면 PT 위치에서 3mm 내에서 PIPE 레이어 찾기
-            pipe_entities = self.find_pipe_layer_entities_near_point(pt_pos, 3)
-            
-            if pipe_entities:
-                for entity in pipe_entities:
-                    # 새 레이어가 없으면 생성
-                    if new_layer_name not in self.doc.layers:
-                        self.doc.layers.new(name=new_layer_name)
-                    
-                    # 레이어 변경 및 색상을 RED로 변경
-                    entity.dxf.layer = new_layer_name
-                    entity.dxf.color = 1  # RED
+# ─────────────── 설정 값 ───────────────
+ANGLE_TOLERANCE = 5.0  # 각도 허용 오차 (°)
+DIM_LAYER_PREFIXES = ("GT_", "PL2")  # 치수선 레이어 접두사들
+
+# TBOX 캐시를 위한 전역 딕셔너리
+TBOX_CACHE = {}
+
+# ─────────────── 유틸 함수 ───────────────
+def to2d(pt):
+    if hasattr(pt, "__getitem__"):
+        return np.array((pt[0], pt[1]), float)
+    return np.array((pt.x, pt.y), float)
+
+def distance(a, b):
+    return float(np.linalg.norm(a - b))
+
+def angle_deg(a, b):
+    dx, dy = b - a
+    return (math.degrees(math.atan2(dy, dx)) + 360) % 360
+
+def get_entity_handle(entity):
+    try:
+        if hasattr(entity, 'dxf') and hasattr(entity.dxf, 'handle'):
+            return entity.dxf.handle
+        elif hasattr(entity, 'handle'):
+            return entity.handle
         else:
-            # 기울기가 0이면 <> 텍스트 위치에서 G1 찾기
-            # 최대 2번 시도
-            max_attempts = 1
-            pipe_found = False
-            exclude_entities = []
-            
-            for attempt in range(max_attempts):
-                if pipe_found:
-                    break
-                    
-                # <> 텍스트 위치에서 가장 가까운 G1 찾기
-                g1_polyline = self.find_nearest_polyline_near_point(bracket_pos, 15, exclude_list=exclude_entities)
-                
-                if not g1_polyline:
-                    break
-                
-                g1_entity, g1_points = g1_polyline
-                
-                # 다음 시도를 위해 현재 엔티티를 제외 리스트에 추가
-                exclude_entities.append(g1_entity)
-                
-                # G1 점들에서 1mm 내의 PIPE 레이어 엔티티 찾기
-                pipe_entities = self.find_pipe_layer_entities_near_polyline(g1_points, 1)
-                
-                if pipe_entities:
-                    for entity in pipe_entities:
-                        # 새 레이어가 없으면 생성
-                        if new_layer_name not in self.doc.layers:
-                            self.doc.layers.new(name=new_layer_name)
-                        
-                        # 레이어 변경 및 색상을 RED로 변경
-                        entity.dxf.layer = new_layer_name
-                        entity.dxf.color = 1  # RED
-                    
-                    pipe_found = True
-    
-    def find_nearest_polyline_near_point(self, point, radius, exclude_list=None):
-        """특정 점 근처에서 가장 가까운 2-3점 폴리라인 하나만 찾기 (곡선 제외)"""
-        # 3D 좌표를 2D로 변환
-        if len(point) > 2:
-            point = (point[0], point[1])
-        
-        if exclude_list is None:
-            exclude_list = []
-            
-        min_dist = float('inf')
-        nearest_polyline = None
-        
-        for entity in self.msp:
-            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
-                # 이미 검사한 엔티티는 제외
-                if entity in exclude_list:
-                    continue
-                    
-                # 곡선(bulge)이 있는 폴리라인은 제외
-                if self.has_bulge(entity):
-                    continue
-                    
-                poly_points = []
-                
-                if entity.dxftype() == 'LWPOLYLINE':
-                    poly_points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                else:
-                    for vertex in entity.vertices:
-                        poly_points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                
-                if 2 <= len(poly_points) <= 3:
-                    # 폴리라인의 모든 점과 기준점 사이의 최소 거리
-                    entity_min_dist = float('inf')
-                    for pp in poly_points:
-                        dist = self.distance_2d(point, pp)
-                        if dist < entity_min_dist:
-                            entity_min_dist = dist
-                    
-                    if entity_min_dist <= radius and entity_min_dist < min_dist:
-                        min_dist = entity_min_dist
-                        nearest_polyline = (entity, poly_points)
-        
-        if nearest_polyline:
-            entity, points = nearest_polyline
-            entity.dxf.color = 1  # RED
-            
-        return nearest_polyline
-    
-    def find_multiple_polylines_near_point(self, point, radius, max_count=3):
-        """특정 점 근처에서 가까운 순서대로 최대 max_count개의 2-3점 폴리라인 찾기 (곡선 제외)"""
-        # 3D 좌표를 2D로 변환
-        if len(point) > 2:
-            point = (point[0], point[1])
-            
-        polyline_distances = []
-        
-        for entity in self.msp:
-            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
-                # 곡선(bulge)이 있는 폴리라인은 제외
-                if self.has_bulge(entity):
-                    continue
-                    
-                poly_points = []
-                
-                if entity.dxftype() == 'LWPOLYLINE':
-                    poly_points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                else:
-                    for vertex in entity.vertices:
-                        poly_points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                
-                if 2 <= len(poly_points) <= 3:
-                    # 폴리라인의 모든 점과 기준점 사이의 최소 거리
-                    min_dist = float('inf')
-                    for pp in poly_points:
-                        dist = self.distance_2d(point, pp)
-                        if dist < min_dist:
-                            min_dist = dist
-                    
-                    if min_dist <= radius:
-                        polyline_distances.append((min_dist, entity, poly_points))
-        
-        # 거리순으로 정렬
-        polyline_distances.sort(key=lambda x: x[0])
-        
-        # 최대 max_count개만 반환
-        result = []
-        for i, (dist, entity, points) in enumerate(polyline_distances[:max_count]):
-            entity.dxf.color = 1  # RED
-            result.append((entity, points))
-        
-        return result
-    
-    def find_headers_near_text(self, search_text, search_radius=100):
-        """특정 텍스트 근처에서 헤더 찾기"""
-        headers = {'PT': None, 'ITEM': None, 'MATERIAL': None, 'SIZE': None}
-        
-        # 먼저 search_text 찾기
-        base_text = None
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                if search_text in text_content:
-                    base_text = entity
-                    break
-        
-        if not base_text:
-            return headers
-        
-        base_pos = base_text.dxf.insert
-        # 3D 좌표를 2D로 변환
-        if len(base_pos) > 2:
-            base_pos = (base_pos[0], base_pos[1])
-        
-        # 근처에서 헤더 찾기
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                pos = entity.dxf.insert
-                # 3D 좌표를 2D로 변환
-                if len(pos) > 2:
-                    pos = (pos[0], pos[1])
-                
-                if self.distance_2d(base_pos, pos) <= search_radius:
-                    for header in headers:
-                        if header in text_content.upper():
-                            headers[header] = entity
-                            # 헤더 색상을 RED로 변경
-                            entity.dxf.color = 1  # RED
-                            
-        return headers
-    
-    def find_pipe_items_in_area(self, base_text, y_offset=-50, x_min=-10, x_max=80):
-        """특정 텍스트 기준으로 지정된 범위 내에서 PIPE 항목 찾기"""
-        pipe_items = []
-        if not base_text:
-            return pipe_items
-            
-        base_pos = base_text.dxf.insert
-        
-        # 지정된 범위 내에서 PIPE 텍스트 찾기
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                pos = entity.dxf.insert
-                
-                # Y: base_pos에서 -50mm 아래까지
-                # X: base_pos에서 -10mm ~ +80mm 범위
-                y_in_range = (base_pos[1] + y_offset) <= pos[1] <= base_pos[1]
-                x_in_range = (base_pos[0] + x_min) <= pos[0] <= (base_pos[0] + x_max)
-                
-                if y_in_range and x_in_range and 'PIPE' in text_content.upper():
-                    pipe_items.append(entity)
-                        
-        # Y 좌표로 정렬 (위에서 아래로)
-        pipe_items.sort(key=lambda e: e.dxf.insert[1], reverse=True)
-        
-        return pipe_items
-    
-    def extract_pipe_info_from_pipe_text(self, pipe_entity):
-        """PIPE 텍스트에서 직접 PT와 SIZE 정보 추출"""
-        pipe_text = pipe_entity.dxf.text if pipe_entity.dxftype() == 'TEXT' else pipe_entity.text
-        pipe_pos = pipe_entity.dxf.insert
-        
-        # PIPE 텍스트 주변에서 숫자 찾기
-        pt_value = None
-        size_value = None
-        
-        # Y 좌표 허용 오차를 더 엄격하게 설정 (1mm)
-        y_tolerance = 1.0
-        
-        # PIPE 텍스트 근처에서 모든 텍스트 검색
-        nearby_texts = []
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                if entity == pipe_entity:
-                    continue
-                pos = entity.dxf.insert
-                # PIPE 텍스트와 정확히 같은 줄(Y 좌표 차이 1mm 이내)에 있는 텍스트
-                if abs(pos[1] - pipe_pos[1]) <= y_tolerance:
-                    text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                    nearby_texts.append((pos[0], text_content.strip(), entity, pos[1]))
-        
-        # X 좌표로 정렬
-        nearby_texts.sort(key=lambda x: x[0])
-        
-        # PIPE 왼쪽에서 가장 가까운 숫자 찾기 (PT)
-        left_numbers = [(x, text, entity) for x, text, entity, _ in nearby_texts 
-                        if x < pipe_pos[0] and text.isdigit()]
-        if left_numbers:
-            # 가장 가까운 것 선택
-            left_numbers.sort(key=lambda item: pipe_pos[0] - item[0])
-            pt_value = int(left_numbers[0][1])
-            left_numbers[0][2].dxf.color = 1  # RED
-        
-        # PIPE 오른쪽에서 가장 가까운 숫자 찾기 (SIZE)
-        right_numbers = [(x, text, entity) for x, text, entity, _ in nearby_texts 
-                         if x > pipe_pos[0] and text.isdigit()]
-        if right_numbers:
-            # 가장 가까운 것 선택
-            right_numbers.sort(key=lambda item: item[0] - pipe_pos[0])
-            size_value = int(right_numbers[0][1])
-            right_numbers[0][2].dxf.color = 1  # RED
-                    
-        return pt_value, size_value
-    
-    def extract_pipe_info(self, pipe_entity, pt_x, size_x):
-        """PIPE 엔티티에서 PT와 SIZE 정보 추출"""
-        pipe_pos = pipe_entity.dxf.insert
-        # 3D 좌표를 2D로 변환
-        if len(pipe_pos) > 2:
-            pipe_pos = (pipe_pos[0], pipe_pos[1])
-        pipe_y = pipe_pos[1]
-        
-        # PT 값 찾기 (PIPE -X 20mm 내)
-        pt_texts = self.find_text_near_point((pt_x, pipe_y), 20)
-        pt_value = None
-        for text in pt_texts:
-            content = text.dxf.text if text.dxftype() == 'TEXT' else text.text
-            if content.strip().isdigit():
-                pt_value = int(content.strip())
-                break
-        
-        # SIZE 값 찾기 (PIPE +X 85mm)
-        size_texts = self.find_text_near_point((size_x, pipe_y), 20)
-        size_value = None
-        for text in size_texts:
-            content = text.dxf.text if text.dxftype() == 'TEXT' else text.text
-            # 문자가 포함되지 않은 순수 숫자만
-            if content.strip().isdigit():
-                size_value = int(content.strip())
-                break
-                
-        return pt_value, size_value
-    
-    def find_polylines_with_5_points(self):
-        """5개 점을 가진 폴리라인 찾기 (점간 거리 합 13.5~14.5)"""
-        pbox_list = []
-        
-        for entity in self.msp:
-            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
-                points = []
-                
-                if entity.dxftype() == 'LWPOLYLINE':
-                    points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                else:  # POLYLINE
-                    for vertex in entity.vertices:
-                        points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                
-                if len(points) == 5:
-                    # 점간 거리 합 계산
-                    total_dist = 0
-                    for i in range(4):
-                        total_dist += self.distance_2d(points[i], points[i+1])
-                    
-                    if 13.5 <= total_dist <= 14.5:
-                        pbox_list.append((entity, points))
-                        # RED 색상으로 변경
-                        entity.dxf.color = 1  # RED
-                        
-        return pbox_list
-    
-    def find_nearest_pno(self, pbox_center):
-        """PBOX 중심에서 가장 가까운 PNO 찾기 (PT 번호 1번 제외)"""
-        # 3D 좌표를 2D로 변환
-        if len(pbox_center) > 2:
-            pbox_center = (pbox_center[0], pbox_center[1])
-            
-        if len(self.pno_array) < 2:
-            return None, None
-            
-        min_dist = float('inf')
-        nearest_idx = None
-        dpno_entity = None
-        
-        for i in range(len(self.pno_array)):
-            pno = self.pno_array[i]
-            
-            # PT 번호가 1인 경우 건너뛰기
-            if pno == 1:
-                continue
-                
-            # PNO 텍스트 위치 찾기
-            for entity in self.msp:
-                if entity.dxftype() in ['TEXT', 'MTEXT']:
-                    content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                    if content.strip() == str(pno):
-                        pos = entity.dxf.insert
-                        dist = self.distance_2d(pbox_center, pos)
-                        if dist < min_dist:
-                            min_dist = dist
-                            nearest_idx = i
-                            dpno_entity = entity
-                            
-        return nearest_idx, dpno_entity
-    
-    def get_text_slope(self, text_entity):
-        """텍스트 엔티티의 기울기 구하기"""
-        if text_entity.dxftype() == 'TEXT':
-            rotation = text_entity.dxf.rotation
-        else:  # MTEXT
-            rotation = text_entity.dxf.rotation if hasattr(text_entity.dxf, 'rotation') else 0
-            
-        return rotation
-    
-    def find_multiple_polylines_near_pbox(self, pbox_center, radius, max_count=3):
-        """PBOX 중심에서 가까운 순서대로 최대 max_count개의 2-3점 폴리라인 찾기 (곡선 제외)"""
-        # 3D 좌표를 2D로 변환
-        if len(pbox_center) > 2:
-            pbox_center = (pbox_center[0], pbox_center[1])
-            
-        polyline_distances = []
-        
-        for entity in self.msp:
-            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
-                # 곡선(bulge)이 있는 폴리라인은 제외
-                if self.has_bulge(entity):
-                    continue
-                    
-                poly_points = []
-                
-                if entity.dxftype() == 'LWPOLYLINE':
-                    poly_points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                else:
-                    for vertex in entity.vertices:
-                        poly_points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                
-                if 2 <= len(poly_points) <= 3:
-                    # 폴리라인의 모든 점과 PBOX 중심 사이의 최소 거리
-                    min_dist = float('inf')
-                    for pp in poly_points:
-                        dist = self.distance_2d(pbox_center, pp)
-                        if dist < min_dist:
-                            min_dist = dist
-                    
-                    if min_dist <= radius:
-                        polyline_distances.append((min_dist, entity, poly_points))
-        
-        # 거리순으로 정렬
-        polyline_distances.sort(key=lambda x: x[0])
-        
-        # 최대 max_count개만 반환
-        result = []
-        for i, (dist, entity, points) in enumerate(polyline_distances[:max_count]):
-            entity.dxf.color = 1  # RED
-            result.append((entity, points))
-        
-        return result
-    
-    def find_pipe_layer_entities_near_polyline(self, polyline_points, radius=1):
-        """폴리라인 근처의 PIPE 레이어 엔티티 찾기 (점과 선분 모두 확인)"""
-        found_entities = set()  # 중복 제거를 위해 set 사용
-        
-        # 각 폴리라인 점에서 PIPE 엔티티 찾기
-        for point in polyline_points:
-            # 3D 좌표를 2D로 변환
-            if len(point) > 2:
-                point = (point[0], point[1])
-                
-            for entity in self.msp:
-                if entity.dxf.layer == 'PIPE':
-                    found = False
-                    
-                    # 1. 점 기반 검색
-                    if hasattr(entity, 'dxf') and hasattr(entity.dxf, 'insert'):
-                        if self.distance_2d(point, entity.dxf.insert) <= radius:
-                            found = True
-                    elif hasattr(entity, 'dxf') and hasattr(entity.dxf, 'start'):
-                        if self.distance_2d(point, entity.dxf.start) <= radius:
-                            found = True
-                    
-                    # 2. 폴리라인인 경우 점과 선분 모두 확인
-                    if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
-                        if entity.dxftype() == 'LWPOLYLINE':
-                            pipe_points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                        else:
-                            pipe_points = []
-                            for vertex in entity.vertices:
-                                pipe_points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                        
-                        # 점 확인
-                        for pp in pipe_points:
-                            if self.distance_2d(point, pp) <= radius:
-                                found = True
-                                break
-                        
-                        # 선분 확인
-                        if not found:
-                            for i in range(len(pipe_points) - 1):
-                                dist = self.point_to_line_distance(point, pipe_points[i], pipe_points[i+1])
-                                if dist <= radius:
-                                    found = True
-                                    break
-                    
-                    if found:
-                        found_entities.add(entity)
-        
-        return list(found_entities)
-    
-    def find_farthest_point_from_pbox(self, g1_points, pbox_center):
-        """PBOX 중심에서 가장 먼 G1 점 찾기"""
-        max_dist = 0
-        farthest_point = None
-        
-        for point in g1_points:
-            # 3D 좌표를 2D로 변환
-            if len(point) > 2:
-                point = (point[0], point[1])
-            dist = self.distance_2d(point, pbox_center)
-            if dist > max_dist:
-                max_dist = dist
-                farthest_point = point
-                    
-        return farthest_point
-    
-    def find_pipe_layer_entities_near_point(self, point, radius=1):
-        """특정 점 근처의 PIPE 레이어 엔티티 찾기 (점과 선분 모두 확인)"""
-        # 3D 좌표를 2D로 변환
-        if len(point) > 2:
-            point = (point[0], point[1])
-            
-        pipe_entities = []
-        found_entities_set = set()  # 중복 제거를 위해
-        
-        for entity in self.msp:
-            if entity.dxf.layer == 'PIPE':
-                found = False
-                
-                # 엔티티의 대표 점 확인
-                if hasattr(entity, 'dxf') and hasattr(entity.dxf, 'insert'):
-                    if self.distance_2d(point, entity.dxf.insert) <= radius:
-                        found = True
-                elif hasattr(entity, 'dxf') and hasattr(entity.dxf, 'start'):
-                    if self.distance_2d(point, entity.dxf.start) <= radius:
-                        found = True
-                
-                # 폴리라인인 경우 점과 선분 모두 확인
-                if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
-                    if entity.dxftype() == 'LWPOLYLINE':
-                        poly_points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                    else:
-                        poly_points = []
-                        for vertex in entity.vertices:
-                            poly_points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                    
-                    # 각 점 확인
-                    for pp in poly_points:
-                        if self.distance_2d(point, pp) <= radius:
-                            found = True
-                            break
-                    
-                    # 각 선분 확인
-                    if not found and len(poly_points) > 1:
-                        for i in range(len(poly_points) - 1):
-                            dist = self.point_to_line_distance(point, poly_points[i], poly_points[i+1])
-                            if dist <= radius:
-                                found = True
-                                break
-                
-                if found and entity not in found_entities_set:
-                    found_entities_set.add(entity)
-                    pipe_entities.append(entity)
-                    
-        return pipe_entities
-    
-    def find_pipe_layer_polylines_near_points(self, points, radius=3):
-        """PBOX 각 점 근처를 지나가는 PIPE 레이어 폴리라인 찾기"""
-        found_entities = []
-        
-        for point in points:
-            # 3D 좌표를 2D로 변환
-            if len(point) > 2:
-                point = (point[0], point[1])
-                
-            min_dist = float('inf')
-            closest_entity = None
-            
-            for entity in self.msp:
-                if entity.dxf.layer == 'PIPE' and entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
-                    # 폴리라인의 점들 가져오기
-                    if entity.dxftype() == 'LWPOLYLINE':
-                        poly_points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                    else:
-                        poly_points = []
-                        for vertex in entity.vertices:
-                            poly_points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                    
-                    # 각 선분에 대해 점과의 거리 계산
-                    for i in range(len(poly_points) - 1):
-                        p1 = poly_points[i]
-                        p2 = poly_points[i + 1]
-                        
-                        # 선분과 점 사이의 최단 거리 계산
-                        dist = self.point_to_line_distance(point, p1, p2)
-                        
-                        if dist <= radius and dist < min_dist:
-                            min_dist = dist
-                            closest_entity = entity
-            
-            if closest_entity:
-                found_entities.append(closest_entity)
-                        
-        return found_entities
-    
-    def point_to_line_distance(self, point, line_start, line_end):
-        """점과 선분 사이의 최단 거리 계산"""
-        # 3D 좌표를 2D로 변환
-        if len(point) > 2:
-            point = (point[0], point[1])
-        if len(line_start) > 2:
-            line_start = (line_start[0], line_start[1])
-        if len(line_end) > 2:
-            line_end = (line_end[0], line_end[1])
-            
-        x0, y0 = point
-        x1, y1 = line_start
-        x2, y2 = line_end
-        
-        # 선분의 길이 제곱
-        line_length_sq = (x2 - x1)**2 + (y2 - y1)**2
-        
-        if line_length_sq == 0:
-            # 선분이 점인 경우
-            return self.distance_2d(point, line_start)
-        
-        # 점을 선분에 투영
-        t = max(0, min(1, ((x0 - x1) * (x2 - x1) + (y0 - y1) * (y2 - y1)) / line_length_sq))
-        
-        # 투영된 점
-        projection = (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
-        
-        # 점과 투영된 점 사이의 거리
-        return self.distance_2d(point, projection)
-    
-    def find_pipe_layer_polylines(self):
-        """PIPE 텍스트가 포함된 레이어를 가진 2점 폴리라인 찾기"""
-        pipe_polylines = []
-        
-        for entity in self.msp:
-            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
-                # 레이어 이름에 PIPE가 포함되어 있는지 확인
-                if 'PIPE' in entity.dxf.layer.upper():
-                    # 폴리라인의 점들 가져오기
-                    if entity.dxftype() == 'LWPOLYLINE':
-                        points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                    else:
-                        points = []
-                        for vertex in entity.vertices:
-                            points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                    
-                    # 2점 폴리라인인지 확인
-                    if len(points) == 2:
-                        pipe_polylines.append((entity, points))
-        
-        return pipe_polylines
-    
-    def find_3way_intersections(self, pipe_polylines):
-        """3개의 폴리라인이 만나는 교차점 찾기"""
-        intersections = []
-        tolerance = 0.3  # 0.3mm 허용 오차
-        
-        # 모든 폴리라인의 끝점들을 수집
-        all_endpoints = []
-        for entity, points in pipe_polylines:
-            for point in points:
-                all_endpoints.append((point, entity))
-        
-        # 각 끝점에서 근처의 다른 끝점들을 찾기
-        for i, (point1, entity1) in enumerate(all_endpoints):
-            nearby_entities = set()
-            nearby_entities.add(entity1)
-            
-            for j, (point2, entity2) in enumerate(all_endpoints):
-                if i != j and self.distance_2d(point1, point2) <= tolerance:
-                    nearby_entities.add(entity2)
-            
-            # 정확히 3개의 서로 다른 폴리라인이 만나는 경우
-            if len(nearby_entities) == 3:
-                # 이미 찾은 교차점인지 확인
-                is_duplicate = False
-                for existing_intersection, _ in intersections:
-                    if self.distance_2d(point1, existing_intersection) <= tolerance:
-                        is_duplicate = True
-                        break
-                
-                if not is_duplicate:
-                    intersections.append((point1, list(nearby_entities)))
-        
-        return intersections
-    
-    def get_polyline_length(self, entity):
-        """폴리라인의 길이 계산"""
-        if entity.dxftype() == 'LWPOLYLINE':
-            points = [(p[0], p[1]) for p in entity.get_points('xy')]
-        else:
-            points = []
-            for vertex in entity.vertices:
-                points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-        
-        if len(points) < 2:
-            return 0
-        
-        total_length = 0
-        for i in range(len(points) - 1):
-            total_length += self.distance_2d(points[i], points[i + 1])
-        
-        return total_length
-    
-    def find_pl2_polyline_near_point(self, point, radius=0.5):
-        """특정 점 근처의 PL2 레이어 폴리라인 찾기"""
-        for entity in self.msp:
-            if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE'] and entity.dxf.layer == 'PL2':
-                # 폴리라인의 점들 가져오기
-                if entity.dxftype() == 'LWPOLYLINE':
-                    points = [(p[0], p[1]) for p in entity.get_points('xy')]
-                else:
-                    points = []
-                    for vertex in entity.vertices:
-                        points.append((vertex.dxf.location.x, vertex.dxf.location.y))
-                
-                # 각 점이 교차점 근처에 있는지 확인
-                for p in points:
-                    if self.distance_2d(point, p) <= radius:
-                        return entity, points
-        
-        return None, None
-    
-    def find_x_text_near_point(self, point, radius=20):
-        """특정 점 근처에서 'x'를 포함하는 텍스트 찾기"""
-        for entity in self.msp:
-            if entity.dxftype() in ['TEXT', 'MTEXT']:
-                text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                pos = entity.dxf.insert
-                
-                # 3D 좌표를 2D로 변환
-                if len(pos) > 2:
-                    pos = (pos[0], pos[1])
-                
-                if self.distance_2d(point, pos) <= radius and 'x' in text_content.lower():
-                    return entity, text_content
-        
-        return None, None
-    
-    def extract_numbers_from_x_text(self, text):
-        """'x'를 포함하는 텍스트에서 앞뒤 숫자 추출"""
-        # 소문자 x로 변환하여 처리
-        text = text.lower()
-        
-        if 'x' not in text:
-            return None, None
-        
-        # x를 기준으로 분리
-        parts = text.split('x')
-        
-        if len(parts) != 2:
-            return None, None
-        
-        # 앞부분에서 숫자 추출
-        t1 = None
-        for char in parts[0][::-1]:  # 뒤에서부터 검색
-            if char.isdigit():
-                if t1 is None:
-                    t1 = char
-                else:
-                    t1 = char + t1
-            elif t1 is not None:
-                break
-        
-        # 뒷부분에서 숫자 추출
-        t3 = None
-        for char in parts[1]:  # 앞에서부터 검색
-            if char.isdigit():
-                if t3 is None:
-                    t3 = char
-                else:
-                    t3 = t3 + char
-            elif t3 is not None:
-                break
-        
-        # 숫자로 변환
-        t1 = int(t1) if t1 else None
-        t3 = int(t3) if t3 else None
-        
-        return t1, t3
-    
-    def process_tee_connections(self):
-        """TEE 연결부 처리 - 3방향 교차점 찾기 및 레이어 변경"""
-        # PIPE 텍스트가 포함된 레이어의 2점 폴리라인 찾기
-        pipe_polylines = self.find_pipe_layer_polylines()
-        
-        if not pipe_polylines:
-            return
-        
-        # 3개의 폴리라인이 만나는 교차점 찾기
-        intersections = self.find_3way_intersections(pipe_polylines)
-        
-        for idx, (intersection_point, tee_entities) in enumerate(intersections):
-            # 3개의 폴리라인을 길이순으로 정렬
-            tee_lengths = []
-            for entity in tee_entities:
-                length = self.get_polyline_length(entity)
-                tee_lengths.append((entity, length))
-            
-            # 길이순으로 정렬 (내림차순)
-            tee_lengths.sort(key=lambda x: x[1], reverse=True)
-            
-            if len(tee_lengths) < 3:
-                continue
-            
-            tee1_entity = tee_lengths[0][0]  # 가장 긴 것
-            tee2_entity = tee_lengths[1][0]  # 다음 긴 것
-            tee3_entity = tee_lengths[2][0]  # 가장 짧은 것
-            
-            # 교차점에서 0.5mm 내의 PL2 레이어 폴리라인(G1) 찾기
-            g1_entity, g1_points = self.find_pl2_polyline_near_point(intersection_point, 0.5)
-            
-            if not g1_entity:
-                continue
-            
-            # G1의 교차점에서 먼 쪽 끝점 찾기
-            if len(g1_points) >= 2:
-                dist1 = self.distance_2d(intersection_point, g1_points[0])
-                dist2 = self.distance_2d(intersection_point, g1_points[-1])
-                far_point = g1_points[0] if dist1 > dist2 else g1_points[-1]
-                
-                # 먼 쪽 끝점에서 20mm 내의 'x' 포함 텍스트 찾기
-                x_entity, x_text = self.find_x_text_near_point(far_point, 20)
-                
-                if x_entity:
-                    # x 앞뒤의 숫자 추출
-                    t1, t3 = self.extract_numbers_from_x_text(x_text)
-                    
-                    if t1 is not None and t3 is not None:
-                        # 레이어 이름 변경
-                        new_layer_tee1 = f"TEE_{t1}"
-                        new_layer_tee2 = f"TEE_{t1}"  # TEE2도 T1 사용
-                        new_layer_tee3 = f"TEE_{t3}"
-                        
-                        # 새 레이어가 없으면 생성
-                        if new_layer_tee1 not in self.doc.layers:
-                            self.doc.layers.new(name=new_layer_tee1)
-                        if new_layer_tee3 not in self.doc.layers:
-                            self.doc.layers.new(name=new_layer_tee3)
-                        
-                        # TEE1 레이어 변경
-                        tee1_entity.dxf.layer = new_layer_tee1
-                        tee1_entity.dxf.color = 2  # YELLOW
-                        
-                        # TEE2 레이어 변경
-                        tee2_entity.dxf.layer = new_layer_tee2
-                        tee2_entity.dxf.color = 2  # YELLOW
-                        
-                        # TEE3 레이어 변경
-                        tee3_entity.dxf.layer = new_layer_tee3
-                        tee3_entity.dxf.color = 2  # YELLOW
-    
-    def reset_state(self):
-        """각 파일 처리 전 상태 초기화"""
-        self.doc = None
-        self.msp = None
-        self.pno_array = []
-        self.psize_array = []
-        self.pbox_entities = []
-    
-    def process_dxf(self, filename):
-        """DXF 파일 처리"""
+            return str(id(entity))
+    except:
+        return "unknown"
+
+def extract_segments(ent):
+    if isinstance(ent, Line):
+        return [(ent.dxf.start, ent.dxf.end)]
+    if isinstance(ent, LWPolyline):
+        pts = list(ent.get_points("xyb"))
+        z = ent.dxf.elevation
+        return [
+            ((x0, y0, z), (x1, y1, z)) for (x0, y0, _), (x1, y1, _) in zip(pts, pts[1:])
+        ]
+    if isinstance(ent, Polyline):
+        verts = list(ent.vertices)
+        return [
+            (verts[i].dxf.location, verts[i + 1].dxf.location)
+            for i in range(len(verts) - 1)
+        ]
+    return []
+
+def is_enclosed(point, msp):
+    x, y = float(point[0]), float(point[1])
+    for entity in msp.query("LWPOLYLINE POLYLINE"):
         try:
-            # 각 파일 처리 전 상태 초기화
-            self.reset_state()
-            
-            self.doc = ezdxf.readfile(filename)
-            self.msp = self.doc.modelspace()
-            
-            # 1. FABRICATION MATERIALS 처리
-            fab_text = None
-            for entity in self.msp:
-                if entity.dxftype() in ['TEXT', 'MTEXT']:
-                    text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                    if 'FABRICATION MATERIALS' in text_content:
-                        fab_text = entity
-                        break
-            
-            if fab_text:
-                # -Y 50mm, +X -10~80mm 범위에서 PIPE 찾기
-                pipe_items = self.find_pipe_items_in_area(fab_text, y_offset=-50, x_min=-10, x_max=80)
-                
-                for pipe in pipe_items:
-                    pt, size = self.extract_pipe_info_from_pipe_text(pipe)
-                    if pt is not None and size is not None:
-                        self.pno_array.append(pt)
-                        self.psize_array.append(size)
-            
-            # 2. ERECTION MATERIALS 처리
-            erec_text = None
-            erec_candidates = []
-            
-            for entity in self.msp:
-                if entity.dxftype() in ['TEXT', 'MTEXT']:
-                    text_content = entity.dxf.text if entity.dxftype() == 'TEXT' else entity.text
-                    if 'ERECTION' in text_content.upper() and 'MATERIALS' in text_content.upper():
-                        erec_candidates.append((entity, text_content))
-                        if 'ERECTION MATERIALS' in text_content:
-                            erec_text = entity
-                            break
-            
-            if not erec_text and erec_candidates:
-                # 정확한 매치가 없으면 첫 번째 후보 사용
-                erec_text = erec_candidates[0][0]
-            
-            if erec_text:
-                erec_pos = erec_text.dxf.insert
-                
-                # -Y 50mm, +X -10~80mm 범위에서 PIPE 찾기
-                pipe_items = self.find_pipe_items_in_area(erec_text, y_offset=-50, x_min=-10, x_max=80)
-                
-                for pipe in pipe_items:
-                    pt, size = self.extract_pipe_info_from_pipe_text(pipe)
-                    if pt is not None and size is not None:
-                        self.pno_array.append(pt)
-                        self.psize_array.append(size)
-            
-            # 3. 찾은 PNO, PSIZE 텍스트 색상 변경 (이미 extract_pipe_info_from_pipe_text에서 처리됨)
-            
-            # 4. FABRICATION MATERIALS 근처에서 <> 텍스트 찾기
-            fab_angle_brackets = self.find_angle_brackets_near_materials("FABRICATION")
-            
-            if fab_angle_brackets:
-                # 각 <> 텍스트 근처에서 PT 번호 찾고 처리
-                for idx, (bracket_entity, bracket_pos) in enumerate(fab_angle_brackets):
-                    # PT 번호 찾기 (2~5 사이, PT 배열에 있는 것)
-                    found_pts = self.find_pt_number_near_angle_bracket(bracket_entity, self.pno_array)
-                    
-                    if not found_pts:
-                        continue
-                    
-                    # 각 PT 번호에 대해 처리
-                    for pt_info in found_pts:
-                        if pt_info['pt_number'] == 1:
-                            continue
-                        
-                        # PT 텍스트의 기울기에 따라 처리
-                        self.process_pt_based_on_slope(pt_info, self.psize_array)
-            
-            # 5. ERECTION MATERIALS 근처에서 <> 텍스트 찾기
-            erec_angle_brackets = self.find_angle_brackets_near_materials("ERECTION")
-            
-            if erec_angle_brackets:
-                # 각 <> 텍스트 근처에서 PT 번호 찾고 처리
-                for idx, (bracket_entity, bracket_pos) in enumerate(erec_angle_brackets):
-                    # PT 번호 찾기 (2~5 사이, PT 배열에 있는 것)
-                    found_pts = self.find_pt_number_near_angle_bracket(bracket_entity, self.pno_array)
-                    
-                    if not found_pts:
-                        continue
-                    
-                    # 각 PT 번호에 대해 처리
-                    for pt_info in found_pts:
-                        if pt_info['pt_number'] == 1:
-                            continue
-                        
-                        # PT 텍스트의 기울기에 따라 처리
-                        self.process_pt_based_on_slope(pt_info, self.psize_array)
-            
-            # 6. TEE 연결부 처리 (새로 추가된 기능)
-            self.process_tee_connections()
-            
-            # 7. 파일 저장
-            output_filename = filename.replace('.dxf', '_WDLA.dxf')
-            self.doc.saveas(output_filename)
-            
-            return True, output_filename
-            
-        except Exception as e:
-            return False, None
-
-def main():
-    """메인 함수"""
-    if len(sys.argv) < 2:
-        print("Usage: python PLTONEWLINE.PY file1.dxf file2.dxf ...")
-        sys.exit(1)
-    
-    # 커맨드라인 인자에서 파일 이름들 가져오기
-    filenames = sys.argv[1:]
-    
-    # 처리 결과 저장
-    results = []
-    successful_files = []
-    failed_files = []
-    
-    # 각 파일 처리
-    processor = PipeLayerRenamer()
-    
-    for filename in filenames:
-        if not os.path.exists(filename):
-            failed_files.append(filename)
-            results.append(f"✗ {filename} - File not found")
+            if not entity.is_closed:
+                continue
+        except Exception:
             continue
-            
-        success, output_file = processor.process_dxf(filename)
-        
-        if success:
-            successful_files.append((filename, output_file))
-            results.append(f"✓ {os.path.basename(filename)} → {os.path.basename(output_file)}")
+        if hasattr(entity, 'get_points'):
+            points = list(entity.get_points("xy"))
         else:
-            failed_files.append(filename)
-            results.append(f"✗ {os.path.basename(filename)} - Processing failed")
-    
-    # 최종 결과 출력
-    print(f"\nTotal files: {len(filenames)}")
-    print(f"Success: {len(successful_files)}")
-    print(f"Failed: {len(failed_files)}")
-    print("\nResults:")
-    for result in results:
-        print(result)
+            points = [(v.dxf.location[0], v.dxf.location[1]) for v in entity.vertices]
+        if len(points) < 3:
+            continue
+        if point_in_polygon(x, y, points):
+            return True
+    return False
+
+def point_in_polygon(x, y, polygon_points):
+    n = len(polygon_points)
+    inside = False
+    p1x, p1y = polygon_points[0]
+    for i in range(1, n + 1):
+        p2x, p2y = polygon_points[i % n]
+        if y > min(p1y, p2y):
+            if y <= max(p1y, p2y):
+                if x <= max(p1x, p2x):
+                    if p1y != p2y:
+                        xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                    if p1x == p2x or x <= xinters:
+                        inside = not inside
+        p1x, p1y = p2x, p2y
+    return inside
+
+def point_to_line_distance(point, line_start, line_end):
+    line_vec = line_end - line_start
+    line_length_sq = np.dot(line_vec, line_vec)
+    if line_length_sq == 0:
+        return distance(point, line_start)
+    point_vec = point - line_start
+    t = np.dot(point_vec, line_vec) / line_length_sq
+    t = max(0, min(1, t))
+    closest_point = line_start + t * line_vec
+    return distance(point, closest_point)
+
+# ─────────────── TBOX 관련 함수 ───────────────
+def get_text_key(txt):
+    try:
+        handle = get_entity_handle(txt)
+        if hasattr(txt.dxf, 'insert'):
+            pos = txt.dxf.insert
+            return f"{handle}_{pos[0]}_{pos[1]}"
+        return handle
+    except:
+        return str(id(txt))
+
+def create_tbox(txt):
+    text_key = get_text_key(txt)
+    if text_key in TBOX_CACHE:
+        return TBOX_CACHE[text_key]
+    if hasattr(txt.dxf, 'insert') and txt.dxf.insert is not None:
+        txt_pt = to2d(txt.dxf.insert)
+    elif hasattr(txt.dxf, 'align_point') and txt.dxf.align_point is not None:
+        txt_pt = to2d(txt.dxf.align_point)
+    else:
+        return None
+    text_length, text_height = get_text_dimensions(txt)
+    tbox_left = txt_pt[0]
+    tbox_right = txt_pt[0] + text_length
+    tbox_bottom = txt_pt[1]
+    tbox_top = txt_pt[1] + text_height
+    move_x = text_length / 2.0
+    tbox_left += move_x
+    tbox_right += move_x
+    tbox_corners = [
+        np.array([tbox_left, tbox_bottom]),
+        np.array([tbox_right, tbox_bottom]),
+        np.array([tbox_right, tbox_top]),
+        np.array([tbox_left, tbox_top])
+    ]
+    tbox_info = {
+        'corners': tbox_corners,
+        'left': tbox_left,
+        'right': tbox_right,
+        'bottom': tbox_bottom,
+        'top': tbox_top,
+        'text_length': text_length,
+        'text_height': text_height,
+        'original_position': txt_pt
+    }
+    TBOX_CACHE[text_key] = tbox_info
+    return tbox_info
+
+def clear_tbox_cache():
+    global TBOX_CACHE
+    TBOX_CACHE = {}
+
+# ─────────────── DB1, CH1 시스템 함수들 ───────────────
+def find_dim_pairs_optimized(all_line_entities):
+    two_point_entities = []
+    for ent in all_line_entities:
+        try:
+            if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+                continue
+            segments = extract_segments(ent)
+            if len(segments) != 1:
+                continue
+            p0, p1 = segments[0]
+            v0, v1 = to2d(p0), to2d(p1)
+            length = distance(v0, v1)
+            if 1.5 <= length <= 12:
+                two_point_entities.append((ent, v0, v1, length))
+        except Exception:
+            continue
+
+    dim_pairs = []
+    overlapped_entities = []
+    close_tolerance = 0.2
+    far_threshold = 3.0
+    tolerance_len = 0.5
+
+    for i in range(len(two_point_entities)):
+        for j in range(i + 1, len(two_point_entities)):
+            ent1, v0_1, v1_1, len1 = two_point_entities[i]
+            ent2, v0_2, v1_2, len2 = two_point_entities[j]
+            length_diff = abs(len1 - len2)
+            if length_diff > tolerance_len:
+                continue
+
+            connection_cases = [
+                (v0_1, v0_2, v1_1, v1_2, "v0_1-v0_2"),
+                (v0_1, v1_2, v1_1, v0_2, "v0_1-v1_2"),
+                (v1_1, v0_2, v0_1, v1_2, "v1_1-v0_2"),
+                (v1_1, v1_2, v0_1, v0_2, "v1_1-v1_2"),
+            ]
+
+            valid_pair_found = False
+            overlap_found = False
+
+            for close_pt1, close_pt2, far_pt1, far_pt2, case_name in connection_cases:
+                try:
+                    close_dist = distance(close_pt1, close_pt2)
+                    far_dist = distance(far_pt1, far_pt2)
+                except Exception:
+                    continue
+
+                if close_dist <= close_tolerance:
+                    if far_dist <= close_tolerance:
+                        if ent1 not in overlapped_entities:
+                            ent1.dxf.color = 3
+                            overlapped_entities.append(ent1)
+                        if ent2 not in overlapped_entities:
+                            ent2.dxf.color = 3
+                            overlapped_entities.append(ent2)
+                        overlap_found = True
+                        break
+                    elif far_dist >= far_threshold:
+                        if case_name == "v0_1-v0_2":
+                            vec1 = v1_1 - v0_1
+                            vec2 = v1_2 - v0_2
+                            dim1_common, dim1_opposite = v0_1, v1_1
+                            dim2_common, dim2_opposite = v0_2, v1_2
+                        elif case_name == "v0_1-v1_2":
+                            vec1 = v1_1 - v0_1
+                            vec2 = v0_2 - v1_2
+                            dim1_common, dim1_opposite = v0_1, v1_1
+                            dim2_common, dim2_opposite = v1_2, v0_2
+                        elif case_name == "v1_1-v0_2":
+                            vec1 = v0_1 - v1_1
+                            vec2 = v1_2 - v0_2
+                            dim1_common, dim1_opposite = v1_1, v0_1
+                            dim2_common, dim2_opposite = v0_2, v1_2
+                        else:
+                            vec1 = v0_1 - v1_1
+                            vec2 = v0_2 - v1_2
+                            dim1_common, dim1_opposite = v1_1, v0_1
+                            dim2_common, dim2_opposite = v1_2, v0_2
+
+                        dot_product = np.dot(vec1, vec2)
+                        if dot_product < 0:
+                            if ent1 not in overlapped_entities and ent2 not in overlapped_entities:
+                                dim_pairs.append({
+                                    'DIM1': ent1, 'DIM1_common': dim1_common, 'DIM1_opposite': dim1_opposite,
+                                    'DIM2': ent2, 'DIM2_common': dim2_common, 'DIM2_opposite': dim2_opposite,
+                                    'common_point': (close_pt1 + close_pt2) / 2,
+                                    'length': (len1 + len2) / 2
+                                })
+                                valid_pair_found = True
+                                break
+                if valid_pair_found or overlap_found:
+                    break
+
+            if not overlap_found and not valid_pair_found:
+                reverse_dist1 = distance(v0_1, v1_2)
+                reverse_dist2 = distance(v1_1, v0_2)
+                if reverse_dist1 <= close_tolerance and reverse_dist2 <= close_tolerance:
+                    if ent1 not in overlapped_entities:
+                        ent1.dxf.color = 3
+                        overlapped_entities.append(ent1)
+                    if ent2 not in overlapped_entities:
+                        ent2.dxf.color = 3
+                        overlapped_entities.append(ent2)
+    return dim_pairs, overlapped_entities
+
+def find_arrow_entities_optimized(all_line_entities, point, tolerance=0.5):
+    arrows = []
+    for ent in all_line_entities:
+        try:
+            if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+                continue
+            if isinstance(ent, LWPolyline):
+                points = list(ent.get_points("xy"))
+            elif isinstance(ent, Polyline):
+                points = [v.dxf.location for v in ent.vertices]
+            else:
+                continue
+            if len(points) != 3:
+                continue
+            pts = [to2d(p) for p in points]
+            min_dist_to_point = min(distance(pt, point) for pt in pts)
+            if min_dist_to_point <= tolerance:
+                arrows.append(ent)
+        except Exception:
+            continue
+    return arrows
+
+def find_ad3_entities_optimized(all_line_entities, dim_pair, ad1_entities, ad2_entities, tolerance=0.5):
+    ad3_candidates = []
+    common_point = dim_pair['common_point']
+    dim1_common = dim_pair['DIM1_common']
+    dim1_opposite = dim_pair['DIM1_opposite']
+    dim2_common = dim_pair['DIM2_common']
+    dim2_opposite = dim_pair['DIM2_opposite']
+    dim_far_endpoints = [dim1_opposite, dim2_opposite]
+    excluded_handles = set()
+    for ad1 in ad1_entities:
+        excluded_handles.add(get_entity_handle(ad1))
+    for ad2 in ad2_entities:
+        excluded_handles.add(get_entity_handle(ad2))
+
+    for ent in all_line_entities:
+        try:
+            if not (ent.dxf.layer.startswith(DIM_LAYER_PREFIXES) or ent.dxf.layer.upper() == "ARROW"):
+                continue
+            if get_entity_handle(ent) in excluded_handles:
+                continue
+            if isinstance(ent, LWPolyline):
+                points = list(ent.get_points("xy"))
+            elif isinstance(ent, Polyline):
+                points = [v.dxf.location for v in ent.vertices]
+            else:
+                continue
+            if len(points) != 3:
+                continue
+            pts = [to2d(p) for p in points]
+            if ent.dxf.layer.upper() == "ARROW":
+                is_near_far_endpoint = False
+                for pt in pts:
+                    for far_endpoint in dim_far_endpoints:
+                        if distance(pt, far_endpoint) <= 0.5:
+                            is_near_far_endpoint = True
+                            break
+                    if is_near_far_endpoint:
+                        break
+                if is_near_far_endpoint:
+                    continue
+            min_dist_to_cp = min(distance(pt, common_point) for pt in pts)
+            if min_dist_to_cp <= tolerance:
+                ad3_candidates.append((ent, min_dist_to_cp))
+        except Exception:
+            continue
+
+    if ad3_candidates:
+        ad3_candidates.sort(key=lambda x: x[1])
+        return [ad3_candidates[0][0]]
+    return []
+
+def find_ad3_touching_dims(all_line_entities, dim1_ent, dim2_ent, ad1_entities, ad2_entities, tolerance=0.2):
+    touching_ad3 = []
+    dim1_segments = extract_segments(dim1_ent)
+    dim2_segments = extract_segments(dim2_ent)
+    if not dim1_segments or not dim2_segments:
+        return []
+    dim1_start, dim1_end = to2d(dim1_segments[0][0]), to2d(dim1_segments[0][1])
+    dim2_start, dim2_end = to2d(dim2_segments[0][0]), to2d(dim2_segments[0][1])
+    dim_endpoints = [dim1_start, dim1_end, dim2_start, dim2_end]
+    excluded_handles = {get_entity_handle(dim1_ent), get_entity_handle(dim2_ent)}
+    for ad1 in ad1_entities:
+        excluded_handles.add(get_entity_handle(ad1))
+    for ad2 in ad2_entities:
+        excluded_handles.add(get_entity_handle(ad2))
+
+    for ent in all_line_entities:
+        try:
+            if ent.dxf.layer.upper() != "GT_1":
+                continue
+            if get_entity_handle(ent) in excluded_handles:
+                continue
+            if isinstance(ent, LWPolyline):
+                points = list(ent.get_points("xy"))
+            elif isinstance(ent, Polyline):
+                points = [v.dxf.location for v in ent.vertices]
+            else:
+                continue
+            if len(points) != 3:
+                continue
+            pts = [to2d(p) for p in points]
+            is_near_endpoint = False
+            for pt in pts:
+                for endpoint in dim_endpoints:
+                    if distance(pt, endpoint) <= 0.5:
+                        is_near_endpoint = True
+                        break
+                if is_near_endpoint:
+                    break
+            if is_near_endpoint:
+                continue
+            is_touching = False
+            for pt in pts:
+                dist_to_dim1 = point_to_line_distance(pt, dim1_start, dim1_end)
+                dist_to_dim2 = point_to_line_distance(pt, dim2_start, dim2_end)
+                if dist_to_dim1 <= tolerance or dist_to_dim2 <= tolerance:
+                    is_touching = True
+                    break
+            if is_touching:
+                touching_ad3.append(ent)
+        except Exception:
+            continue
+    return touching_ad3
+
+def find_arrow_lines_touching_ad3(all_line_entities, ad3_entities, tolerance=0.1):
+    arrow_lines_to_delete = []
+    ad3_points = []
+    for ad3 in ad3_entities:
+        try:
+            if isinstance(ad3, LWPolyline):
+                points = list(ad3.get_points("xy"))
+            elif isinstance(ad3, Polyline):
+                points = [v.dxf.location for v in ad3.vertices]
+            else:
+                continue
+            for p in points:
+                ad3_points.append(to2d(p))
+        except Exception:
+            continue
+    for ent in all_line_entities:
+        if not isinstance(ent, Line):
+            continue
+        try:
+            if ent.dxf.layer.upper() != "ARROW":
+                continue
+            segments = extract_segments(ent)
+            if not segments:
+                continue
+            p0, p1 = segments[0]
+            v0, v1 = to2d(p0), to2d(p1)
+            line_length = distance(v0, v1)
+            if line_length > 1.0:
+                continue
+            is_touching_ad3 = False
+            for ad3_pt in ad3_points:
+                if distance(v0, ad3_pt) <= tolerance or distance(v1, ad3_pt) <= tolerance:
+                    is_touching_ad3 = True
+                    break
+            if is_touching_ad3:
+                arrow_lines_to_delete.append(ent)
+        except Exception:
+            continue
+    return arrow_lines_to_delete
+
+def find_g1_entities_optimized_with_all_dims(all_line_entities, dim1_ent, dim2_ent, dim_pair, all_used_dim_handles, tolerance=0.2):
+    g1_candidates = []
+    dim1_segments = extract_segments(dim1_ent)
+    dim2_segments = extract_segments(dim2_ent)
+    if not dim1_segments or not dim2_segments:
+        return []
+    dim1_start, dim1_end = to2d(dim1_segments[0][0]), to2d(dim1_segments[0][1])
+    dim2_start, dim2_end = to2d(dim2_segments[0][0]), to2d(dim2_segments[0][1])
+    common_point = dim_pair['common_point']
+    dim1_common = dim_pair['DIM1_common']
+    dim1_opposite = dim_pair['DIM1_opposite']
+    dim2_common = dim_pair['DIM2_common']
+    dim2_opposite = dim_pair['DIM2_opposite']
+
+    for ent in all_line_entities:
+        try:
+            if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+                continue
+            if get_entity_handle(ent) in all_used_dim_handles:
+                continue
+            segments = extract_segments(ent)
+            if len(segments) != 1:
+                continue
+            p0, p1 = segments[0]
+            v0, v1 = to2d(p0), to2d(p1)
+            min_dist_to_far_ends = min(
+                distance(v0, dim1_opposite), distance(v1, dim1_opposite),
+                distance(v0, dim2_opposite), distance(v1, dim2_opposite)
+            )
+            far_end_exclusion_distance = 0.5
+            if min_dist_to_far_ends <= far_end_exclusion_distance:
+                continue
+            min_dist_to_valid_area = float('inf')
+            for g1_pt in [v0, v1]:
+                dist_to_common = distance(g1_pt, common_point)
+                if dist_to_common < min_dist_to_valid_area:
+                    min_dist_to_valid_area = dist_to_common
+            for g1_pt in [v0, v1]:
+                dist_to_dim1_common = distance(g1_pt, dim1_common)
+                dist_to_dim1_line = point_to_line_distance(g1_pt, dim1_start, dim1_end)
+                min_dist_dim1 = min(dist_to_dim1_common, dist_to_dim1_line)
+                if min_dist_dim1 < min_dist_to_valid_area:
+                    min_dist_to_valid_area = min_dist_dim1
+            for g1_pt in [v0, v1]:
+                dist_to_dim2_common = distance(g1_pt, dim2_common)
+                dist_to_dim2_line = point_to_line_distance(g1_pt, dim2_start, dim2_end)
+                min_dist_dim2 = min(dist_to_dim2_common, dist_to_dim2_line)
+                if min_dist_dim2 < min_dist_to_valid_area:
+                    min_dist_to_valid_area = min_dist_dim2
+            if min_dist_to_valid_area <= tolerance:
+                g1_candidates.append((ent, v0, v1, min_dist_to_valid_area))
+        except Exception:
+            continue
+    if g1_candidates:
+        g1_candidates.sort(key=lambda x: x[3])
+        closest_g1 = g1_candidates[0]
+        return [(closest_g1[0], closest_g1[1], closest_g1[2])]
+    return []
+
+def find_ct_texts(msp, g1_entities, text_entities, dim_pair, search_radius=10.0):
+    ct_texts = []
+    common_point = dim_pair['common_point']
+    for g1_ent, v0, v1 in g1_entities:
+        dist_to_common_v0 = distance(v0, common_point)
+        dist_to_common_v1 = distance(v1, common_point)
+        search_point = v0 if dist_to_common_v0 > dist_to_common_v1 else v1
+        candidates = []
+        for txt in text_entities:
+            try:
+                if hasattr(txt.dxf, 'color') and txt.dxf.color == 1:
+                    continue
+                if hasattr(txt.dxf, 'layer') and 'WDNO' in txt.dxf.layer.upper():
+                    continue
+                if hasattr(txt.dxf, 'insert') and txt.dxf.insert is not None:
+                    txt_pt = to2d(txt.dxf.insert)
+                elif (hasattr(txt.dxf, 'align_point') and txt.dxf.align_point is not None):
+                    txt_pt = to2d(txt.dxf.align_point)
+                else:
+                    continue
+            except:
+                continue
+            dist = distance(txt_pt, search_point)
+            if dist > search_radius:
+                continue
+            rotation = float(getattr(txt.dxf, "rotation", 0.0))
+            if abs(rotation) > 0.1:
+                continue
+            text_val = txt.plain_text() if hasattr(txt, "plain_text") else txt.dxf.text
+            if not text_val.isdigit():
+                continue
+            try:
+                text_numeric_value = int(text_val)
+                if text_numeric_value <= 10:
+                    continue
+            except:
+                continue
+            if is_enclosed(txt_pt, msp):
+                continue
+            tbox_info = create_tbox(txt)
+            if tbox_info is None:
+                continue
+            min_dist_to_tbox = min(distance(search_point, corner) for corner in tbox_info['corners'])
+            candidates.append((min_dist_to_tbox, txt, text_numeric_value, tbox_info))
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            selected_candidate = candidates[0]
+            closest_txt = selected_candidate[1]
+            ct_texts.append(closest_txt)
+            break
+    return ct_texts
+
+def get_text_dimensions(txt):
+    try:
+        if txt.dxftype() == "TEXT":
+            text_val = txt.dxf.text
+            height = float(txt.dxf.height)
+            char_width = height * 0.6
+            text_length = len(text_val) * char_width
+            return text_length, height
+        elif txt.dxftype() == "MTEXT":
+            text_val = txt.plain_text() if hasattr(txt, "plain_text") else txt.dxf.text
+            height = float(txt.dxf.char_height) if hasattr(txt.dxf, 'char_height') else 1.0
+            char_width = height * 0.6
+            text_length = len(text_val) * char_width
+            return text_length, height
+    except Exception:
+        return 0.0, 0.0
+    return 0.0, 0.0
+
+def check_ct_dim_interference(ct_position, text_length, text_height, dim1_start, dim1_end, dim2_start, dim2_end):
+    interference_threshold = text_height * 0.6
+    dist_to_dim1 = point_to_line_distance(ct_position, dim1_start, dim1_end)
+    dist_to_dim2 = point_to_line_distance(ct_position, dim2_start, dim2_end)
+    dim1_interference = dist_to_dim1 < interference_threshold
+    dim2_interference = dist_to_dim2 < interference_threshold
+    return dim1_interference or dim2_interference, dist_to_dim1, dist_to_dim2
+
+def calculate_chain_direction(dim1_ent, dim2_ent):
+    dim1_segments = extract_segments(dim1_ent)
+    if dim1_segments:
+        p0, p1 = dim1_segments[0]
+        v0, v1 = to2d(p0), to2d(p1)
+        chain_dir = angle_deg(v0, v1)
+        return chain_dir
+    return 0.0
+
+def calculate_text_angle(chain_dir):
+    angle = chain_dir % 360
+    if abs(angle - 90) <= ANGLE_TOLERANCE or abs(angle - 270) <= ANGLE_TOLERANCE:
+        angle = 90.0
+    else:
+        if 90 < angle < 270:
+            angle = (angle + 180) % 360
+    return angle
+
+def find_parallel_polylines_for_ang(msp, dim_pair, tolerance=0.5):
+    dim1_opposite = dim_pair['DIM1_opposite']
+    dim2_opposite = dim_pair['DIM2_opposite']
+    excluded_handles = {
+        get_entity_handle(dim_pair['DIM1']),
+        get_entity_handle(dim_pair['DIM2'])
+    }
+    search_points = [dim1_opposite, dim2_opposite]
+    found_polylines = []
+    for search_point in search_points:
+        for ent in msp.query("LWPOLYLINE POLYLINE"):
+            try:
+                if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+                    continue
+                if get_entity_handle(ent) in excluded_handles:
+                    continue
+                if isinstance(ent, LWPolyline):
+                    points = list(ent.get_points("xy"))
+                else:
+                    points = [v.dxf.location for v in ent.vertices]
+                if len(points) != 2:
+                    continue
+                pts = [to2d(p) for p in points]
+                min_distance = min(distance(pt, search_point) for pt in pts)
+                if min_distance <= tolerance:
+                    polyline_angle = angle_deg(pts[0], pts[1])
+                    found_polylines.append((ent, polyline_angle, min_distance, search_point))
+            except Exception:
+                continue
+    if found_polylines:
+        found_polylines.sort(key=lambda x: x[2])
+        closest_polyline = found_polylines[0]
+        ang_angle = closest_polyline[1]
+        return ang_angle
+    else:
+        return 0.0
+
+def find_and_color_ct1_polylines(msp, dim_pair, tolerance=0.5):
+    dim1_common = dim_pair['DIM1_common']
+    dim1_opposite = dim_pair['DIM1_opposite']
+    excluded_handles = {
+        get_entity_handle(dim_pair['DIM1']),
+        get_entity_handle(dim_pair['DIM2'])
+    }
+    search_points = [dim1_common, dim1_opposite]
+    found_polylines = []
+    for search_point in search_points:
+        for ent in msp.query("LWPOLYLINE POLYLINE"):
+            try:
+                if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+                    continue
+                if get_entity_handle(ent) in excluded_handles:
+                    continue
+                if isinstance(ent, LWPolyline):
+                    points = list(ent.get_points("xy"))
+                else:
+                    points = [v.dxf.location for v in ent.vertices]
+                if len(points) != 2:
+                    continue
+                pts = [to2d(p) for p in points]
+                min_distance = min(distance(pt, search_point) for pt in pts)
+                if min_distance <= tolerance:
+                    found_polylines.append((ent, min_distance))
+            except Exception:
+                continue
+    if found_polylines:
+        found_polylines.sort(key=lambda x: x[1])
+        closest_polyline = found_polylines[0][0]
+        closest_polyline.dxf.color = 7
+
+def process_ct_text_with_enhanced_interference_check(txt, g1_ent, v0, v1, text_angle, common_point, dim_pair, msp):
+    try:
+        if hasattr(txt.dxf, 'insert') and txt.dxf.insert is not None:
+            current_pos = to2d(txt.dxf.insert)
+        elif (hasattr(txt.dxf, 'align_point') and txt.dxf.align_point is not None):
+            current_pos = to2d(txt.dxf.align_point)
+        else:
+            return
+    except:
+        return
+
+    dim1_ent = dim_pair['DIM1']
+    dim2_ent = dim_pair['DIM2']
+    dim1_segments = extract_segments(dim1_ent)
+    dim2_segments = extract_segments(dim2_ent)
+    if not dim1_segments or not dim2_segments:
+        return
+    dim1_start, dim1_end = to2d(dim1_segments[0][0]), to2d(dim1_segments[0][1])
+    dim2_start, dim2_end = to2d(dim2_segments[0][0]), to2d(dim2_segments[0][1])
+
+    dim_length = dim_pair['length']
+    is_ct1 = 1.2 <= dim_length <= 1.5
+
+    if is_ct1:
+        final_angle = 0.0
+        find_and_color_ct1_polylines(msp, dim_pair)
+    else:
+        use_ang_angle = 1.5 <= dim_length <= 2.0
+        if use_ang_angle:
+            ang_angle = find_parallel_polylines_for_ang(msp, dim_pair)
+            final_angle = ang_angle
+        else:
+            final_angle = text_angle
+
+    text_length, text_height = get_text_dimensions(txt)
+    text_half_length = text_length / 2.0
+    text_angle_rad = math.radians(final_angle)
+    text_direction = np.array([math.cos(text_angle_rad), math.sin(text_angle_rad)])
+    text_perpendicular = np.array([-math.sin(text_angle_rad), math.cos(text_angle_rad)])
+
+    cp_centered_point = common_point - text_direction * text_half_length
+    current_text_center = cp_centered_point + text_direction * text_half_length
+    cp_to_text_center_vec = current_text_center - common_point
+    cp_to_text_center_distance = np.linalg.norm(cp_to_text_center_vec)
+    if cp_to_text_center_distance > 0:
+        cp_to_text_center_direction = cp_to_text_center_vec / cp_to_text_center_distance
+        move_0_6mm = cp_to_text_center_direction * 0.6
+        intermediate_point = cp_centered_point + move_0_6mm
+    else:
+        move_0_6mm = text_direction * 0.6
+        intermediate_point = cp_centered_point + move_0_6mm
+
+    interference_detected, _, _ = check_ct_dim_interference(
+        intermediate_point, text_length, text_height, dim1_start, dim1_end, dim2_start, dim2_end
+    )
+    final_position = intermediate_point
+
+    if interference_detected:
+        if cp_to_text_center_distance > 0:
+            interference_avoid_move = -cp_to_text_center_direction * 1.2
+            candidate_position = intermediate_point + interference_avoid_move
+        else:
+            interference_avoid_move = -text_direction * 1.2
+            candidate_position = intermediate_point + interference_avoid_move
+
+        interference_still_detected, _, _ = check_ct_dim_interference(
+            candidate_position, text_length, text_height, dim1_start, dim1_end, dim2_start, dim2_end
+        )
+        if not interference_still_detected:
+            final_position = candidate_position
+        else:
+            positions_to_try = []
+            for offset in [1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0]:
+                side_move = text_perpendicular * offset
+                test_position = candidate_position + side_move
+                positions_to_try.append(test_position)
+            for offset in [1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0]:
+                vertical_move = text_direction * offset
+                test_position = candidate_position + vertical_move
+                positions_to_try.append(test_position)
+            best_position = candidate_position
+            for test_pos in positions_to_try:
+                test_interference, _, _ = check_ct_dim_interference(
+                    test_pos, text_length, text_height, dim1_start, dim1_end, dim2_start, dim2_end
+                )
+                if not test_interference:
+                    best_position = test_pos
+                    break
+            final_position = best_position
+
+    final_to_cp_vec = common_point - final_position
+    final_to_cp_distance = np.linalg.norm(final_to_cp_vec)
+    if final_to_cp_distance > 0:
+        final_to_cp_direction = final_to_cp_vec / final_to_cp_distance
+        cp_move_2mm = final_to_cp_direction * 2.0
+        final_position = final_position + cp_move_2mm
+
+    move_distance = -2
+    dim1_segments = extract_segments(dim_pair['DIM1'])
+    if dim1_segments:
+        dim1_start, dim1_end = to2d(dim1_segments[0][0]), to2d(dim1_segments[0][1])
+        dim1_vec = dim1_end - dim1_start
+        dim1_length = np.linalg.norm(dim1_vec)
+        if dim1_length > 0:
+            dim1_unit = dim1_vec / dim1_length
+            to_cp_vec = common_point - final_position
+            projection_length = np.dot(to_cp_vec, dim1_unit)
+            if projection_length > 0:
+                move_direction = dim1_unit
+            else:
+                move_direction = -dim1_unit
+            final_position = final_position + move_direction * move_distance
+
+    if txt.dxftype() == "TEXT":
+        old_z = float(txt.dxf.insert[2]) if len(txt.dxf.insert) > 2 else 0.0
+        txt.dxf.insert = (float(final_position[0]), float(final_position[1]), old_z)
+        txt.dxf.halign = 0
+        txt.dxf.valign = 0
+        try:
+            if hasattr(txt.dxf, 'align_point'):
+                delattr(txt.dxf, 'align_point')
+        except:
+            pass
+        txt.dxf.rotation = float(final_angle)
+    elif txt.dxftype() == "MTEXT":
+        old_z = float(txt.dxf.insert[2]) if len(txt.dxf.insert) > 2 else 0.0
+        txt.dxf.insert = (float(final_position[0]), float(final_position[1]), old_z)
+        txt.dxf.attachment_point = 1
+        txt.dxf.rotation = float(final_angle)
+    return is_ct1
+
+def process_dimension_system(msp, text_entities):
+    all_line_entities = list(msp.query("LINE LWPOLYLINE POLYLINE"))
+    dim_pairs, overlapped_entities = find_dim_pairs_optimized(all_line_entities)
+
+    all_processed_entities = []
+    all_ct_texts = []
+    all_ct1_texts = []
+    g1_entities_to_delete = []
+    ad3_entities_to_delete = []
+    arrow_lines_to_delete = []
+    protected_entities = set()
+    protected_entities_list = []
+    all_ad1_ad2_entities = []
+    all_dim_far_endpoints = []
+
+    all_used_dim_handles = set()
+    for dim_pair in dim_pairs:
+        all_used_dim_handles.add(get_entity_handle(dim_pair['DIM1']))
+        all_used_dim_handles.add(get_entity_handle(dim_pair['DIM2']))
+
+    all_processed_entities.extend(overlapped_entities)
+
+    for dim_pair in dim_pairs:
+        dim1 = dim_pair['DIM1']
+        dim2 = dim_pair['DIM2']
+        dim1_opposite = dim_pair['DIM1_opposite']
+        dim2_opposite = dim_pair['DIM2_opposite']
+        dim1_common = dim_pair['DIM1_common']
+        dim2_common = dim_pair['DIM2_common']
+
+        all_dim_far_endpoints.extend([dim1_opposite, dim2_opposite])
+
+        protected_entities.add(get_entity_handle(dim1))
+        protected_entities.add(get_entity_handle(dim2))
+        protected_entities_list.append(dim1)
+        protected_entities_list.append(dim2)
+
+        chain_dir = calculate_chain_direction(dim1, dim2)
+        text_angle = calculate_text_angle(chain_dir)
+
+        dim1.dxf.color = 3
+        dim2.dxf.color = 3
+        all_processed_entities.extend([dim1, dim2])
+
+        ad1_entities = find_arrow_entities_optimized(all_line_entities, dim1_opposite)
+        ad2_entities = find_arrow_entities_optimized(all_line_entities, dim2_opposite)
+
+        for ad1 in ad1_entities:
+            protected_entities.add(get_entity_handle(ad1))
+            protected_entities_list.append(ad1)
+            all_ad1_ad2_entities.append(ad1)
+        for ad2 in ad2_entities:
+            protected_entities.add(get_entity_handle(ad2))
+            protected_entities_list.append(ad2)
+            all_ad1_ad2_entities.append(ad2)
+
+        for ad1 in ad1_entities:
+            ad1.dxf.color = 2
+            all_processed_entities.append(ad1)
+        for ad2 in ad2_entities:
+            ad2.dxf.color = 2
+            all_processed_entities.append(ad2)
+
+        ad3_entities = find_ad3_entities_optimized(all_line_entities, dim_pair, ad1_entities, ad2_entities)
+        g1_entities = find_g1_entities_optimized_with_all_dims(
+            all_line_entities, dim1, dim2, dim_pair, all_used_dim_handles
+        )
+
+        ct_found = False
+        for g1_ent, v0, v1 in g1_entities:
+            g1_ent.dxf.color = 1
+            all_processed_entities.append(g1_ent)
+            g1_entities_to_delete.append(g1_ent)
+            ct_texts = find_ct_texts(msp, [(g1_ent, v0, v1)], text_entities, dim_pair)
+            if ct_texts:
+                ct_found = True
+                for ct in ct_texts:
+                    ct.dxf.color = 2
+                    is_ct1 = process_ct_text_with_enhanced_interference_check(
+                        ct, g1_ent, v0, v1, text_angle, dim_pair['common_point'], dim_pair, msp
+                    )
+                    if is_ct1:
+                        all_ct1_texts.append(ct)
+                    else:
+                        all_ct_texts.append(ct)
+
+        if ct_found:
+            for ad3 in ad3_entities:
+                if (get_entity_handle(ad3) not in protected_entities and
+                    ad3 not in all_ad1_ad2_entities and
+                    ad3 not in protected_entities_list):
+                    ad3.dxf.color = 4
+                    all_processed_entities.append(ad3)
+                    ad3_entities_to_delete.append(ad3)
+                else:
+                    ad3.dxf.color = 2
+                    all_processed_entities.append(ad3)
+        else:
+            for ad3 in ad3_entities:
+                ad3.dxf.color = 2
+                all_processed_entities.append(ad3)
+
+        touching_ad3 = find_ad3_touching_dims(all_line_entities, dim1, dim2, ad1_entities, ad2_entities)
+        for touching_ad3_ent in touching_ad3:
+            if (get_entity_handle(touching_ad3_ent) not in protected_entities and
+                touching_ad3_ent not in ad3_entities_to_delete and
+                touching_ad3_ent not in all_ad1_ad2_entities and
+                touching_ad3_ent not in protected_entities_list):
+                touching_ad3_ent.dxf.color = 4
+                all_processed_entities.append(touching_ad3_ent)
+                ad3_entities_to_delete.append(touching_ad3_ent)
+
+    for ent in all_line_entities:
+        try:
+            if ent.dxf.layer.upper() == "ARROW":
+                if isinstance(ent, LWPolyline):
+                    points = list(ent.get_points("xy"))
+                elif isinstance(ent, Polyline):
+                    points = [v.dxf.location for v in ent.vertices]
+                else:
+                    continue
+                pts = [to2d(p) for p in points]
+                for pt in pts:
+                    for far_endpoint in all_dim_far_endpoints:
+                        if distance(pt, far_endpoint) <= 0.5:
+                            protected_entities.add(get_entity_handle(ent))
+                            break
+        except Exception:
+            continue
+
+    arrow_lines = find_arrow_lines_touching_ad3(all_line_entities, ad3_entities_to_delete)
+    for arrow_line in arrow_lines:
+        if (get_entity_handle(arrow_line) not in protected_entities and
+            arrow_line not in protected_entities_list):
+            arrow_line.dxf.color = 4
+            all_processed_entities.append(arrow_line)
+            arrow_lines_to_delete.append(arrow_line)
+
+    ad3_entities_to_delete_final = []
+    for ad3_ent in ad3_entities_to_delete:
+        if (ad3_ent not in all_ad1_ad2_entities and
+            ad3_ent not in protected_entities_list and
+            get_entity_handle(ad3_ent) not in protected_entities):
+            ad3_entities_to_delete_final.append(ad3_ent)
+
+    arrow_lines_to_delete_final = []
+    for arrow_line in arrow_lines_to_delete:
+        if (arrow_line not in all_ad1_ad2_entities and
+            arrow_line not in protected_entities_list and
+            get_entity_handle(arrow_line) not in protected_entities):
+            arrow_lines_to_delete_final.append(arrow_line)
+
+    for ad3_ent in ad3_entities_to_delete_final:
+        try:
+            if (get_entity_handle(ad3_ent) not in protected_entities and
+                ad3_ent not in protected_entities_list and
+                ad3_ent not in all_ad1_ad2_entities):
+                msp.delete_entity(ad3_ent)
+        except:
+            pass
+
+    for g1_ent in g1_entities_to_delete:
+        try:
+            if get_entity_handle(g1_ent) not in protected_entities:
+                msp.delete_entity(g1_ent)
+        except:
+            pass
+
+    for arrow_line in arrow_lines_to_delete_final:
+        try:
+            if (get_entity_handle(arrow_line) not in protected_entities and
+                arrow_line not in protected_entities_list):
+                msp.delete_entity(arrow_line)
+        except:
+            pass
+
+    return all_processed_entities, all_ct_texts, all_ct1_texts
+
+# ─────────────── 메인 파이프라인 ───────────────
+def auto_align_dxf(input_dxf, output_dxf):
+    if not os.path.isfile(input_dxf):
+        return False
+    try:
+        clear_tbox_cache()
+        doc = ezdxf.readfile(input_dxf)
+        msp = doc.modelspace()
+        text_entities = list(msp.query("TEXT MTEXT"))
+        processed_entities, ct_texts, ct1_texts = process_dimension_system(msp, text_entities)
+        doc.saveas(output_dxf)
+        clear_tbox_cache()
+        return True
+    except Exception:
+        clear_tbox_cache()
+        return False
+
+def process_cli_files(file_list):
+    for input_file in file_list:
+        try:
+            file_dir = os.path.dirname(input_file)
+            base = os.path.splitext(os.path.basename(input_file))[0]
+            output_file = os.path.join(file_dir, f"{base}_DIM.dxf")
+            auto_align_dxf(input_file, output_file)
+        except Exception:
+            pass
 
 if __name__ == "__main__":
-    main()
+    # CLI: 여러 DXF 파일 경로를 인자로 받아 각 파일을 *_DIM.dxf로 저장
+    # 예) python PLTONEWLINE.PY A.dxf B.dxf C.dxf
+    args = [a for a in sys.argv[1:] if a.lower().endswith(".dxf")]
+    if args:
+        process_cli_files(args)
