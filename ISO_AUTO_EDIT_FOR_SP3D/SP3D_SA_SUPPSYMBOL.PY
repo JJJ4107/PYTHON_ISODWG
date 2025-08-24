@@ -1,6 +1,4 @@
 import ezdxf
-import tkinter as tk
-from tkinter import filedialog
 import math
 import os
 import traceback
@@ -153,8 +151,6 @@ def find_s1_candidates(msp):
         if is_valid_s1(e):
             pts = extract_points(e)
             s1_list.append({'ent': e, 'pts': pts})
-    if s1_list:
-        print(f"✅ 유효한 S1 개수: {len(s1_list)}")
     return s1_list
 
 # ---------- Fallback: SUPP 원(C1) + PIPE LINE ----------
@@ -178,8 +174,6 @@ def find_supp_cyan_circles_as_fallback(msp, doc):
         if (FALLBACK_DIAM_MIN - DIAM_TOL) <= dia <= (FALLBACK_DIAM_MAX + DIAM_TOL):
             cx, cy = e.dxf.center.x, e.dxf.center.y
             found.append({'ent': e, 'center': (cx, cy), 'dia': dia})
-    if found:
-        print(f"⚠️ Fallback 후보(C1) {len(found)}개 발견 (지름 {FALLBACK_DIAM_MIN}~{FALLBACK_DIAM_MAX}mm ±{DIAM_TOL})")
     return found
 
 def find_pipe_lines_through_center(msp, center, tol=1.0):
@@ -907,17 +901,14 @@ def process_type2_support(msp, a1_data, a2_data, ct_entity, cp_center, orthogona
 
     return None
 
-    return None
-
 # ---------- 메인 ----------
 def main():
-    root = tk.Tk(); root.withdraw()
-    files = filedialog.askopenfilenames(title="DXF 파일 선택", filetypes=[("DXF Files", "*.dxf")])
-    if not files:
-        print("선택된 파일 없음"); return
+    if len(sys.argv) < 2:
+        sys.exit(1)
+
+    files = sys.argv[1:]
 
     for filepath in files:
-        print(f"\n🔧 처리중: {filepath}")
         try:
             doc = ezdxf.readfile(filepath)
             msp = doc.modelspace()
@@ -1136,23 +1127,18 @@ def main():
                         break  # rec1에 대해 한 쌍만
 
                 # 3) 특수(ELBO/TEE) 처리 — dedupe 세트 전달
-                print("\n🔧 ELBO 및 TEE TEXT 특수 노드 처리 시작...")
                 special_nodes_count, created_nodes_set, used_entities_set = process_special_nodes(msp, doc, created_nodes_set, used_entities_set)
-                print(f"✅ 특수 노드 처리 완료: {special_nodes_count}개 노드 생성됨")
 
                 # 4) NODE 텍스트 추가
-                print("\n📝 텍스트 추가 시작...")
                 text_count = 0
                 for pos in texts_to_add:
                     if add_text_to_node(msp, pos, TEXT_VALUE, TEXT_HEIGHT, YELLOW, 'NODE', doc):
                         text_count += 1
-                print(f"✅ {text_count}/{len(texts_to_add)}개 텍스트 추가 완료")
 
                 # AD1/AD2/AD3/CT는 삭제하지 않음
 
             # ===== (B) Fallback: S1로 CP가 0건이면 C1/D1 경로 수행 =====
             if cp_created_count == 0 and c1_candidates:
-                print("ℹ️ S1 경로에서 CP 생성 0건 → C1 기반 fallback 실행")
                 c1_to_delete = []
                 texts_to_add_fb = []
 
@@ -1168,7 +1154,6 @@ def main():
                     # (2) PIPE 엔티티로 pipe 각도 계산(없으면 0도)
                     if pipe_lines:
                         pipe_angle = pipe_angle_from_lines(pipe_lines)
-                        print(f"  PIPE 엔티티 {len(pipe_lines)}개 발견, 파이프 각도: {math.degrees(pipe_angle):.1f}°")
                         
                         # PIPE 엔티티들의 레이어를 ACESP3D로 변경
                         acesp3d_count = 0
@@ -1178,11 +1163,8 @@ def main():
                                 acesp3d_count += 1
                             except:
                                 pass
-                        if acesp3d_count > 0:
-                            print(f"  {acesp3d_count}개 PIPE 엔티티의 레이어를 ACESP3D로 변경")
                     else:
                         pipe_angle = 0.0
-                        print(f"  PIPE 엔티티 미발견, 기본 각도 0° 사용")
 
                     # (3) CP 원(지름 0.5mm) — 색상 변경 제거
                     cp_circle = msp.add_circle(center=center, radius=HALF_SL1)
@@ -1207,38 +1189,28 @@ def main():
                     texts_to_add_fb.append(nodeno_pos)
 
                 # (5) 특수(ELBO/TEE) 처리 — dedupe 세트 전달(중복 방지)
-                print("\n🔧 (Fallback) ELBO/TEE 특수 노드 처리 시작...")
                 special_nodes_count_fb, created_nodes_set, used_entities_set = process_special_nodes(msp, doc, created_nodes_set, used_entities_set)
-                print(f"✅ (Fallback) 특수 노드 처리 완료: {special_nodes_count_fb}개 노드 생성됨(중복 제외)")
 
                 # (6) NODE 텍스트
-                print("\n📝 (Fallback) 텍스트 추가 시작...")
                 text_count = 0
                 for pos in texts_to_add_fb:
                     if add_text_to_node(msp, pos, TEXT_VALUE, TEXT_HEIGHT, YELLOW, 'NODE', doc):
                         text_count += 1
-                print(f"✅ (Fallback) {text_count}/{len(texts_to_add_fb)}개 텍스트 추가 완료")
 
                 # (7) C1 삭제 (D1 관련 코드는 제거)
-                print("\n🗑️ (Fallback) C1 삭제 시작...")
                 del_cnt = 0
                 for ent in c1_to_delete:
                     try:
                         msp.delete_entity(ent); del_cnt += 1
                     except:
                         pass
-                print(f"✅ (Fallback) C1 {del_cnt}개 엔티티 삭제 완료")
 
             # 저장
             out_path = os.path.splitext(filepath)[0] + '_SA.dxf'
             doc.saveas(out_path)
-            print(f"✅ 저장됨: {out_path}")
 
         except Exception as e:
-            print(f"❌ 오류 발생 @ {filepath}")
             traceback.print_exc(file=sys.stdout)
-
-    print("🎉 전체 작업 완료")
 
 if __name__ == '__main__':
     main()

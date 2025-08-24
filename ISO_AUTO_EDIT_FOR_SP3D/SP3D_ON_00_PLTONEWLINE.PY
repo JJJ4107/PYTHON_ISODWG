@@ -1,9 +1,8 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox
 import ezdxf
 import os
 import math
 import re
+import sys
 
 # -------------------- 공용 기하 유틸 --------------------
 def calculate_polyline_area(points):
@@ -534,53 +533,19 @@ def process_dxf_file(filepath):
     except Exception as e:
         return False, f"처리 중 오류 발생: {e}"
 
-# -------------------- 파일 선택/일괄 처리 --------------------
-def select_and_process_files():
-    root = tk.Tk()
-    root.withdraw()
-    file_paths = filedialog.askopenfilenames(
-        title="DXF 파일 선택",
-        filetypes=[("DXF files", "*.dxf"), ("All files", "*.*")],
-        multiple=True
-    )
-    if not file_paths:
-        messagebox.showinfo("알림", "선택된 파일이 없습니다.")
-        return
-
+# -------------------- 실행부 --------------------
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.exit(1)
+    
+    file_paths = sys.argv[1:]
+    
     success_count = 0
     error_files = []
-    detailed_results = []
-
+    
     for filepath in file_paths:
-        print(f"\n처리 중: {os.path.basename(filepath)}")
         success, result = process_dxf_file(filepath)
         if success:
             success_count += 1
-            detailed_results.append((os.path.basename(filepath), result))
-            print(f"처리 완료: {filepath}")
         else:
             error_files.append((filepath, result))
-            print(f"처리 실패: {filepath} - {result}")
-
-    message = f"처리 완료!\n\n성공: {success_count}개 파일"
-    if error_files:
-        message += f"\n\n실패: {len(error_files)}개 파일\n실패 파일 목록:"
-        for file, error in error_files:
-            message += f"\n- {os.path.basename(file)}: {error}"
-    # messagebox.showinfo("처리 결과", message)
-
-    root.destroy()
-
-# -------------------- 실행부 --------------------
-if __name__ == "__main__":
-    try:
-        import ezdxf
-        print(f"ezdxf 버전: {ezdxf.__version__}")
-    except ImportError:
-        print("ezdxf 라이브러리가 설치되어 있지 않습니다.")
-        print("설치: pip install ezdxf")
-        exit(1)
-
-    print("DXF 파일 일괄 처리 프로그램")
-    print("파일 선택 대화상자가 열립니다...")
-    select_and_process_files()
