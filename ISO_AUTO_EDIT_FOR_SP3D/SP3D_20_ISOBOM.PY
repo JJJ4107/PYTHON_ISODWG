@@ -633,12 +633,20 @@ for file_path in file_paths:
         # 분류 정보 출력
         if erection_materials_found:
             print(f"\n  - ERECTION MATERIALS 기준으로 FAB/EREC 분류")
-            print(f"    인덱스 {erection_materials_index} 이전: FAB MATERIAL")
-            print(f"    인덱스 {erection_materials_index} 이후: EREC MATERIAL")
+            print(f"    인덱스 0 ~ {erection_materials_index}: FAB MATERIAL")
+            print(f"    인덱스 {erection_materials_index + 1} ~ 끝: EREC MATERIAL")
+            # 실제 데이터 확인
+            if len(all_rows_data) > erection_materials_index + 1:
+                first_erec = all_rows_data[erection_materials_index + 1]
+                print(f"    첫 번째 EREC 데이터: PT={first_erec.get('pt', '')}, Y={first_erec.get('y_pos', ''):.1f}")
         elif fabrication_weight_found:
             print(f"\n  - FABRICATION WEIGHT 기준으로 FAB/EREC 분류")
-            print(f"    인덱스 {fabrication_weight_index} 이전: FAB MATERIAL")
-            print(f"    인덱스 {fabrication_weight_index} 이후: EREC MATERIAL")
+            print(f"    인덱스 0 ~ {fabrication_weight_index}: FAB MATERIAL")
+            print(f"    인덱스 {fabrication_weight_index + 1} ~ 끝: EREC MATERIAL")
+            # 실제 데이터 확인
+            if len(all_rows_data) > fabrication_weight_index + 1:
+                first_erec = all_rows_data[fabrication_weight_index + 1]
+                print(f"    첫 번째 EREC 데이터: PT={first_erec.get('pt', '')}, Y={first_erec.get('y_pos', ''):.1f}")
         else:
             print(f"\n  - ERECTION MATERIALS/FABRICATION WEIGHT 없음: 모두 FAB MATERIAL로 분류")
         
@@ -663,20 +671,37 @@ for file_path in file_paths:
         
         # Y 좌표 기준으로 인덱스 결정
         if fabrication_weight_y:
+            found_index = -1
+            print(f"\n    FABRICATION WEIGHT Y={fabrication_weight_y:.1f} 기준 분석:")
             for i, row in enumerate(all_rows_data):
-                if row['y_pos'] < fabrication_weight_y:  # FABRICATION WEIGHT보다 아래
-                    fabrication_weight_found = True
-                    fabrication_weight_index = i
-                    print(f"    → FABRICATION WEIGHT 기준 인덱스: {i} (Y={fabrication_weight_y:.1f} 이하)")
+                row_y = row['y_pos']
+                print(f"      인덱스 {i}: Y={row_y:.1f}, PT={row.get('pt', '')}")
+                if row_y < fabrication_weight_y:  # FABRICATION WEIGHT보다 아래
+                    found_index = i
+                    print(f"      → 첫 번째 EREC 데이터 발견!")
                     break
+            
+            if found_index >= 0:
+                fabrication_weight_found = True
+                fabrication_weight_index = found_index - 1  # 바로 다음 행부터 EREC이므로 -1
+                print(f"    → FABRICATION WEIGHT 기준 인덱스: {fabrication_weight_index}")
+                print(f"      (Y={fabrication_weight_y:.1f} 바로 다음 행부터 EREC MATERIAL)")
         
         if erection_materials_y:
+            found_index = -1
+            print(f"\n    ERECTION MATERIALS Y={erection_materials_y:.1f} 기준 분석:")
             for i, row in enumerate(all_rows_data):
-                if row['y_pos'] < erection_materials_y:  # ERECTION MATERIALS보다 아래
-                    erection_materials_found = True
-                    erection_materials_index = i
-                    print(f"    → ERECTION MATERIALS 기준 인덱스: {i} (Y={erection_materials_y:.1f} 이하)")
+                row_y = row['y_pos']
+                if row_y < erection_materials_y:  # ERECTION MATERIALS보다 아래
+                    found_index = i
+                    print(f"      → 첫 번째 EREC 데이터: 인덱스 {i}, Y={row_y:.1f}, PT={row.get('pt', '')}")
                     break
+            
+            if found_index >= 0:
+                erection_materials_found = True
+                erection_materials_index = found_index - 1  # 바로 다음 행부터 EREC이므로 -1
+                print(f"    → ERECTION MATERIALS 기준 인덱스: {erection_materials_index}")
+                print(f"      (Y={erection_materials_y:.1f} 바로 다음 행부터 EREC MATERIAL)")
 
         fabrication_found = any('FABRICATION' in r['totxt'].upper() for r in all_rows_data)
 
@@ -757,12 +782,12 @@ for file_path in file_paths:
             
             # FABRICATION WEIGHT 체크
             if 'FABRICATION WEIGHT' in totxt.upper():
-                print(f"\n!!! FABRICATION WEIGHT 발견 at index {idx}: {clean_text_for_excel(totxt)}")
+                print(f"\n!!! FABRICATION WEIGHT 발견 at index {idx}, Y={data_y:.1f}: {clean_text_for_excel(totxt)}")
                 fabrication_weight_found = True
                 fabrication_weight_index = idx
                 # TOTAL이 포함되어 있는지 추가 체크
                 if 'TOTAL' in totxt.upper():
-                    print(f"    ※ 주의: TOTAL이 포함되어 있음")
+                    print(f"    ※ 주의: TOTAL이 포함되어 있음 - 테이블 행으로 처리됨")
 
             row_data = {
                 'totxt': totxt,
@@ -831,20 +856,30 @@ for file_path in file_paths:
         
         # Y 좌표 기준으로 인덱스 결정
         if fabrication_weight_y:
+            found_index = -1
             for i, row in enumerate(all_rows_data):
                 if row['y_pos'] < fabrication_weight_y:  # FABRICATION WEIGHT보다 아래
-                    fabrication_weight_found = True
-                    fabrication_weight_index = i
-                    print(f"    → FABRICATION WEIGHT 기준 인덱스: {i} (Y={fabrication_weight_y:.1f} 이하)")
+                    found_index = i
                     break
+            
+            if found_index >= 0:
+                fabrication_weight_found = True
+                fabrication_weight_index = found_index - 1  # 바로 다음 행부터 EREC이므로 -1
+                print(f"    → FABRICATION WEIGHT 기준 인덱스: {fabrication_weight_index}")
+                print(f"      (Y={fabrication_weight_y:.1f} 바로 다음 행부터 EREC MATERIAL)")
         
         if erection_materials_y:
+            found_index = -1
             for i, row in enumerate(all_rows_data):
                 if row['y_pos'] < erection_materials_y:  # ERECTION MATERIALS보다 아래
-                    erection_materials_found = True
-                    erection_materials_index = i
-                    print(f"    → ERECTION MATERIALS 기준 인덱스: {i} (Y={erection_materials_y:.1f} 이하)")
+                    found_index = i
                     break
+            
+            if found_index >= 0:
+                erection_materials_found = True
+                erection_materials_index = found_index - 1  # 바로 다음 행부터 EREC이므로 -1
+                print(f"    → ERECTION MATERIALS 기준 인덱스: {erection_materials_index}")
+                print(f"      (Y={erection_materials_y:.1f} 바로 다음 행부터 EREC MATERIAL)")
 
         erection_weight_found = erection_weight_found or any('ERECTION WEIGHT' in r['totxt'].upper() for r in all_rows_data)
         if erection_weight_found:
@@ -861,12 +896,20 @@ for file_path in file_paths:
         # 분류 정보 출력
         if erection_materials_found:
             print(f"\n  - ERECTION MATERIALS 기준으로 FAB/EREC 분류")
-            print(f"    인덱스 {erection_materials_index} 이전: FAB MATERIAL")
-            print(f"    인덱스 {erection_materials_index} 이후: EREC MATERIAL")
+            print(f"    인덱스 0 ~ {erection_materials_index}: FAB MATERIAL")
+            print(f"    인덱스 {erection_materials_index + 1} ~ 끝: EREC MATERIAL")
+            # 실제 데이터 확인
+            if len(all_rows_data) > erection_materials_index + 1:
+                first_erec = all_rows_data[erection_materials_index + 1]
+                print(f"    첫 번째 EREC 데이터: PT={first_erec.get('pt', '')}, Y={first_erec.get('y_pos', ''):.1f}")
         elif fabrication_weight_found:
             print(f"\n  - FABRICATION WEIGHT 기준으로 FAB/EREC 분류")
-            print(f"    인덱스 {fabrication_weight_index} 이전: FAB MATERIAL")
-            print(f"    인덱스 {fabrication_weight_index} 이후: EREC MATERIAL")
+            print(f"    인덱스 0 ~ {fabrication_weight_index}: FAB MATERIAL") 
+            print(f"    인덱스 {fabrication_weight_index + 1} ~ 끝: EREC MATERIAL")
+            # 실제 데이터 확인
+            if len(all_rows_data) > fabrication_weight_index + 1:
+                first_erec = all_rows_data[fabrication_weight_index + 1]
+                print(f"    첫 번째 EREC 데이터: PT={first_erec.get('pt', '')}, Y={first_erec.get('y_pos', ''):.1f}")
         else:
             print(f"\n  - ERECTION MATERIALS/FABRICATION WEIGHT 없음: 모두 FAB MATERIAL로 분류")
         
@@ -1046,6 +1089,8 @@ for file_path in file_paths:
         all_totxt.append(data_row)
 
     # 9) 시트 분류 - ERECTION MATERIALS 기준으로 개선
+    print(f"\n  - 시트 분류 시작: 총 {len(all_totxt)}개 데이터")
+    
     for totxt_data in all_totxt:
         data_copy = totxt_data.copy()
         if 'TOTXT' in data_copy:
@@ -1065,13 +1110,17 @@ for file_path in file_paths:
             if orig_idx > erection_materials_index:
                 is_fabmat = False
                 is_erecmat = True
-                print(f"  - EREC MATERIAL로 분류 (ERECTION MATERIALS 기준): {clean_text_for_excel(data_copy.get('ITEM', '')[:30])}...")
+                if sheet_data['ERECMAT'] == []:  # 첫 번째 EREC일 때만 출력
+                    print(f"  - EREC MATERIAL 시작 (ERECTION MATERIALS 기준)")
+                    print(f"    인덱스 {orig_idx}: PT={data_copy.get('ITEM NO', '')}, ITEM={clean_text_for_excel(data_copy.get('ITEM', '')[:30])}...")
         elif not erection_materials_found and fabrication_weight_found and fabrication_weight_index >= 0 and orig_idx >= 0:
             # ERECTION MATERIALS를 찾지 못했지만 FABRICATION WEIGHT를 찾은 경우
             if orig_idx > fabrication_weight_index:
                 is_fabmat = False
                 is_erecmat = True
-                print(f"  - EREC MATERIAL로 분류 (FABRICATION WEIGHT 기준): {clean_text_for_excel(data_copy.get('ITEM', '')[:30])}...")
+                if sheet_data['ERECMAT'] == []:  # 첫 번째 EREC일 때만 출력
+                    print(f"  - EREC MATERIAL 시작 (FABRICATION WEIGHT 기준)")
+                    print(f"    인덱스 {orig_idx}: PT={data_copy.get('ITEM NO', '')}, ITEM={clean_text_for_excel(data_copy.get('ITEM', '')[:30])}...")
         
         if is_fabmat:
             sheet_data['FABMAT'].append(data_copy)
