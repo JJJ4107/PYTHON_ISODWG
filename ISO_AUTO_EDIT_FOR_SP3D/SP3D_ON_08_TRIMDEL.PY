@@ -167,221 +167,280 @@ class TextBoxLineFinder:
         return found_line, closest_point, farthest_point
 
 
+class TrimProcessor:
+    """TRIM 텍스트 처리 클래스"""
+    
+    def __init__(self):
+        self.entities_to_delete = []
+        self.used_a1_lines = []
+        self.trim_count = 0
+        
+    def distance(self, p1, p2):
+        return math.hypot(p2.x - p1.x, p2.y - p1.y)
+
+    def get_text_position(self, text):
+        return TextBoxLineFinder.get_text_position(text)
+
+    def get_line_length(self, line):
+        return TextBoxLineFinder.get_line_length(line)
+
+    def find_connected_lines(self, start_line, msp, exclude_layers, used_lines, tolerance=0.1, max_lines=10):
+        """시작 LINE에서 연결된 LINE들을 찾아 연속된 경로 구성"""
+        connected_lines = [start_line]
+        used_lines_set = set(used_lines)
+        used_lines_set.add(start_line)
+
+        exclude_layers_upper = [layer.upper() for layer in exclude_layers]
+
+        for direction in ['forward', 'backward']:
+            current_line = start_line
+            while len(connected_lines) < max_lines:
+                if direction == 'forward':
+                    search_point = Vec2(current_line.dxf.end.x, current_line.dxf.end.y)
+                else:
+                    search_point = Vec2(current_line.dxf.start.x, current_line.dxf.start.y)
+
+                found_next = None
+                for line in msp.query('LINE'):
+                    if line in used_lines_set:
+                        continue
+                    if line.dxf.layer.upper() in exclude_layers_upper:
+                        continue
+
+                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+
+                    if self.distance(start, search_point) <= tolerance:
+                        found_next = line
+                        if direction == 'forward':
+                            connected_lines.append(line)
+                        else:
+                            connected_lines.insert(0, line)
+                        break
+                    elif self.distance(end, search_point) <= tolerance:
+                        found_next = line
+                        if direction == 'forward':
+                            connected_lines.append(line)
+                        else:
+                            connected_lines.insert(0, line)
+                        break
+
+                if found_next:
+                    used_lines_set.add(found_next)
+                    current_line = found_next
+                else:
+                    break
+
+        return connected_lines
+
+    def get_connected_line_endpoints(self, connected_lines, ref_center):
+        """연결된 LINE들에서 기준점에 가장 가까운 점(AP1)과 가장 먼 점(AP2) 찾기"""
+        all_points = []
+        for line in connected_lines:
+            start = Vec2(line.dxf.start.x, line.dxf.start.y)
+            end = Vec2(line.dxf.end.x, line.dxf.end.y)
+            all_points.append(start)
+            all_points.append(end)
+
+        if not all_points:
+            return None, None
+
+        unique_points = []
+        for pt in all_points:
+            is_duplicate = False
+            for upt in unique_points:
+                if self.distance(pt, upt) < 0.1:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_points.append(pt)
+
+        min_dist = float('inf')
+        max_dist = 0
+        closest_point = None
+        farthest_point = None
+
+        for pt in unique_points:
+            dist = self.distance(ref_center, pt)
+            if dist < min_dist:
+                min_dist = dist
+                closest_point = pt
+            if dist > max_dist:
+                max_dist = dist
+                farthest_point = pt
+
+        return closest_point, farthest_point
+
+    def process(self, doc):
+        """
+        In-memory DXF document 처리 (런너 연동용)
+        
+        Args:
+            doc: ezdxf.document.Drawing 객체
+            
+        Returns:
+            tuple: (success: bool, message: str, stats: dict)
+        """
+        try:
+            # 초기화
+            self.entities_to_delete = []
+            self.used_a1_lines = []
+            self.trim_count = 0
+            
+            msp = doc.modelspace()
+            
+            # TRIM 텍스트 처리
+            for tr_text in msp.query('TEXT'):
+                if 'TRIM' not in tr_text.dxf.text.upper():
+                    continue
+
+                tr_pos = self.get_text_position(tr_text)
+                self.trim_count += 1
+
+                self.entities_to_delete.append(tr_text)
+
+                exclude_layers_for_a1 = ['FRAME', 'DL', 'AD1', 'DIM', 'ITNO', 'ITEMPOS']
+                exclude_entities_for_a1 = self.used_a1_lines
+
+                found_A1, AP1, AP2 = TextBoxLineFinder.find_closest_line_to_text(
+                    text=tr_text,
+                    lines=msp.query('LINE'),
+                    exclude_entities=exclude_entities_for_a1,
+                    exclude_layers=exclude_layers_for_a1,
+                    min_length=None,
+                    max_distance=35.0,
+                    debug=False
+                )
+
+                if not found_A1:
+                    continue
+
+                connected_lines = self.find_connected_lines(
+                    start_line=found_A1,
+                    msp=msp,
+                    exclude_layers=exclude_layers_for_a1,
+                    used_lines=self.used_a1_lines,
+                    tolerance=0.1,
+                    max_lines=10
+                )
+
+                all_a1_lines = connected_lines
+
+                new_AP1, new_AP2 = self.get_connected_line_endpoints(all_a1_lines, tr_pos)
+                if new_AP1 and new_AP2:
+                    AP1 = new_AP1
+                    AP2 = new_AP2
+
+                for line in all_a1_lines:
+                    self.entities_to_delete.append(line)
+                    if line not in self.used_a1_lines:
+                        self.used_a1_lines.append(line)
+
+                del1_lines = []
+                all_endpoints = []
+                for line in all_a1_lines:
+                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                    all_endpoints.append(start)
+                    all_endpoints.append(end)
+
+                unique_endpoints = []
+                for pt in all_endpoints:
+                    is_duplicate = False
+                    for upt in unique_endpoints:
+                        if self.distance(pt, upt) < 0.1:
+                            is_duplicate = True
+                            break
+                    if not is_duplicate:
+                        unique_endpoints.append(pt)
+
+                for line in msp.query('LINE'):
+                    if line in all_a1_lines:
+                        continue
+                    if line.dxf.layer.upper() in ["FRAME", "ITNO", "ITEMPOS"]:
+                        continue
+
+                    line_len = self.get_line_length(line)
+                    if line_len > 2.0:
+                        continue
+
+                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+
+                    for endpoint in unique_endpoints:
+                        if self.distance(start, endpoint) <= 2.0 or self.distance(end, endpoint) <= 2.0:
+                            del1_lines.append(line)
+                            break
+
+                    if len(del1_lines) >= 3:
+                        break
+
+                for line in del1_lines:
+                    self.entities_to_delete.append(line)
+
+            # 엔티티 삭제
+            deleted_count = 0
+            if self.entities_to_delete:
+                for entity in self.entities_to_delete:
+                    try:
+                        msp.delete_entity(entity)
+                        deleted_count += 1
+                    except Exception:
+                        pass
+            
+            # 통계 정보
+            stats = {
+                'trim_count': self.trim_count,
+                'deleted_entities': deleted_count,
+                'a1_lines': len(self.used_a1_lines),
+                'total_entities_marked': len(self.entities_to_delete)
+            }
+            
+            message = f"처리 완료: {self.trim_count}개 TRIM 텍스트 발견, {deleted_count}개 엔티티 삭제"
+            
+            return True, message, stats
+            
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            return False, f"처리 중 오류 발생: {str(e)}", {'error': error_detail}
+
+    def process_file(self, file_path):
+        """파일 기반 처리 (기존 방식)"""
+        try:
+            doc = ezdxf.readfile(file_path)
+        except Exception as e:
+            return False, f"파일 읽기 실패: {str(e)}"
+
+        # In-memory 처리 실행
+        success, message, stats = self.process(doc)
+        
+        if success:
+            # 파일 저장
+            save_path = os.path.splitext(file_path)[0] + "_TRIMD.dxf"
+            try:
+                doc.saveas(save_path)
+                return True, f"파일 저장 완료: {save_path}"
+            except Exception as e:
+                return False, f"파일 저장 실패: {str(e)}"
+        else:
+            return success, message
+
+
+# 전역 함수들 (기존 코드 호환성 유지)
 def distance(p1, p2):
     return math.hypot(p2.x - p1.x, p2.y - p1.y)
-
 
 def get_text_position(text):
     return TextBoxLineFinder.get_text_position(text)
 
-
 def get_line_length(line):
     return TextBoxLineFinder.get_line_length(line)
 
-
-def find_connected_lines(start_line, msp, exclude_layers, used_lines, tolerance=0.1, max_lines=10):
-    """시작 LINE에서 연결된 LINE들을 찾아 연속된 경로 구성"""
-    connected_lines = [start_line]
-    used_lines_set = set(used_lines)
-    used_lines_set.add(start_line)
-
-    exclude_layers_upper = [layer.upper() for layer in exclude_layers]
-
-    for direction in ['forward', 'backward']:
-        current_line = start_line
-        while len(connected_lines) < max_lines:
-            if direction == 'forward':
-                search_point = Vec2(current_line.dxf.end.x, current_line.dxf.end.y)
-            else:
-                search_point = Vec2(current_line.dxf.start.x, current_line.dxf.start.y)
-
-            found_next = None
-            for line in msp.query('LINE'):
-                if line in used_lines_set:
-                    continue
-                if line.dxf.layer.upper() in exclude_layers_upper:
-                    continue
-
-                start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                end = Vec2(line.dxf.end.x, line.dxf.end.y)
-
-                if distance(start, search_point) <= tolerance:
-                    found_next = line
-                    if direction == 'forward':
-                        connected_lines.append(line)
-                    else:
-                        connected_lines.insert(0, line)
-                    break
-                elif distance(end, search_point) <= tolerance:
-                    found_next = line
-                    if direction == 'forward':
-                        connected_lines.append(line)
-                    else:
-                        connected_lines.insert(0, line)
-                    break
-
-            if found_next:
-                used_lines_set.add(found_next)
-                current_line = found_next
-            else:
-                break
-
-    return connected_lines
-
-
-def get_connected_line_endpoints(connected_lines, ref_center):
-    """연결된 LINE들에서 기준점에 가장 가까운 점(AP1)과 가장 먼 점(AP2) 찾기"""
-    all_points = []
-    for line in connected_lines:
-        start = Vec2(line.dxf.start.x, line.dxf.start.y)
-        end = Vec2(line.dxf.end.x, line.dxf.end.y)
-        all_points.append(start)
-        all_points.append(end)
-
-    if not all_points:
-        return None, None
-
-    unique_points = []
-    for pt in all_points:
-        is_duplicate = False
-        for upt in unique_points:
-            if distance(pt, upt) < 0.1:
-                is_duplicate = True
-                break
-        if not is_duplicate:
-            unique_points.append(pt)
-
-    min_dist = float('inf')
-    max_dist = 0
-    closest_point = None
-    farthest_point = None
-
-    for pt in unique_points:
-        dist = distance(ref_center, pt)
-        if dist < min_dist:
-            min_dist = dist
-            closest_point = pt
-        if dist > max_dist:
-            max_dist = dist
-            farthest_point = pt
-
-    return closest_point, farthest_point
-
-
 def process_dxf(file_path):
-    """DXF 파일 처리 메인 함수"""
-    try:
-        doc = ezdxf.readfile(file_path)
-    except Exception:
-        return
-
-    msp = doc.modelspace()
-
-    entities_to_delete = []
-    used_a1_lines = []
-    trim_count = 0
-
-    for tr_text in msp.query('TEXT'):
-        if 'TRIM' not in tr_text.dxf.text.upper():
-            continue
-
-        tr_pos = get_text_position(tr_text)
-        trim_count += 1
-
-        entities_to_delete.append(tr_text)
-
-        exclude_layers_for_a1 = ['FRAME', 'DL', 'AD1', 'DIM', 'ITNO', 'ITEMPOS']
-        exclude_entities_for_a1 = used_a1_lines
-
-        found_A1, AP1, AP2 = TextBoxLineFinder.find_closest_line_to_text(
-            text=tr_text,
-            lines=msp.query('LINE'),
-            exclude_entities=exclude_entities_for_a1,
-            exclude_layers=exclude_layers_for_a1,
-            min_length=None,
-            max_distance=35.0,
-            debug=False
-        )
-
-        if not found_A1:
-            continue
-
-        connected_lines = find_connected_lines(
-            start_line=found_A1,
-            msp=msp,
-            exclude_layers=exclude_layers_for_a1,
-            used_lines=used_a1_lines,
-            tolerance=0.1,
-            max_lines=10
-        )
-
-        all_a1_lines = connected_lines
-
-        new_AP1, new_AP2 = get_connected_line_endpoints(all_a1_lines, tr_pos)
-        if new_AP1 and new_AP2:
-            AP1 = new_AP1
-            AP2 = new_AP2
-
-        for line in all_a1_lines:
-            entities_to_delete.append(line)
-            if line not in used_a1_lines:
-                used_a1_lines.append(line)
-
-        del1_lines = []
-        all_endpoints = []
-        for line in all_a1_lines:
-            start = Vec2(line.dxf.start.x, line.dxf.start.y)
-            end = Vec2(line.dxf.end.x, line.dxf.end.y)
-            all_endpoints.append(start)
-            all_endpoints.append(end)
-
-        unique_endpoints = []
-        for pt in all_endpoints:
-            is_duplicate = False
-            for upt in unique_endpoints:
-                if distance(pt, upt) < 0.1:
-                    is_duplicate = True
-                    break
-            if not is_duplicate:
-                unique_endpoints.append(pt)
-
-        for line in msp.query('LINE'):
-            if line in all_a1_lines:
-                continue
-            if line.dxf.layer.upper() in ["FRAME", "ITNO", "ITEMPOS"]:
-                continue
-
-            line_len = get_line_length(line)
-            if line_len > 2.0:
-                continue
-
-            start = Vec2(line.dxf.start.x, line.dxf.start.y)
-            end = Vec2(line.dxf.end.x, line.dxf.end.y)
-
-            for endpoint in unique_endpoints:
-                if distance(start, endpoint) <= 2.0 or distance(end, endpoint) <= 2.0:
-                    del1_lines.append(line)
-                    break
-
-            if len(del1_lines) >= 3:
-                break
-
-        for line in del1_lines:
-            entities_to_delete.append(line)
-
-    if entities_to_delete:
-        for entity in entities_to_delete:
-            try:
-                msp.delete_entity(entity)
-            except Exception:
-                pass
-
-    save_path = os.path.splitext(file_path)[0] + "_TRIMD.dxf"
-    try:
-        doc.saveas(save_path)
-    except Exception:
-        pass
-
+    """DXF 파일 처리 메인 함수 (기존 호환성 유지)"""
+    processor = TrimProcessor()
+    processor.process_file(file_path)
 
 def _expand_cli_paths(argv):
     """쉘 와일드카드와 중복/비존재 파일을 정리"""
@@ -400,6 +459,56 @@ def _expand_cli_paths(argv):
             seen.add(ap)
             uniq.append(ap)
     return uniq
+
+
+# 스텝 시스템을 위한 전역 processor 인스턴스
+_global_processor = None
+
+def get_processor():
+    """전역 processor 인스턴스 반환 (싱글톤 패턴)"""
+    global _global_processor
+    if _global_processor is None:
+        _global_processor = TrimProcessor()
+    return _global_processor
+
+
+# 스텝 파일 시스템용 엔트리 포인트
+def step_entry(doc):
+    """
+    스텝 파일 시스템 엔트리 포인트
+    
+    Args:
+        doc: ezdxf.document.Drawing 객체
+        
+    Returns:
+        tuple: (success: bool, message: str, stats: dict)
+    """
+    processor = get_processor()
+    return processor.process(doc)
+
+# 대체 엔트리 포인트 이름들
+def step_process(doc):
+    """스텝 프로세스 엔트리 포인트"""
+    return step_entry(doc)
+
+def step_run(doc):
+    """스텝 런 엔트리 포인트"""
+    return step_entry(doc)
+
+def step():
+    """인자 없는 스텝 엔트리 포인트"""
+    if 'doc' in globals():
+        return step_entry(globals()['doc'])
+    else:
+        return False, "No document provided", {}
+
+def process(doc):
+    """전역 process 함수"""
+    return step_entry(doc)
+
+def run(doc):
+    """전역 run 함수"""
+    return step_entry(doc)
 
 
 if __name__ == "__main__":

@@ -748,12 +748,18 @@ def is_numeric_text(text_content):
         return False, None
 
 
-def process_dxf(file_path):
-    try:
-        doc = ezdxf.readfile(file_path)
-    except Exception as e:
-        return
-
+# ─────────────── 런너(In-Memory) 연동용 함수 ───────────────
+def process(doc):
+    """
+    런너(In-Memory) 연동용 process 함수
+    ezdxf document 객체를 직접 받아서 처리
+    
+    Args:
+        doc: ezdxf document 객체
+        
+    Returns:
+        처리된 ezdxf document 객체
+    """
     msp = doc.modelspace()
     modified = False
     
@@ -1042,6 +1048,22 @@ def process_dxf(file_path):
     box_layers = ["ITEMNO_BOX", "INTERFERENCE_ITNO", "INTERFERENCE_TEXT", "INTERFERENCE_LINE"]
     delete_boxes_by_layer(msp, box_layers)
 
+    return doc
+
+
+# ─────────────── 파일 기반 처리 함수 (기존 유지) ───────────────
+def process_dxf(file_path):
+    """
+    파일 기반 DXF 처리 함수
+    """
+    try:
+        doc = ezdxf.readfile(file_path)
+    except Exception as e:
+        return
+
+    # In-Memory 처리 함수 호출
+    doc = process(doc)
+
     # 파일 저장
     save_path = os.path.splitext(file_path)[0] + "_ITPOS.dxf"
     try:
@@ -1050,6 +1072,7 @@ def process_dxf(file_path):
         pass
 
 
+# ─────────────── 메인 파이프라인 ───────────────
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(1)

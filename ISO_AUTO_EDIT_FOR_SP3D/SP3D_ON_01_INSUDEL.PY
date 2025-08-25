@@ -5,6 +5,16 @@ import math
 import re
 import sys
 
+# 스텝 시스템을 위한 전역 processor 인스턴스
+_global_processor = None
+
+def get_processor():
+    """전역 processor 인스턴스 반환 (싱글톤 패턴)"""
+    global _global_processor
+    if _global_processor is None:
+        _global_processor = DXFProcessor()
+    return _global_processor
+
 class DXFProcessor:
     """
     DXF 파일 처리 클래스
@@ -1018,8 +1028,18 @@ class DXFProcessor:
             _ = traceback.format_exc()
             return False, f"INSU #{index+1}: AD1 단계 오류 - {str(e)}", None
     
-    def process_single_file(self, filepath):
+    def process(self, doc):
+        """
+        In-memory DXF document 처리 (런너 연동용)
+        
+        Args:
+            doc: ezdxf.document.Drawing 객체
+            
+        Returns:
+            tuple: (success: bool, message: str, stats: dict)
+        """
         try:
+            # 추적 변수 초기화
             self.used_dbox_lines.clear()
             self.used_ad1_lines.clear()
             self.used_ad2_lines.clear()
@@ -1029,60 +1049,87 @@ class DXFProcessor:
             self.used_hatches.clear()
             self.used_insu_texts.clear()
             self.used_hc_texts.clear()
-            doc = ezdxf.readfile(filepath)
+            
             msp = doc.modelspace()
-            if "EX1" not in doc.layers:
-                doc.layers.new("EX1")
-            if "INSU_BOX" not in doc.layers:
-                doc.layers.new("INSU_BOX")
-            if "DBOX" not in doc.layers:
-                doc.layers.new("DBOX")
-            if "AD1" not in doc.layers:
-                doc.layers.new("AD1")
-            if "AD1-1" not in doc.layers:
-                doc.layers.new("AD1-1")
-            if "AD2" not in doc.layers:
-                doc.layers.new("AD2")
-            if "AD3" not in doc.layers:
-                doc.layers.new("AD3")
-            if "DEL1" not in doc.layers:
-                doc.layers.new("DEL1")
-            if "H1" not in doc.layers:
-                doc.layers.new("H1")
+            
+            # 필요한 레이어 생성
+            layers_to_create = ["EX1", "INSU_BOX", "DBOX", "AD1", "AD1-1", "AD2", "AD3", "DEL1", "H1"]
+            for layer_name in layers_to_create:
+                if layer_name not in doc.layers:
+                    doc.layers.new(layer_name)
+            
+            # INSU 텍스트 찾기 및 처리
             all_insu_texts = self.find_all_text_with_keyword(msp, "INSU")
+            
+            # 통계 변수
+            total_insu_count = len(all_insu_texts)
             success_count = 0
             delete_count = 0
             preserve_count = 0
+            no_hc_count = 0
+            
             if all_insu_texts:
+                # Phase 1: DBOX 처리
                 insu_data_list = []
-                no_hc_count = 0
                 for index, insu1 in enumerate(all_insu_texts):
                     success, message, data = self.process_dbox_phase(msp, insu1, index)
                     if success and data:
                         insu_data_list.append((index, data))
                     elif "HC 또는 MM 텍스트를 찾을 수 없습니다" in message:
                         no_hc_count += 1
+                
+                # Phase 2: AD1 처리
                 processed_insu_list = []
                 for index, data in insu_data_list:
                     success, message, elements = self.process_ad1_phase(msp, data, index)
                     if success and elements:
                         success_count += 1
                         processed_insu_list.append((index, elements))
+                
+                # Phase 3: 요소 삭제 또는 보존
                 for index, elements in processed_insu_list:
                     if elements.get('preserve', False):
                         preserve_count += 1
                     else:
                         self.delete_insu_elements(msp, elements)
                         delete_count += 1
+            
+            # 처리 통계
+            stats = {
+                'total_insu': total_insu_count,
+                'success': success_count,
+                'deleted': delete_count,
+                'preserved': preserve_count,
+                'no_hc': no_hc_count,
+                'failed': total_insu_count - success_count - no_hc_count
+            }
+            
+            message = f"처리 완료: 전체 {total_insu_count}개 중 성공 {success_count}개, 삭제 {delete_count}개, 보존 {preserve_count}개"
+            
+            return True, message, stats
+            
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            return False, f"처리 중 오류 발생: {str(e)}", {'error': error_detail}
+    
+    def process_single_file(self, filepath):
+        """파일 기반 처리 (기존 방식)"""
+        try:
+            # DXF 파일 읽기
+            doc = ezdxf.readfile(filepath)
+            
+            # In-memory 처리 실행
+            success, message, stats = self.process(doc)
+            
+            # 파일 저장
             base_name = os.path.splitext(os.path.basename(filepath))[0]
             dir_name = os.path.dirname(filepath)
             new_filename = os.path.join(dir_name, f"{base_name}_INSUDEL.DXF")
             doc.saveas(new_filename)
-            if all_insu_texts:
-                pass
-            else:
-                pass
+            
             return True, f"파일 저장 완료: {new_filename}"
+            
         except Exception as e:
             try:
                 base_name = os.path.splitext(os.path.basename(filepath))[0]
@@ -1097,6 +1144,7 @@ class DXFProcessor:
                 return False, f"파일 처리 및 저장 실패: {str(e)}"
     
     def run(self, files):
+        """명령행 인터페이스를 통한 파일 처리"""
         if not files:
             return
         for filepath in files:
@@ -1106,10 +1154,52 @@ if __name__ == "__main__":
     try:
         import ezdxf  # noqa: F401
     except ImportError:
-        # 콘솔 출력 금지 요구사항에 따라 아무것도 출력하지 않음
         sys.exit(1)
+    
     processor = DXFProcessor()
     # 명령행 인자로 받은 모든 DXF 파일 처리
     # 예: python PLTONEWLINE.PY A.DXF B.DXF
     files = sys.argv[1:]
     processor.run(files)
+
+# 스텝 파일 시스템용 엔트리 포인트
+def step_entry(doc):
+    """
+    스텝 파일 시스템 엔트리 포인트
+    
+    Args:
+        doc: ezdxf.document.Drawing 객체
+        
+    Returns:
+        tuple: (success: bool, message: str, stats: dict)
+    """
+    processor = get_processor()
+    return processor.process(doc)
+
+# 대체 엔트리 포인트 이름들 (스텝 시스템에 따라 다를 수 있음)
+def step_process(doc):
+    """스텝 프로세스 엔트리 포인트"""
+    return step_entry(doc)
+
+def step_run(doc):
+    """스텝 런 엔트리 포인트"""
+    return step_entry(doc)
+
+# 인자 없는 엔트리 포인트 (일부 스텝 시스템용)
+def step():
+    """인자 없는 스텝 엔트리 포인트"""
+    # 전역 변수나 환경에서 doc를 가져오는 경우
+    if 'doc' in globals():
+        return step_entry(globals()['doc'])
+    else:
+        return False, "No document provided", {}
+
+# process 함수 (일부 시스템에서 사용)
+def process(doc):
+    """전역 process 함수"""
+    return step_entry(doc)
+
+# run 함수 (일부 시스템에서 사용)
+def run(doc):
+    """전역 run 함수"""
+    return step_entry(doc)

@@ -1006,19 +1006,22 @@ def process_dimension_system(msp, dim_text_entities, dim_line_entities):
     
     return all_processed_entities, all_cp_texts, entities_to_delete
 
-# ─────────────── 메인 파이프라인 ───────────────
-def auto_align_dxf(input_dxf, output_dxf):
+# ─────────────── 런너(In-Memory) 연동용 함수 ───────────────
+def process(doc):
     """
-    단일 DXF 파일 처리 함수
-    """
-    if not os.path.isfile(input_dxf):
-        return False
+    런너(In-Memory) 연동용 process 함수
+    ezdxf document 객체를 직접 받아서 처리
     
+    Args:
+        doc: ezdxf document 객체
+        
+    Returns:
+        처리된 ezdxf document 객체
+    """
     try:
         # TBOX 캐시 초기화
         clear_tbox_cache()
         
-        doc = ezdxf.readfile(input_dxf)
         msp = doc.modelspace()
 
         # DIM 또는 ISO 레이어 엔티티만 수집 (최적화)
@@ -1034,19 +1037,40 @@ def auto_align_dxf(input_dxf, output_dxf):
             except Exception as e:
                 pass
 
-        # 저장
-        doc.saveas(output_dxf)
-        
         # 처리 완료 후 TBOX 캐시 초기화
         clear_tbox_cache()
         
-        return True
+        return doc
         
     except Exception as e:
         # 에러 발생 시에도 TBOX 캐시 초기화
         clear_tbox_cache()
+        raise e
+
+# ─────────────── 파일 기반 처리 함수 (기존 유지) ───────────────
+def auto_align_dxf(input_dxf, output_dxf):
+    """
+    단일 DXF 파일 처리 함수
+    """
+    if not os.path.isfile(input_dxf):
+        return False
+    
+    try:
+        # DXF 파일 읽기
+        doc = ezdxf.readfile(input_dxf)
+        
+        # In-Memory 처리 함수 호출
+        doc = process(doc)
+        
+        # 저장
+        doc.saveas(output_dxf)
+        
+        return True
+        
+    except Exception as e:
         return False
 
+# ─────────────── 메인 파이프라인 ───────────────
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(1)

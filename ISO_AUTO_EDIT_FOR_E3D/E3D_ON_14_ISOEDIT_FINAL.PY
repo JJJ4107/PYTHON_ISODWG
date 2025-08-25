@@ -7,7 +7,9 @@ try:
 except ImportError:
     sys.exit(1)
 
-# 색상 인덱스 (AutoCAD ACI)
+# ─────────────────────────────────────────
+# 상수 (AutoCAD ACI / ezdxf lineweight 단위는 0.01mm)
+# ─────────────────────────────────────────
 COLOR_RED = 1
 COLOR_YELLOW = 2
 COLOR_GREEN = 3
@@ -15,17 +17,16 @@ COLOR_CYAN = 4
 COLOR_BLUE = 5
 COLOR_WHITE = 7
 
-# 라인웨이트: ezdxf는 0.01mm 단위 정수 (0.60mm = 60)
-LINEWEIGHT_0_60 = 60
+LINEWEIGHT_0_60 = 60  # 0.60 mm
 
 class DXFColorProcessor:
     def __init__(self):
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # -------------------------------
-    # 파일명 정리: 기본이름에서 '_' 뒤 제거 후 'ACEPLANT.dxf' 접미
-    # -------------------------------
-    def get_clean_filename(self, original_file):
+    # ─────────────────────────────────────────
+    # 저장 파일명 규칙: <base_before_underscore>ACEPLANT.dxf
+    # ─────────────────────────────────────────
+    def get_clean_filename(self, original_file: str) -> str:
         d = os.path.dirname(original_file)
         base = os.path.splitext(os.path.basename(original_file))[0]
         if "_" in base:
@@ -34,13 +35,12 @@ class DXFColorProcessor:
             base = os.path.splitext(os.path.basename(original_file))[0]
         return os.path.join(d, base + "ACEPLANT.dxf")
 
-    # -------------------------------
-    # 폴리라인 꼭짓점 개수
-    # -------------------------------
-    def polyline_vertex_count(self, e):
+    # ─────────────────────────────────────────
+    # 폴리라인 정점 수
+    # ─────────────────────────────────────────
+    def polyline_vertex_count(self, e) -> int:
         try:
             if e.dxftype() == "LWPOLYLINE":
-                # LWPOLYLINE.get_points() -> [(x, y, [start_width, end_width, bulge]), ...]
                 return len(list(e.get_points()))
             elif e.dxftype() == "POLYLINE":
                 return len(list(e.vertices))
@@ -49,59 +49,44 @@ class DXFColorProcessor:
         except Exception:
             return 0
 
-    # -------------------------------
-    # LINE → LWPOLYLINE 변환 (첨부 코드와 동일한 방식)
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # LINE → LWPOLYLINE (또는 POLYLINE) 변환
+    # ─────────────────────────────────────────
     def _convert_line_to_lwpolyline(self, space, line_ent, color=None, lw=None):
         try:
-            # LINE의 시작점과 끝점 가져오기
             start = line_ent.dxf.start
             end = line_ent.dxf.end
-            
             try:
-                # LWPOLYLINE 생성 (첨부 코드와 동일한 방식)
-                polyline = space.add_lwpolyline([(start[0], start[1]), (end[0], end[1])])
-                
-                # 선폭 설정 (const_width 사용)
+                pl = space.add_lwpolyline([(start[0], start[1]), (end[0], end[1])])
                 if lw is not None:
-                    polyline.dxf.const_width = lw / 100.0  # ezdxf lineweight는 0.01mm 단위, const_width는 도면 단위
-                
-                # 색상 설정
+                    pl.dxf.const_width = lw / 100.0
+                    pl.dxf.lineweight = int(lw)
                 if color is not None:
-                    polyline.dxf.color = int(color)
-                
-                # 속성 복사
-                polyline.dxf.layer = line_ent.dxf.layer
+                    pl.dxf.color = int(color)
+                pl.dxf.layer = line_ent.dxf.layer
                 if hasattr(line_ent.dxf, 'color') and color is None:
-                    polyline.dxf.color = line_ent.dxf.color
-                
-                # 기존 LINE 삭제
+                    pl.dxf.color = line_ent.dxf.color
                 space.delete_entity(line_ent)
-                return polyline
-                
-            except Exception as e:
-                # R2000 미만에서는 POLYLINE 사용
-                polyline = space.add_polyline2d([(start[0], start[1]), (end[0], end[1])])
-                # POLYLINE의 경우 각 정점에 폭 설정
+                return pl
+            except Exception:
+                # 구버전 호환: POLYLINE으로 생성
+                pl = space.add_polyline2d([(start[0], start[1]), (end[0], end[1])])
                 if lw is not None:
                     width = lw / 100.0
-                    for vertex in polyline.vertices:
-                        vertex.dxf.start_width = width
-                        vertex.dxf.end_width = width
-                
+                    for v in pl.vertices:
+                        v.dxf.start_width = width
+                        v.dxf.end_width = width
                 if color is not None:
-                    polyline.dxf.color = int(color)
-                
-                polyline.dxf.layer = line_ent.dxf.layer
+                    pl.dxf.color = int(color)
+                pl.dxf.layer = line_ent.dxf.layer
                 space.delete_entity(line_ent)
-                return polyline
-                
-        except Exception as e:
+                return pl
+        except Exception:
             return None
 
-    # -------------------------------
-    # POLYLINE(구형) → LWPOLYLINE 변환 (첨부 코드와 동일한 방식)
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # POLYLINE(구형) → LWPOLYLINE 변환
+    # ─────────────────────────────────────────
     def _convert_polyline_to_lwpolyline(self, space, old_poly, color=None, lw=None):
         pts = []
         closed = False
@@ -111,7 +96,6 @@ class DXFColorProcessor:
             pass
 
         try:
-            # 정점 수집
             vertices = list(old_poly.vertices)
             for v in vertices:
                 if hasattr(v.dxf, "location"):
@@ -119,46 +103,35 @@ class DXFColorProcessor:
                 else:
                     x, y = float(v.dxf.x), float(v.dxf.y)
                 pts.append((x, y))
-            
+
             try:
-                # LWPOLYLINE 생성
                 pl = space.add_lwpolyline(pts, dxfattribs={"closed": closed})
-                
-                # 선폭 설정 (const_width 사용)
                 if lw is not None:
-                    pl.dxf.const_width = lw / 100.0  # ezdxf lineweight는 0.01mm 단위
+                    pl.dxf.const_width = lw / 100.0
                     pl.dxf.lineweight = int(lw)
-                
-                # 색상 설정
                 if color is not None:
                     pl.dxf.color = int(color)
-                
-                # 속성 복사
                 pl.dxf.layer = old_poly.dxf.layer
                 if hasattr(old_poly.dxf, 'color') and color is None:
                     pl.dxf.color = old_poly.dxf.color
-                
-                # 기존 POLYLINE 삭제
                 space.delete_entity(old_poly)
                 return pl
-                
-            except Exception as e:
-                # 변환 실패 시 기존 POLYLINE의 속성만 변경
+            except Exception:
+                # 변환 실패 시 속성만 변경
                 if color is not None:
                     old_poly.dxf.color = int(color)
                 if lw is not None:
                     width = lw / 100.0
-                    for vertex in old_poly.vertices:
-                        vertex.dxf.start_width = width
-                        vertex.dxf.end_width = width
+                    for v in old_poly.vertices:
+                        v.dxf.start_width = width
+                        v.dxf.end_width = width
                 return old_poly
-                
-        except Exception as e:
+        except Exception:
             return None
 
-    # -------------------------------
+    # ─────────────────────────────────────────
     # TEXT/MTEXT → YELLOW
-    # -------------------------------
+    # ─────────────────────────────────────────
     def _yellow_all_text(self, container):
         for e in list(container):
             try:
@@ -167,111 +140,57 @@ class DXFColorProcessor:
             except Exception:
                 pass
 
-    # -------------------------------
-    # PIPE/ELBO/TEE/TEXT 포함 레이어: LINE을 LWPOLYLINE으로 변환, BLUE + 0.6mm
-    # (첨부 코드와 동일한 방식 사용)
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # PIPE/ELBO/TEE/TEXT 포함 레이어: LINE→LWPOLYLINE, BLUE + 0.6mm
+    # ─────────────────────────────────────────
     def _enforce_blue_plines_for_pipe_elbo_tee_text(self, doc):
-        # 변환 통계
-        line_count = 0
-        polyline_count = 0
-        lwpolyline_count = 0
-        
-        def process_container(container, container_name):
-            nonlocal line_count, polyline_count, lwpolyline_count
-            
-            # LINE을 변환할 리스트 (반복 중 삭제 방지)
+        def process_container(container):
             lines_to_convert = []
-            
             for entity in list(container):
                 try:
-                    if hasattr(entity.dxf, 'layer'):
-                        layer_upper = entity.dxf.layer.upper()
-                        
-                        # 레이어 이름에 PIPE, ELBO, TEE, TEXT가 포함되는지 확인 (첨부 코드 방식)
-                        if 'PIPE' in layer_upper or 'ELBO' in layer_upper or 'TEE' in layer_upper or 'TEXT' in layer_upper:
-                            dxft = entity.dxftype()
-                            
-                            if dxft == 'LINE':
-                                lines_to_convert.append(entity)
-                            elif dxft == 'POLYLINE':
-                                # 기존 POLYLINE은 색상과 선폭만 변경
-                                entity.dxf.color = COLOR_BLUE
-                                # POLYLINE의 경우 각 정점에 폭 설정
-                                try:
-                                    for vertex in entity.vertices:
-                                        vertex.dxf.start_width = 0.6
-                                        vertex.dxf.end_width = 0.6
-                                    polyline_count += 1
-                                except Exception:
-                                    pass
-                            elif dxft == 'LWPOLYLINE':
-                                # 기존 LWPOLYLINE은 색상과 선폭만 변경
-                                entity.dxf.color = COLOR_BLUE
-                                entity.dxf.const_width = 0.6  # LWPOLYLINE은 const_width 사용
-                                entity.dxf.lineweight = LINEWEIGHT_0_60
-                                lwpolyline_count += 1
-                
-                except Exception as e:
+                    if not hasattr(entity, "dxf") or not hasattr(entity.dxf, "layer"):
+                        continue
+                    layer_upper = entity.dxf.layer.upper()
+                    if ('PIPE' in layer_upper) or ('ELBO' in layer_upper) or ('TEE' in layer_upper) or ('TEXT' in layer_upper):
+                        t = entity.dxftype()
+                        if t == 'LINE':
+                            lines_to_convert.append(entity)
+                        elif t == 'POLYLINE':
+                            entity.dxf.color = COLOR_BLUE
+                            try:
+                                for v in entity.vertices:
+                                    v.dxf.start_width = 0.6
+                                    v.dxf.end_width = 0.6
+                            except Exception:
+                                pass
+                        elif t == 'LWPOLYLINE':
+                            entity.dxf.color = COLOR_BLUE
+                            entity.dxf.const_width = 0.6
+                            entity.dxf.lineweight = LINEWEIGHT_0_60
+                except Exception:
                     pass
-            
-            # LINE → LWPOLYLINE 변환
+
+            # 변환은 루프 밖에서
             for line in lines_to_convert:
                 try:
-                    # 첨부 코드와 동일한 방식으로 변환
-                    start = line.dxf.start
-                    end = line.dxf.end
-                    
-                    try:
-                        # LWPOLYLINE 생성
-                        polyline = container.add_lwpolyline([(start[0], start[1]), (end[0], end[1])])
-                        polyline.dxf.const_width = 0.6  # 선폭 0.6mm
-                        polyline.dxf.color = COLOR_BLUE  # BLUE
-                        polyline.dxf.lineweight = LINEWEIGHT_0_60
-                        
-                        # 속성 복사
-                        polyline.dxf.layer = line.dxf.layer
-                        
-                        # 기존 LINE 삭제
-                        container.delete_entity(line)
-                        line_count += 1
-                        
-                    except Exception as e1:
-                        try:
-                            # POLYLINE으로 대체 시도
-                            polyline = container.add_polyline2d([(start[0], start[1]), (end[0], end[1])])
-                            for vertex in polyline.vertices:
-                                vertex.dxf.start_width = 0.6
-                                vertex.dxf.end_width = 0.6
-                            polyline.dxf.color = COLOR_BLUE
-                            polyline.dxf.layer = line.dxf.layer
-                            container.delete_entity(line)
-                            line_count += 1
-                        except Exception as e2:
-                            pass
-                            
-                except Exception as e:
+                    self._convert_line_to_lwpolyline(
+                        container, line, color=COLOR_BLUE, lw=LINEWEIGHT_0_60
+                    )
+                except Exception:
                     pass
-        
-        # Modelspace 처리
-        process_container(doc.modelspace(), "Modelspace")
-        
-        # Paperspace layouts 처리
+
+        process_container(doc.modelspace())
         for layout in doc.layouts:
             if layout.name != "Model":
-                process_container(layout, f"Layout:{layout.name}")
-        
-        # Blocks 처리
+                process_container(layout)
         for block in doc.blocks:
-            if not block.name.startswith('*'):  # 내부 블록 제외
-                process_container(block, f"Block:{block.name}")
+            if not getattr(block, "name", "").startswith("*"):
+                process_container(block)
 
-    # -------------------------------
-    # 빨간색(RED) 모든 폴리라인 → WHITE (꼭짓점 수 무관)
-    #  - ByLayer가 RED인 경우도 포함
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # 빨간 폴리라인(또는 ByLayer=RED) → WHITE
+    # ─────────────────────────────────────────
     def _whiten_red_polylines(self, doc):
-        # 레이어 색상 조회 헬퍼
         def layer_is_red(layer_name):
             try:
                 lay = doc.layers.get(layer_name)
@@ -284,8 +203,7 @@ class DXFColorProcessor:
                 try:
                     if e.dxftype() not in ("LWPOLYLINE", "POLYLINE"):
                         continue
-                    # 꼭짓점 수 조건 제거 - 모든 RED 폴리라인을 WHITE로
-                    col = getattr(e.dxf, "color", 256)  # 256=BYLAYER
+                    col = getattr(e.dxf, "color", 256)
                     is_red = (col == COLOR_RED) or (col in (-1, 256) and layer_is_red(getattr(e.dxf, "layer", "")))
                     if is_red:
                         e.dxf.color = COLOR_WHITE
@@ -299,11 +217,10 @@ class DXFColorProcessor:
         for block in doc.blocks:
             process_container(block)
 
-    # -------------------------------
-    # CYAN 폴리라인 → WHITE
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # CYAN 폴리라인(또는 ByLayer=CYAN) → WHITE
+    # ─────────────────────────────────────────
     def _whiten_cyan_polylines(self, doc):
-        # 레이어 색상 조회 헬퍼
         def layer_is_cyan(layer_name):
             try:
                 lay = doc.layers.get(layer_name)
@@ -316,7 +233,7 @@ class DXFColorProcessor:
                 try:
                     if e.dxftype() not in ("LWPOLYLINE", "POLYLINE"):
                         continue
-                    col = getattr(e.dxf, "color", 256)  # 256=BYLAYER
+                    col = getattr(e.dxf, "color", 256)
                     is_cyan = (col == COLOR_CYAN) or (col in (-1, 256) and layer_is_cyan(getattr(e.dxf, "layer", "")))
                     if is_cyan:
                         e.dxf.color = COLOR_WHITE
@@ -330,25 +247,19 @@ class DXFColorProcessor:
         for block in doc.blocks:
             process_container(block)
 
-    # -------------------------------
-    # INSTNO 레이어의 원(CIRCLE) → YELLOW
-    # INSTBOX 레이어의 폴리라인 → WHITE
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # INSTNO CIRCLE → YELLOW, INSTBOX 폴리라인 → WHITE
+    # ─────────────────────────────────────────
     def _instno_instbox_rules(self, doc):
         def process_container(container):
             for e in list(container):
                 try:
                     layer = getattr(e.dxf, "layer", "")
-                    layer_upper = layer.upper()
-                    
-                    # INSTNO 레이어의 CIRCLE → YELLOW
-                    if layer_upper == "INSTNO" and e.dxftype() == "CIRCLE":
+                    u = layer.upper()
+                    if u == "INSTNO" and e.dxftype() == "CIRCLE":
                         e.dxf.color = COLOR_YELLOW
-                    
-                    # INSTBOX 레이어의 폴리라인 → WHITE
-                    elif layer_upper == "INSTBOX" and e.dxftype() in ("LWPOLYLINE", "POLYLINE"):
+                    elif u == "INSTBOX" and e.dxftype() in ("LWPOLYLINE", "POLYLINE"):
                         e.dxf.color = COLOR_WHITE
-                        
                 except Exception:
                     pass
 
@@ -359,17 +270,14 @@ class DXFColorProcessor:
         for block in doc.blocks:
             process_container(block)
 
-    # -------------------------------
-    # PL2 레이어 + GREEN 폴리라인 → WHITE
-    # GT_1 레이어 + YELLOW 폴리라인 → WHITE
-    # SUPP 레이어 + 7점 폴리라인 → CYAN
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # PL2+GREEN → WHITE, GT_1+YELLOW → WHITE, SUPP+7점 → CYAN
+    # ─────────────────────────────────────────
     def _specific_layer_color_rules(self, doc):
         def get_entity_color(e, doc):
-            """엔티티의 실제 색상을 가져옵니다 (ByLayer 처리 포함)"""
             try:
                 col = getattr(e.dxf, "color", 256)
-                if col in (-1, 256):  # ByLayer
+                if col in (-1, 256):
                     layer_name = getattr(e.dxf, "layer", "")
                     if layer_name:
                         layer = doc.layers.get(layer_name)
@@ -379,58 +287,55 @@ class DXFColorProcessor:
             except Exception:
                 return 0
 
-        def process_container(container, doc):
+        def process_container(container):
             for e in list(container):
                 try:
                     if e.dxftype() not in ("LWPOLYLINE", "POLYLINE"):
                         continue
-                    
                     layer = getattr(e.dxf, "layer", "")
-                    layer_upper = layer.upper()
-                    
-                    # PL2 레이어 + GREEN → WHITE
-                    if layer_upper == "PL2":
+                    u = layer.upper()
+
+                    if u == "PL2":
                         if get_entity_color(e, doc) == COLOR_GREEN:
                             e.dxf.color = COLOR_WHITE
-                    
-                    # GT_1 레이어 + YELLOW → WHITE
-                    elif layer_upper == "GT_1":
+                    elif u == "GT_1":
                         if get_entity_color(e, doc) == COLOR_YELLOW:
                             e.dxf.color = COLOR_WHITE
-                    
-                    # SUPP 레이어 + 7점 → CYAN
-                    elif layer_upper == "SUPP":
-                        vtx_count = self.polyline_vertex_count(e)
-                        if vtx_count == 7:
+                    elif u == "SUPP":
+                        vtx = self.polyline_vertex_count(e)
+                        if vtx == 7:
                             e.dxf.color = COLOR_CYAN
-                
                 except Exception:
                     pass
 
-        process_container(doc.modelspace(), doc)
+        process_container(doc.modelspace())
         for layout in doc.layouts:
             if layout.name != "Model":
-                process_container(layout, doc)
+                process_container(layout)
         for block in doc.blocks:
-            process_container(block, doc)
+            process_container(block)
 
-    # -------------------------------
-    # 기존 색상/레이어 처리(원 코드의 주요 로직 유지·요약)
-    #  - TEXT: YELLOW
-    #  - ITEMNO/ITNO: WHITE
-    #  - OLET/WOLET/REDU/VALV: YELLOW
-    #  - 'PIPE' 포함 레이어의 LINE/PL: GREEN
-    #  - TEE 레이어 텍스트 근처 폴리라인: CYAN (간단화: 레이어명 'TEE' 포함인 경우로 처리)
-    #  - WDC 레이어 CIRCLE: WHITE
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # 기존 기본 룰 (요약 유지)
+    #  - TEXT/MTEXT → YELLOW
+    #  - ITEMNO/ITNO → WHITE
+    #  - OLET/WOLET/REDU/VALV → YELLOW
+    #  - 'PIPE' 포함 레이어의 LINE/PL → GREEN
+    #  - 'TEE' 포함 레이어의 폴리라인 → CYAN
+    #  - WDC 레이어 CIRCLE → WHITE
+    # ─────────────────────────────────────────
     def _baseline_color_rules(self, doc):
-        def is_pipe_layer(name):
+        def is_pipe_layer(name: str) -> bool:
             return "PIPE" in (name or "").upper()
 
-        def is_tee_layer(name):
+        def is_tee_layer(name: str) -> bool:
             return "TEE" in (name or "").upper()
 
-        for container in [doc.modelspace(), *[l for l in doc.layouts if l.name != "Model"], *list(doc.blocks)]:
+        containers = [doc.modelspace()]
+        containers.extend([l for l in doc.layouts if l.name != "Model"])
+        containers.extend(list(doc.blocks))
+
+        for container in containers:
             for e in list(container):
                 try:
                     layer = (e.dxf.layer if hasattr(e.dxf, "layer") else "") or ""
@@ -452,11 +357,10 @@ class DXFColorProcessor:
                 except Exception:
                     pass
 
-    # -------------------------------
-    # 모든 엔티티의 레이어를 'ACEPLANT' 로 통일 (선택사항: 기존 동작 유지)
-    # -------------------------------
+    # ─────────────────────────────────────────
+    # (옵션) 전체 레이어 ACEPLANT로 통일
+    # ─────────────────────────────────────────
     def _unify_layers_to_aceplant(self, doc):
-        # ACEPLANT 가 없으면 생성
         try:
             if "ACEPLANT" not in [l.dxf.name for l in doc.layers]:
                 doc.layers.new(name="ACEPLANT")
@@ -477,7 +381,6 @@ class DXFColorProcessor:
         for block in doc.blocks:
             set_ace(block)
 
-        # 불필요한 레이어 삭제(ACEPLANT, 0 제외)
         try:
             to_remove = []
             for layer in doc.layers:
@@ -492,68 +395,62 @@ class DXFColorProcessor:
         except Exception:
             pass
 
-    # -------------------------------
-    # DXF 1개 파일 처리
-    # -------------------------------
-    def process_one(self, path):
-        try:
-            doc = ezdxf.readfile(path)
-        except Exception as e:
-            return False
-
-        # 파일의 모든 레이어 확인
-        all_layers = set()
-        msp = doc.modelspace()
-        for entity in msp:
-            if hasattr(entity.dxf, 'layer'):
-                all_layers.add(entity.dxf.layer)
-
-        # 1) 기본 룰 적용
+    # ─────────────────────────────────────────
+    # 문서(메모리) 처리: 저장 없음
+    # ─────────────────────────────────────────
+    def process_doc(self, doc):
+        # 1) 기본 룰
         self._baseline_color_rules(doc)
-
-        # 2) 추가 요구사항
-        #   - 레이어명이 PIPE/ELBO/TEE/TEXT 포함 → LWPOLYLINE(BLUE, 0.6mm)
+        # 2) PIPE/ELBO/TEE/TEXT 레이어 BLUE+0.6 & LINE→LWPOLYLINE
         self._enforce_blue_plines_for_pipe_elbo_tee_text(doc)
-
-        #   - 모든 TEXT 는 YELLOW (보강)
+        # 3) 텍스트 보강 (전체 통합)
         self._yellow_all_text(doc.modelspace())
         for layout in doc.layouts:
             if layout.name != "Model":
                 self._yellow_all_text(layout)
         for block in doc.blocks:
             self._yellow_all_text(block)
-
-        #   - 모든 RED 폴리라인은 WHITE (꼭짓점 수 무관)
+        # 4) RED PL → WHITE
         self._whiten_red_polylines(doc)
-
-        #   - 모든 CYAN 폴리라인은 WHITE
+        # 5) CYAN PL → WHITE
         self._whiten_cyan_polylines(doc)
-
-        #   - PL2/GREEN → WHITE, GT_1/YELLOW → WHITE, SUPP/7점 → CYAN
+        # 6) PL2/GT_1/SUPP 세부 룰
         self._specific_layer_color_rules(doc)
-
-        #   - INSTNO 레이어의 원 → YELLOW, INSTBOX 레이어의 폴리라인 → WHITE
+        # 7) INSTNO/INSTBOX 룰
         self._instno_instbox_rules(doc)
-
-        # 3) (옵션) 모든 레이어를 ACEPLANT 로 통일 (기존 코드 유지 원하시면 주석 해제)
+        # 8) (옵션) 레이어 통일 필요 시 주석 해제
         # self._unify_layers_to_aceplant(doc)
+        return doc
 
-        # 4) 저장 (임시 → 최종명)
+    # ─────────────────────────────────────────
+    # 파일 1개 처리(읽기→가공→저장)
+    # ─────────────────────────────────────────
+    def process_file(self, path: str) -> bool:
+        try:
+            doc = ezdxf.readfile(path)
+        except Exception:
+            return False
+
+        try:
+            self.process_doc(doc)
+        except Exception:
+            return False
+
         out_path = self.get_clean_filename(path)
         tmp_path = out_path + ".tmp"
         try:
-            # 파일 저장 (원본과 동일한 DXF 버전으로)
             try:
                 doc.saveas(tmp_path)
-            except:
-                # 버전 문제가 있으면 R2000으로 저장
-                doc.saveas(tmp_path, fmt='R2000')
-            
+            except Exception:
+                doc.saveas(tmp_path, fmt="R2000")
             if os.path.exists(out_path):
-                os.remove(out_path)
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
             os.rename(tmp_path, out_path)
             return True
-        except Exception as e:
+        except Exception:
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
@@ -561,29 +458,52 @@ class DXFColorProcessor:
                 pass
             return False
 
-    # -------------------------------
-    # 배치 처리
-    # -------------------------------
-    def run(self, files):
+    # ─────────────────────────────────────────
+    # 여러 파일 배치 처리 (명령행용)
+    # ─────────────────────────────────────────
+    def batch(self, files):
         if not files:
-            return
-        
+            return 0
         ok = 0
-        for i, f in enumerate(files, 1):
-            if self.process_one(f):
+        for f in files:
+            if self.process_file(f):
                 ok += 1
+        return ok
 
-# -------------------------------
-# main
-# -------------------------------
+
+# ─────────────────────────────────────────
+# in-memory 런너 호환 엔트리들
+# ─────────────────────────────────────────
+def process(doc):
+    """
+    런너(in-memory)에서 호출되는 표준 엔트리.
+    전달된 ezdxf 문서를 메모리 상에서 수정하고 그대로 반환합니다.
+    """
+    try:
+        processor = DXFColorProcessor()
+        return processor.process_doc(doc)
+    except Exception:
+        return doc  # 실패 시에도 원본을 그대로 반환
+
+# 호환 별칭
+def pipeline(doc):
+    return process(doc)
+
+def main_process(doc):
+    return process(doc)
+
+# (선택) 파일 함수형 API
+def process_file(path: str) -> bool:
+    try:
+        return DXFColorProcessor().process_file(path)
+    except Exception:
+        return False
+
+# ─────────────────────────────────────────
+# 명령행 실행: python THIS.py A.DXF B.DXF ...
+# ─────────────────────────────────────────
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(1)
-    
     files = sys.argv[1:]
-    
-    try:
-        processor = DXFColorProcessor()
-        processor.run(files)
-    except Exception as e:
-        pass
+    DXFColorProcessor().batch(files)

@@ -218,29 +218,37 @@ def process_single_dxf(file_path):
                     if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
                         # 폴리라인 길이 계산
                         length = 0
+                        points_count = 0
                         try:
                             if entity.dxftype() == 'LWPOLYLINE':
                                 points = list(entity.get_points())
+                                points_count = len(points)
                                 for i in range(len(points) - 1):
                                     dx = points[i+1][0] - points[i][0]
                                     dy = points[i+1][1] - points[i][1]
                                     length += math.sqrt(dx**2 + dy**2)
                             else:
                                 vertices = list(entity.vertices)
+                                points_count = len(vertices)
                                 for i in range(len(vertices) - 1):
                                     dx = vertices[i+1].dxf.location[0] - vertices[i].dxf.location[0]
                                     dy = vertices[i+1].dxf.location[1] - vertices[i].dxf.location[1]
                                     length += math.sqrt(dx**2 + dy**2)
                             
-                            if length <= 5:
+                            # 길이가 5 이하이거나 3점 폴리라인인 경우 흰색으로 변경
+                            if length <= 5 or points_count == 3:
                                 entity.dxf.color = 7  # WHITE
                         except:
                             pass
                 
-                # 3. PL2 레이어이고 색상이 CYAN인 폴리라인은 흰색으로
-                elif current_layer == 'PL2' and current_color == 4:
+                # 3. PL2 레이어이고 색상이 CYAN 또는 GREEN인 폴리라인은 흰색으로
+                elif current_layer == 'PL2' and (current_color == 4 or current_color == 3):
                     if entity.dxftype() in ['POLYLINE', 'LWPOLYLINE']:
                         entity.dxf.color = 7  # WHITE
+                
+                # 4. PL2 레이어의 모든 GREEN 색상을 흰색으로 (폴리라인뿐만 아니라 모든 객체)
+                elif current_layer == 'PL2' and current_color == 3:
+                    entity.dxf.color = 7  # WHITE
                     
         except Exception as e:
             print(f"색상 변경 중 오류: {e}")
@@ -490,8 +498,9 @@ def main():
     print("   - X: 820~860, Y: 0~20 범위: PL4 레이어 삭제")
     print("2. 색상 변경")
     print("   - 모든 CYAN TEXT → YELLOW")
-    print("   - GT-1 레이어의 YELLOW 폴리라인 (길이 ≤ 5) → WHITE")
+    print("   - GT-1 레이어의 YELLOW 폴리라인 (길이 ≤ 5 또는 3점) → WHITE")
     print("   - PL2 레이어의 CYAN 폴리라인 → WHITE")
+    print("   - PL2 레이어의 GREEN → WHITE")
     print("   - ELBO 레이어의 모든 객체 → BLUE")  
     print("   - ARROW 레이어의 모든 객체 → WHITE")
     print("   - PIPE/TEE/ELBO가 레이어 이름에 포함된 폴리라인 → BLUE")
@@ -542,8 +551,9 @@ if __name__ == "__main__":
 #
 # 3. 색상 변경:
 #    - 모든 CYAN TEXT를 YELLOW로 변경
-#    - GT-1 레이어의 YELLOW 폴리라인 중 길이 5 이하는 WHITE로 변경
+#    - GT-1 레이어의 YELLOW 폴리라인 중 길이 5 이하 또는 3점 폴리라인은 WHITE로 변경
 #    - PL2 레이어의 CYAN 폴리라인은 WHITE로 변경
+#    - PL2 레이어의 GREEN 색상은 WHITE로 변경
 #    - ELBO 레이어의 모든 객체는 BLUE로 변경
 #    - ARROW 레이어의 모든 객체는 WHITE로 변경
 #    - PIPE/TEE/ELBO가 레이어 이름에 포함된 폴리라인은 BLUE로 변경

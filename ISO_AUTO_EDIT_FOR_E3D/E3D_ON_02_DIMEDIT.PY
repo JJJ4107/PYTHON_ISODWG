@@ -1,8 +1,12 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import sys
 import ezdxf
 import math
 import numpy as np
+from typing import List, Tuple, Dict, Any, Optional
 from ezdxf.entities import Line, LWPolyline, Polyline, Text
 
 # ─────────────── 설정 값 ───────────────
@@ -10,13 +14,13 @@ ANGLE_TOLERANCE = 5.0  # 각도 허용 오차 (°)
 DIM_LAYER_PREFIXES = ("GT_", "PL2")  # 치수선 레이어 접두사들
 
 # TBOX 캐시를 위한 전역 딕셔너리
-TBOX_CACHE = {}
+TBOX_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # ─────────────── 유틸 함수 ───────────────
 def to2d(pt):
     if hasattr(pt, "__getitem__"):
-        return np.array((pt[0], pt[1]), float)
-    return np.array((pt.x, pt.y), float)
+        return np.array((float(pt[0]), float(pt[1])), float)
+    return np.array((float(pt.x), float(pt.y)), float)
 
 def distance(a, b):
     return float(np.linalg.norm(a - b))
@@ -27,13 +31,13 @@ def angle_deg(a, b):
 
 def get_entity_handle(entity):
     try:
-        if hasattr(entity, 'dxf') and hasattr(entity.dxf, 'handle'):
+        if hasattr(entity, 'dxf') and hasattr(entity.dxf, 'handle') and entity.dxf.handle:
             return entity.dxf.handle
         elif hasattr(entity, 'handle'):
             return entity.handle
         else:
             return str(id(entity))
-    except:
+    except Exception:
         return "unknown"
 
 def extract_segments(ent):
@@ -41,27 +45,22 @@ def extract_segments(ent):
         return [(ent.dxf.start, ent.dxf.end)]
     if isinstance(ent, LWPolyline):
         pts = list(ent.get_points("xyb"))
-        z = ent.dxf.elevation
-        return [
-            ((x0, y0, z), (x1, y1, z)) for (x0, y0, _), (x1, y1, _) in zip(pts, pts[1:])
-        ]
+        z = getattr(ent.dxf, "elevation", 0.0)
+        return [((x0, y0, z), (x1, y1, z)) for (x0, y0, _), (x1, y1, _) in zip(pts, pts[1:])]
     if isinstance(ent, Polyline):
         verts = list(ent.vertices)
-        return [
-            (verts[i].dxf.location, verts[i + 1].dxf.location)
-            for i in range(len(verts) - 1)
-        ]
+        return [(verts[i].dxf.location, verts[i + 1].dxf.location) for i in range(len(verts) - 1)]
     return []
 
 def is_enclosed(point, msp):
     x, y = float(point[0]), float(point[1])
     for entity in msp.query("LWPOLYLINE POLYLINE"):
         try:
-            if not entity.is_closed:
+            if not getattr(entity, "is_closed", False):
                 continue
         except Exception:
             continue
-        if hasattr(entity, 'get_points'):
+        if isinstance(entity, LWPolyline):
             points = list(entity.get_points("xy"))
         else:
             points = [(v.dxf.location[0], v.dxf.location[1]) for v in entity.vertices]
@@ -89,12 +88,12 @@ def point_in_polygon(x, y, polygon_points):
 
 def point_to_line_distance(point, line_start, line_end):
     line_vec = line_end - line_start
-    line_length_sq = np.dot(line_vec, line_vec)
+    line_length_sq = float(np.dot(line_vec, line_vec))
     if line_length_sq == 0:
         return distance(point, line_start)
     point_vec = point - line_start
-    t = np.dot(point_vec, line_vec) / line_length_sq
-    t = max(0, min(1, t))
+    t = float(np.dot(point_vec, line_vec) / line_length_sq)
+    t = max(0.0, min(1.0, t))
     closest_point = line_start + t * line_vec
     return distance(point, closest_point)
 
@@ -104,9 +103,10 @@ def get_text_key(txt):
         handle = get_entity_handle(txt)
         if hasattr(txt.dxf, 'insert'):
             pos = txt.dxf.insert
-            return f"{handle}_{pos[0]}_{pos[1]}"
+            if hasattr(pos, "__getitem__") and len(pos) >= 2:
+                return f"{handle}_{float(pos[0])}_{float(pos[1])}"
         return handle
-    except:
+    except Exception:
         return str(id(txt))
 
 def create_tbox(txt):
@@ -120,10 +120,10 @@ def create_tbox(txt):
     else:
         return None
     text_length, text_height = get_text_dimensions(txt)
-    tbox_left = txt_pt[0]
-    tbox_right = txt_pt[0] + text_length
-    tbox_bottom = txt_pt[1]
-    tbox_top = txt_pt[1] + text_height
+    tbox_left = float(txt_pt[0])
+    tbox_right = float(txt_pt[0]) + text_length
+    tbox_bottom = float(txt_pt[1])
+    tbox_top = float(txt_pt[1]) + text_height
     move_x = text_length / 2.0
     tbox_left += move_x
     tbox_right += move_x
@@ -131,7 +131,7 @@ def create_tbox(txt):
         np.array([tbox_left, tbox_bottom]),
         np.array([tbox_right, tbox_bottom]),
         np.array([tbox_right, tbox_top]),
-        np.array([tbox_left, tbox_top])
+        np.array([tbox_left, tbox_top]),
     ]
     tbox_info = {
         'corners': tbox_corners,
@@ -141,7 +141,7 @@ def create_tbox(txt):
         'top': tbox_top,
         'text_length': text_length,
         'text_height': text_height,
-        'original_position': txt_pt
+        'original_position': txt_pt,
     }
     TBOX_CACHE[text_key] = tbox_info
     return tbox_info
@@ -155,7 +155,8 @@ def find_dim_pairs_optimized(all_line_entities):
     two_point_entities = []
     for ent in all_line_entities:
         try:
-            if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+            layer = ent.dxf.layer if hasattr(ent, "dxf") else ""
+            if not str(layer).startswith(DIM_LAYER_PREFIXES):
                 continue
             segments = extract_segments(ent)
             if len(segments) != 1:
@@ -163,7 +164,7 @@ def find_dim_pairs_optimized(all_line_entities):
             p0, p1 = segments[0]
             v0, v1 = to2d(p0), to2d(p1)
             length = distance(v0, v1)
-            if 1.5 <= length <= 12:
+            if 1.5 <= length <= 12.0:
                 two_point_entities.append((ent, v0, v1, length))
         except Exception:
             continue
@@ -231,14 +232,14 @@ def find_dim_pairs_optimized(all_line_entities):
                             dim1_common, dim1_opposite = v1_1, v0_1
                             dim2_common, dim2_opposite = v1_2, v0_2
 
-                        dot_product = np.dot(vec1, vec2)
+                        dot_product = float(np.dot(vec1, vec2))
                         if dot_product < 0:
                             if ent1 not in overlapped_entities and ent2 not in overlapped_entities:
                                 dim_pairs.append({
                                     'DIM1': ent1, 'DIM1_common': dim1_common, 'DIM1_opposite': dim1_opposite,
                                     'DIM2': ent2, 'DIM2_common': dim2_common, 'DIM2_opposite': dim2_opposite,
                                     'common_point': (close_pt1 + close_pt2) / 2,
-                                    'length': (len1 + len2) / 2
+                                    'length': (len1 + len2) / 2,
                                 })
                                 valid_pair_found = True
                                 break
@@ -261,7 +262,8 @@ def find_arrow_entities_optimized(all_line_entities, point, tolerance=0.5):
     arrows = []
     for ent in all_line_entities:
         try:
-            if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+            layer = ent.dxf.layer if hasattr(ent, "dxf") else ""
+            if not str(layer).startswith(DIM_LAYER_PREFIXES):
                 continue
             if isinstance(ent, LWPolyline):
                 points = list(ent.get_points("xy"))
@@ -287,15 +289,12 @@ def find_ad3_entities_optimized(all_line_entities, dim_pair, ad1_entities, ad2_e
     dim2_common = dim_pair['DIM2_common']
     dim2_opposite = dim_pair['DIM2_opposite']
     dim_far_endpoints = [dim1_opposite, dim2_opposite]
-    excluded_handles = set()
-    for ad1 in ad1_entities:
-        excluded_handles.add(get_entity_handle(ad1))
-    for ad2 in ad2_entities:
-        excluded_handles.add(get_entity_handle(ad2))
+    excluded_handles = set(get_entity_handle(a) for a in ad1_entities + ad2_entities)
 
     for ent in all_line_entities:
         try:
-            if not (ent.dxf.layer.startswith(DIM_LAYER_PREFIXES) or ent.dxf.layer.upper() == "ARROW"):
+            layer = ent.dxf.layer if hasattr(ent, "dxf") else ""
+            if not (str(layer).startswith(DIM_LAYER_PREFIXES) or str(layer).upper() == "ARROW"):
                 continue
             if get_entity_handle(ent) in excluded_handles:
                 continue
@@ -308,7 +307,8 @@ def find_ad3_entities_optimized(all_line_entities, dim_pair, ad1_entities, ad2_e
             if len(points) != 3:
                 continue
             pts = [to2d(p) for p in points]
-            if ent.dxf.layer.upper() == "ARROW":
+
+            if str(layer).upper() == "ARROW":
                 is_near_far_endpoint = False
                 for pt in pts:
                     for far_endpoint in dim_far_endpoints:
@@ -319,6 +319,7 @@ def find_ad3_entities_optimized(all_line_entities, dim_pair, ad1_entities, ad2_e
                         break
                 if is_near_far_endpoint:
                     continue
+
             min_dist_to_cp = min(distance(pt, common_point) for pt in pts)
             if min_dist_to_cp <= tolerance:
                 ad3_candidates.append((ent, min_dist_to_cp))
@@ -340,14 +341,12 @@ def find_ad3_touching_dims(all_line_entities, dim1_ent, dim2_ent, ad1_entities, 
     dim2_start, dim2_end = to2d(dim2_segments[0][0]), to2d(dim2_segments[0][1])
     dim_endpoints = [dim1_start, dim1_end, dim2_start, dim2_end]
     excluded_handles = {get_entity_handle(dim1_ent), get_entity_handle(dim2_ent)}
-    for ad1 in ad1_entities:
-        excluded_handles.add(get_entity_handle(ad1))
-    for ad2 in ad2_entities:
-        excluded_handles.add(get_entity_handle(ad2))
+    excluded_handles.update(get_entity_handle(a) for a in (ad1_entities + ad2_entities))
 
     for ent in all_line_entities:
         try:
-            if ent.dxf.layer.upper() != "GT_1":
+            layer = ent.dxf.layer if hasattr(ent, "dxf") else ""
+            if str(layer).upper() != "GT_1":
                 continue
             if get_entity_handle(ent) in excluded_handles:
                 continue
@@ -402,7 +401,7 @@ def find_arrow_lines_touching_ad3(all_line_entities, ad3_entities, tolerance=0.1
         if not isinstance(ent, Line):
             continue
         try:
-            if ent.dxf.layer.upper() != "ARROW":
+            if str(ent.dxf.layer).upper() != "ARROW":
                 continue
             segments = extract_segments(ent)
             if not segments:
@@ -439,7 +438,8 @@ def find_g1_entities_optimized_with_all_dims(all_line_entities, dim1_ent, dim2_e
 
     for ent in all_line_entities:
         try:
-            if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+            layer = ent.dxf.layer if hasattr(ent, "dxf") else ""
+            if not str(layer).startswith(DIM_LAYER_PREFIXES):
                 continue
             if get_entity_handle(ent) in all_used_dim_handles:
                 continue
@@ -455,27 +455,30 @@ def find_g1_entities_optimized_with_all_dims(all_line_entities, dim1_ent, dim2_e
             far_end_exclusion_distance = 0.5
             if min_dist_to_far_ends <= far_end_exclusion_distance:
                 continue
+
             min_dist_to_valid_area = float('inf')
-            for g1_pt in [v0, v1]:
+            for g1_pt in (v0, v1):
                 dist_to_common = distance(g1_pt, common_point)
                 if dist_to_common < min_dist_to_valid_area:
                     min_dist_to_valid_area = dist_to_common
-            for g1_pt in [v0, v1]:
+            for g1_pt in (v0, v1):
                 dist_to_dim1_common = distance(g1_pt, dim1_common)
                 dist_to_dim1_line = point_to_line_distance(g1_pt, dim1_start, dim1_end)
                 min_dist_dim1 = min(dist_to_dim1_common, dist_to_dim1_line)
                 if min_dist_dim1 < min_dist_to_valid_area:
                     min_dist_to_valid_area = min_dist_dim1
-            for g1_pt in [v0, v1]:
+            for g1_pt in (v0, v1):
                 dist_to_dim2_common = distance(g1_pt, dim2_common)
                 dist_to_dim2_line = point_to_line_distance(g1_pt, dim2_start, dim2_end)
                 min_dist_dim2 = min(dist_to_dim2_common, dist_to_dim2_line)
                 if min_dist_dim2 < min_dist_to_valid_area:
                     min_dist_to_valid_area = min_dist_dim2
+
             if min_dist_to_valid_area <= tolerance:
                 g1_candidates.append((ent, v0, v1, min_dist_to_valid_area))
         except Exception:
             continue
+
     if g1_candidates:
         g1_candidates.sort(key=lambda x: x[3])
         closest_g1 = g1_candidates[0]
@@ -494,7 +497,7 @@ def find_ct_texts(msp, g1_entities, text_entities, dim_pair, search_radius=10.0)
             try:
                 if hasattr(txt.dxf, 'color') and txt.dxf.color == 1:
                     continue
-                if hasattr(txt.dxf, 'layer') and 'WDNO' in txt.dxf.layer.upper():
+                if hasattr(txt.dxf, 'layer') and 'WDNO' in str(txt.dxf.layer).upper():
                     continue
                 if hasattr(txt.dxf, 'insert') and txt.dxf.insert is not None:
                     txt_pt = to2d(txt.dxf.insert)
@@ -502,7 +505,7 @@ def find_ct_texts(msp, g1_entities, text_entities, dim_pair, search_radius=10.0)
                     txt_pt = to2d(txt.dxf.align_point)
                 else:
                     continue
-            except:
+            except Exception:
                 continue
             dist = distance(txt_pt, search_point)
             if dist > search_radius:
@@ -511,13 +514,13 @@ def find_ct_texts(msp, g1_entities, text_entities, dim_pair, search_radius=10.0)
             if abs(rotation) > 0.1:
                 continue
             text_val = txt.plain_text() if hasattr(txt, "plain_text") else txt.dxf.text
-            if not text_val.isdigit():
+            if not str(text_val).isdigit():
                 continue
             try:
                 text_numeric_value = int(text_val)
                 if text_numeric_value <= 10:
                     continue
-            except:
+            except Exception:
                 continue
             if is_enclosed(txt_pt, msp):
                 continue
@@ -544,7 +547,7 @@ def get_text_dimensions(txt):
             return text_length, height
         elif txt.dxftype() == "MTEXT":
             text_val = txt.plain_text() if hasattr(txt, "plain_text") else txt.dxf.text
-            height = float(txt.dxf.char_height) if hasattr(txt.dxf, 'char_height') else 1.0
+            height = float(getattr(txt.dxf, 'char_height', 1.0))
             char_width = height * 0.6
             text_length = len(text_val) * char_width
             return text_length, height
@@ -581,16 +584,14 @@ def calculate_text_angle(chain_dir):
 def find_parallel_polylines_for_ang(msp, dim_pair, tolerance=0.5):
     dim1_opposite = dim_pair['DIM1_opposite']
     dim2_opposite = dim_pair['DIM2_opposite']
-    excluded_handles = {
-        get_entity_handle(dim_pair['DIM1']),
-        get_entity_handle(dim_pair['DIM2'])
-    }
+    excluded_handles = {get_entity_handle(dim_pair['DIM1']), get_entity_handle(dim_pair['DIM2'])}
     search_points = [dim1_opposite, dim2_opposite]
     found_polylines = []
     for search_point in search_points:
         for ent in msp.query("LWPOLYLINE POLYLINE"):
             try:
-                if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+                layer = ent.dxf.layer if hasattr(ent, "dxf") else ""
+                if not str(layer).startswith(DIM_LAYER_PREFIXES):
                     continue
                 if get_entity_handle(ent) in excluded_handles:
                     continue
@@ -618,16 +619,14 @@ def find_parallel_polylines_for_ang(msp, dim_pair, tolerance=0.5):
 def find_and_color_ct1_polylines(msp, dim_pair, tolerance=0.5):
     dim1_common = dim_pair['DIM1_common']
     dim1_opposite = dim_pair['DIM1_opposite']
-    excluded_handles = {
-        get_entity_handle(dim_pair['DIM1']),
-        get_entity_handle(dim_pair['DIM2'])
-    }
+    excluded_handles = {get_entity_handle(dim_pair['DIM1']), get_entity_handle(dim_pair['DIM2'])}
     search_points = [dim1_common, dim1_opposite]
     found_polylines = []
     for search_point in search_points:
         for ent in msp.query("LWPOLYLINE POLYLINE"):
             try:
-                if not ent.dxf.layer.startswith(DIM_LAYER_PREFIXES):
+                layer = ent.dxf.layer if hasattr(ent, "dxf") else ""
+                if not str(layer).startswith(DIM_LAYER_PREFIXES):
                     continue
                 if get_entity_handle(ent) in excluded_handles:
                     continue
@@ -655,16 +654,16 @@ def process_ct_text_with_enhanced_interference_check(txt, g1_ent, v0, v1, text_a
         elif (hasattr(txt.dxf, 'align_point') and txt.dxf.align_point is not None):
             current_pos = to2d(txt.dxf.align_point)
         else:
-            return
-    except:
-        return
+            return False
+    except Exception:
+        return False
 
     dim1_ent = dim_pair['DIM1']
     dim2_ent = dim_pair['DIM2']
     dim1_segments = extract_segments(dim1_ent)
     dim2_segments = extract_segments(dim2_ent)
     if not dim1_segments or not dim2_segments:
-        return
+        return False
     dim1_start, dim1_end = to2d(dim1_segments[0][0]), to2d(dim1_segments[0][1])
     dim2_start, dim2_end = to2d(dim2_segments[0][0]), to2d(dim2_segments[0][1])
 
@@ -691,7 +690,7 @@ def process_ct_text_with_enhanced_interference_check(txt, g1_ent, v0, v1, text_a
     cp_centered_point = common_point - text_direction * text_half_length
     current_text_center = cp_centered_point + text_direction * text_half_length
     cp_to_text_center_vec = current_text_center - common_point
-    cp_to_text_center_distance = np.linalg.norm(cp_to_text_center_vec)
+    cp_to_text_center_distance = float(np.linalg.norm(cp_to_text_center_vec))
     if cp_to_text_center_distance > 0:
         cp_to_text_center_direction = cp_to_text_center_vec / cp_to_text_center_distance
         move_0_6mm = cp_to_text_center_direction * 0.6
@@ -739,41 +738,40 @@ def process_ct_text_with_enhanced_interference_check(txt, g1_ent, v0, v1, text_a
             final_position = best_position
 
     final_to_cp_vec = common_point - final_position
-    final_to_cp_distance = np.linalg.norm(final_to_cp_vec)
+    final_to_cp_distance = float(np.linalg.norm(final_to_cp_vec))
     if final_to_cp_distance > 0:
         final_to_cp_direction = final_to_cp_vec / final_to_cp_distance
         cp_move_2mm = final_to_cp_direction * 2.0
         final_position = final_position + cp_move_2mm
 
-    move_distance = -2
+    move_distance = -2.0
     dim1_segments = extract_segments(dim_pair['DIM1'])
     if dim1_segments:
         dim1_start, dim1_end = to2d(dim1_segments[0][0]), to2d(dim1_segments[0][1])
         dim1_vec = dim1_end - dim1_start
-        dim1_length = np.linalg.norm(dim1_vec)
+        dim1_length = float(np.linalg.norm(dim1_vec))
         if dim1_length > 0:
             dim1_unit = dim1_vec / dim1_length
             to_cp_vec = common_point - final_position
-            projection_length = np.dot(to_cp_vec, dim1_unit)
-            if projection_length > 0:
-                move_direction = dim1_unit
-            else:
-                move_direction = -dim1_unit
+            projection_length = float(np.dot(to_cp_vec, dim1_unit))
+            move_direction = dim1_unit if projection_length > 0 else -dim1_unit
             final_position = final_position + move_direction * move_distance
 
     if txt.dxftype() == "TEXT":
-        old_z = float(txt.dxf.insert[2]) if len(txt.dxf.insert) > 2 else 0.0
+        old_ins = getattr(txt.dxf, "insert", (float(final_position[0]), float(final_position[1]), 0.0))
+        old_z = float(old_ins[2]) if len(old_ins) > 2 else 0.0
         txt.dxf.insert = (float(final_position[0]), float(final_position[1]), old_z)
         txt.dxf.halign = 0
         txt.dxf.valign = 0
         try:
             if hasattr(txt.dxf, 'align_point'):
                 delattr(txt.dxf, 'align_point')
-        except:
+        except Exception:
             pass
         txt.dxf.rotation = float(final_angle)
     elif txt.dxftype() == "MTEXT":
-        old_z = float(txt.dxf.insert[2]) if len(txt.dxf.insert) > 2 else 0.0
+        old_ins = getattr(txt.dxf, "insert", (float(final_position[0]), float(final_position[1]), 0.0))
+        old_z = float(old_ins[2]) if len(old_ins) > 2 else 0.0
         txt.dxf.insert = (float(final_position[0]), float(final_position[1]), old_z)
         txt.dxf.attachment_point = 1
         txt.dxf.rotation = float(final_angle)
@@ -893,7 +891,7 @@ def process_dimension_system(msp, text_entities):
 
     for ent in all_line_entities:
         try:
-            if ent.dxf.layer.upper() == "ARROW":
+            if str(ent.dxf.layer).upper() == "ARROW":
                 if isinstance(ent, LWPolyline):
                     points = list(ent.get_points("xy"))
                 elif isinstance(ent, Polyline):
@@ -937,14 +935,14 @@ def process_dimension_system(msp, text_entities):
                 ad3_ent not in protected_entities_list and
                 ad3_ent not in all_ad1_ad2_entities):
                 msp.delete_entity(ad3_ent)
-        except:
+        except Exception:
             pass
 
     for g1_ent in g1_entities_to_delete:
         try:
             if get_entity_handle(g1_ent) not in protected_entities:
                 msp.delete_entity(g1_ent)
-        except:
+        except Exception:
             pass
 
     for arrow_line in arrow_lines_to_delete_final:
@@ -952,21 +950,48 @@ def process_dimension_system(msp, text_entities):
             if (get_entity_handle(arrow_line) not in protected_entities and
                 arrow_line not in protected_entities_list):
                 msp.delete_entity(arrow_line)
-        except:
+        except Exception:
             pass
 
     return all_processed_entities, all_ct_texts, all_ct1_texts
 
-# ─────────────── 메인 파이프라인 ───────────────
-def auto_align_dxf(input_dxf, output_dxf):
+# ─────────────── in-memory 엔트리 (런너 연동용) ───────────────
+def process(doc: ezdxf.document.Drawing) -> Dict[str, Any]:
+    """
+    런너(예: SAE3D_ON_RUNTEST.py)가 in-memory로 호출하는 엔트리.
+    - 입력: ezdxf Drawing (이미 로드된 문서)
+    - 동작: 본 모듈의 전체 규칙을 적용하여 문서를 수정
+    - 반환: 간단한 처리 결과 메타데이터(dict)
+    """
+    clear_tbox_cache()
+    msp = doc.modelspace()
+    text_entities = list(msp.query("TEXT MTEXT"))
+    processed_entities, ct_texts, ct1_texts = process_dimension_system(msp, text_entities)
+    clear_tbox_cache()
+    return {
+        "processed_entity_handles": [get_entity_handle(e) for e in processed_entities],
+        "ct_count": len(ct_texts),
+        "ct1_count": len(ct1_texts),
+    }
+
+# 선택적 별칭(다른 런너 호환용)
+def pipeline(doc: ezdxf.document.Drawing):
+    return process(doc)
+
+def run(doc: ezdxf.document.Drawing):
+    return process(doc)
+
+def main_process(doc: ezdxf.document.Drawing):
+    return process(doc)
+
+# ─────────────── 파일 입출력 유틸 ───────────────
+def auto_align_dxf(input_dxf: str, output_dxf: str) -> bool:
     if not os.path.isfile(input_dxf):
         return False
     try:
         clear_tbox_cache()
         doc = ezdxf.readfile(input_dxf)
-        msp = doc.modelspace()
-        text_entities = list(msp.query("TEXT MTEXT"))
-        processed_entities, ct_texts, ct1_texts = process_dimension_system(msp, text_entities)
+        _ = process(doc)  # in-memory 처리
         doc.saveas(output_dxf)
         clear_tbox_cache()
         return True
@@ -974,7 +999,27 @@ def auto_align_dxf(input_dxf, output_dxf):
         clear_tbox_cache()
         return False
 
-def process_cli_files(file_list):
+def process_file(path: str, output_path: Optional[str] = None) -> Optional[str]:
+    """
+    스크립트형 호출 호환:
+    - path 로부터 읽어 in-memory로 처리 후 저장
+    - output_path가 없으면 같은 폴더에 *_DIM.dxf 로 저장
+    """
+    if not os.path.isfile(path):
+        return None
+    try:
+        doc = ezdxf.readfile(path)
+        _ = process(doc)
+        if not output_path:
+            base_dir = os.path.dirname(path)
+            base = os.path.splitext(os.path.basename(path))[0]
+            output_path = os.path.join(base_dir, f"{base}_DIM.dxf")
+        doc.saveas(output_path)
+        return output_path
+    except Exception:
+        return None
+
+def process_cli_files(file_list: List[str]) -> None:
     for input_file in file_list:
         try:
             file_dir = os.path.dirname(input_file)
@@ -984,6 +1029,7 @@ def process_cli_files(file_list):
         except Exception:
             pass
 
+# ─────────────── CLI 엔트리 ───────────────
 if __name__ == "__main__":
     # CLI: 여러 DXF 파일 경로를 인자로 받아 각 파일을 *_DIM.dxf로 저장
     # 예) python PLTONEWLINE.PY A.dxf B.dxf C.dxf

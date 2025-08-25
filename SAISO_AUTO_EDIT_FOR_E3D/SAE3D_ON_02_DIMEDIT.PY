@@ -1,3 +1,16 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+PLTONEWLINE.PY
+- GUI(tkinter) 제거: 명령행 인자로 여러 DXF 파일을 받아 처리하고 무조건 저장
+  예) python PLTONEWLINE.PY A.DXF B.DXF C.DXF
+- 전수쌍(O(n^2)) 제거: 공간 해시(Spatial Hash) 기반 O(n·k) 근접 질의로 가속
+- CT 간섭 검토는 CT 중심 ±50mm 윈도우 내에서만 수행
+- 스텝 런너(in-memory) 연동용 엔트리: process(doc: ezdxf.document.Drawing) -> ezdxf.document.Drawing
+
+주의: 본 파일은 기존 동작 로직을 유지하며, 출력/프린트/GUI를 모두 제거했습니다.
+"""
+
 import os
 import sys
 import math
@@ -5,9 +18,6 @@ import ezdxf
 import numpy as np
 from typing import List, Tuple, Dict, Any, Iterable, Optional, Set
 from ezdxf.entities import Line, LWPolyline, Polyline, Text
-import tkinter as tk
-from tkinter import filedialog
-from tkinter import ttk
 
 # ─────────────────────────────────────────────────────────────
 # 설정 값
@@ -101,7 +111,6 @@ class SpatialHash2D:
         for ix in range(kx - rx, kx + rx + 1):
             for iy in range(ky - ry, ky + ry + 1):
                 for qp, payload in self._buckets.get((ix, iy), ()):  # type: ignore
-                    # 실제 거리 필터는 호출측에서 수행(필요시)
                     yield qp, payload
 
 
@@ -195,7 +204,6 @@ def create_tbox(txt) -> Optional[Dict[str, Any]]:
     if key in TBOX_CACHE:
         return TBOX_CACHE[key]
 
-    # 위치
     if hasattr(txt.dxf, 'insert') and txt.dxf.insert is not None:
         pos = to2d(txt.dxf.insert)
     elif hasattr(txt.dxf, 'align_point') and txt.dxf.align_point is not None:
@@ -209,7 +217,6 @@ def create_tbox(txt) -> Optional[Dict[str, Any]]:
     bottom = float(pos[1])
     top = bottom + height
 
-    # +X 로 길이/2 만큼 이동
     move_x = length / 2.0
     left += move_x
     right += move_x
@@ -236,8 +243,7 @@ def create_tbox(txt) -> Optional[Dict[str, Any]]:
 
 
 # ─────────────────────────────────────────────────────────────
-# 고성능 DIM 쌍 찾기: 공간 해시 이용
-#  - 평균 O(n·k)
+# 고성능 DIM 쌍 찾기: 공간 해시 이용 — 평균 O(n·k)
 # ─────────────────────────────────────────────────────────────
 
 def _layer_starts_with(ent, prefixes: Tuple[str, ...]) -> bool:
@@ -269,7 +275,6 @@ def find_dim_pairs_indexed(all_line_entities: List[Any]) -> Tuple[List[Dict[str,
         except Exception:
             continue
 
-    # 공간 해시: 가까운 끝점만 후보로
     idx = SpatialHash2D(cell=CLOSE_TOL)
     for i, (_, v0, v1, _) in enumerate(two_point):
         idx.insert(v0, (i, 0))
@@ -277,49 +282,41 @@ def find_dim_pairs_indexed(all_line_entities: List[Any]) -> Tuple[List[Dict[str,
 
     dim_pairs: List[Dict[str, Any]] = []
     overlapped: List[Any] = []
-
-    used: Set[Tuple[int, int]] = set()  # (min_i, max_j) 중복 방지
+    used: Set[Tuple[int, int]] = set()
 
     for i, (e1, v0_1, v1_1, len1) in enumerate(two_point):
         for endpoint, v_close_1, v_far_1 in ((0, v0_1, v1_1), (1, v1_1, v0_1)):
-            # 근접 후보만
             for qp, (j, ep_j) in idx.query(v_close_1, CLOSE_TOL):
                 if j <= i:
                     continue
                 e2, v0_2, v1_2, len2 = two_point[j]
                 if abs(len1 - len2) > LEN_TOL:
                     continue
-
-                # j의 가까운/먼 점 결정
                 v_close_2 = v0_2 if ep_j == 0 else v1_2
                 v_far_2 = v1_2 if ep_j == 0 else v0_2
-
                 if distance(v_close_1, v_close_2) > CLOSE_TOL:
                     continue
-
-                # 완전 중첩(두 끝점 모두 근접)
                 if distance(v_far_1, v_far_2) <= CLOSE_TOL:
-                    if e1 not in overlapped:
+                    try:
                         e1.dxf.color = 3
+                        e2.dxf.color = 3
+                    except Exception:
+                        pass
+                    if e1 not in overlapped:
                         overlapped.append(e1)
                     if e2 not in overlapped:
-                        e2.dxf.color = 3
                         overlapped.append(e2)
                     continue
-
-                # 반대 방향/멀리 떨어져 있는지
                 if distance(v_far_1, v_far_2) < FAR_THR:
                     continue
                 vec1 = v_far_1 - v_close_1
                 vec2 = v_far_2 - v_close_2
                 if float(np.dot(vec1, vec2)) >= 0.0:
                     continue
-
                 key = (i, j)
                 if key in used:
                     continue
                 used.add(key)
-
                 dim_pairs.append({
                     'DIM1': e1,
                     'DIM2': e2,
@@ -376,10 +373,8 @@ def _build_point_index_for_entities(entities: List[Any], cell: float) -> Spatial
 
 
 def find_arrow_entities_indexed(all_line_entities: List[Any], near_point: np.ndarray, tol: float = AD_TOL) -> List[Any]:
-    # DIM 레이어(접두사)만 대상
     three_pts = _collect_three_point_polylines(all_line_entities, layers=DIM_LAYER_PREFIXES)
     idx = _build_point_index_for_entities(three_pts, cell=tol)
-
     seen: Set[str] = set()
     result: List[Any] = []
     for qp, ent in idx.query(near_point, tol):
@@ -395,14 +390,11 @@ def find_arrow_entities_indexed(all_line_entities: List[Any], near_point: np.nda
 
 
 def find_ad3_entities_indexed(all_line_entities: List[Any], dim_pair: Dict[str, Any], ad1_entities: List[Any], ad2_entities: List[Any], tol: float = AD_TOL) -> List[Any]:
-    # DIM 레이어 접두사 또는 ARROW 레이어 모두 포함
     three_dim = _collect_three_point_polylines(all_line_entities, layers=DIM_LAYER_PREFIXES)
     three_arr = [e for e in _collect_three_point_polylines(all_line_entities) if getattr(e.dxf, 'layer', '').upper() == 'ARROW']
     candidates = three_dim + three_arr
     idx = _build_point_index_for_entities(candidates, cell=tol)
-
     excluded: Set[str] = set(get_entity_handle(e) for e in (ad1_entities + ad2_entities))
-
     common_point = dim_pair['common_point']
     near: List[Any] = []
     for qp, ent in idx.query(common_point, tol):
@@ -413,11 +405,8 @@ def find_ad3_entities_indexed(all_line_entities: List[Any], dim_pair: Dict[str, 
                     near.append(ent)
         except Exception:
             continue
-
-    # 가장 가까운 한 개만 채택(기존 정책 유지)
     if not near:
         return []
-
     def min_dist_to_cp(e) -> float:
         try:
             if isinstance(e, LWPolyline):
@@ -427,32 +416,24 @@ def find_ad3_entities_indexed(all_line_entities: List[Any], dim_pair: Dict[str, 
             return min(distance(to2d(p), common_point) for p in pts)
         except Exception:
             return 1e9
-
     near.sort(key=min_dist_to_cp)
     return [near[0]]
 
 
 def find_ad3_touching_dims_indexed(all_line_entities: List[Any], dim1_ent: Any, dim2_ent: Any, ad1_entities: List[Any], ad2_entities: List[Any], tol: float = TOUCH_TOL) -> List[Any]:
-    # ARROW 레이어의 3점 폴리라인만 고려
     arrows = [e for e in _collect_three_point_polylines(all_line_entities) if getattr(e.dxf, 'layer', '').upper() == 'ARROW']
     idx = _build_point_index_for_entities(arrows, cell=tol)
-
     segs1 = extract_segments(dim1_ent)
     segs2 = extract_segments(dim2_ent)
     if not segs1 or not segs2:
         return []
     d1s, d1e = to2d(segs1[0][0]), to2d(segs1[0][1])
     d2s, d2e = to2d(segs2[0][0]), to2d(segs2[0][1])
-
     excluded = {get_entity_handle(dim1_ent), get_entity_handle(dim2_ent)}
     excluded.update(get_entity_handle(e) for e in (ad1_entities + ad2_entities))
-
-    # 두 DIM 선 주변의 후보만 검사 (끝점 근방 + 선 주변 스캔)
     result: List[Any] = []
     seen: Set[str] = set()
-
     probe_points = [d1s, d1e, d2s, d2e]
-
     for probe in probe_points:
         for qp, ent in idx.query(probe, tol):
             try:
@@ -461,7 +442,6 @@ def find_ad3_touching_dims_indexed(all_line_entities: List[Any], dim1_ent: Any, 
                 h = get_entity_handle(ent)
                 if h in excluded or h in seen:
                     continue
-                # 접촉 여부 판단
                 if isinstance(ent, LWPolyline):
                     pts = list(ent.get_points("xy"))
                 else:
@@ -477,7 +457,6 @@ def find_ad3_touching_dims_indexed(all_line_entities: List[Any], dim1_ent: Any, 
                     seen.add(h)
             except Exception:
                 continue
-
     return result
 
 
@@ -487,8 +466,6 @@ def find_ad3_touching_dims_indexed(all_line_entities: List[Any], dim1_ent: Any, 
 
 def find_arrow_lines_touching_ad3_indexed(all_line_entities: List[Any], ad3_entities: List[Any], tol: float = ARROW_LINE_TOL) -> List[Any]:
     arrow_lines = [e for e in all_line_entities if isinstance(e, Line) and getattr(e.dxf, 'layer', '').upper() == 'ARROW']
-
-    # 라인 끝점 인덱스
     idx = SpatialHash2D(cell=tol)
     lengths: Dict[str, float] = {}
     for ln in arrow_lines:
@@ -504,8 +481,6 @@ def find_arrow_lines_touching_ad3_indexed(all_line_entities: List[Any], ad3_enti
             idx.insert(v1, ln)
         except Exception:
             continue
-
-    # AD3의 모든 점들 수집
     pts_ad3: List[np.ndarray] = []
     for ad3 in ad3_entities:
         try:
@@ -517,7 +492,6 @@ def find_arrow_lines_touching_ad3_indexed(all_line_entities: List[Any], ad3_enti
                 pts_ad3.append(to2d(p))
         except Exception:
             continue
-
     result: List[Any] = []
     seen: Set[str] = set()
     for p in pts_ad3:
@@ -541,7 +515,6 @@ def find_arrow_lines_touching_ad3_indexed(all_line_entities: List[Any], ad3_enti
 # ─────────────────────────────────────────────────────────────
 
 def find_g1_entities_indexed(all_line_entities: List[Any], dim1_ent: Any, dim2_ent: Any, dim_pair: Dict[str, Any], all_used_dim_handles: Set[str], tol: float = 0.2) -> List[Tuple[Any, np.ndarray, np.ndarray]]:
-    # 후보: DIM 레이어의 단일 선분 요소들
     candidates: List[Tuple[Any, np.ndarray, np.ndarray]] = []
     for ent in all_line_entities:
         try:
@@ -557,32 +530,24 @@ def find_g1_entities_indexed(all_line_entities: List[Any], dim1_ent: Any, dim2_e
             candidates.append((ent, to2d(p0), to2d(p1)))
         except Exception:
             continue
-
-    # 끝점 인덱스 구축
     idx = SpatialHash2D(cell=tol)
     for c in candidates:
         _, v0, v1 = c
         idx.insert(v0, c)
         idx.insert(v1, c)
-
-    # 유효 영역: CP/각 DIM 공통점/선까지의 거리 기준
     segs1 = extract_segments(dim1_ent)
     segs2 = extract_segments(dim2_ent)
     if not segs1 or not segs2:
         return []
     d1s, d1e = to2d(segs1[0][0]), to2d(segs1[0][1])
     d2s, d2e = to2d(segs2[0][0]), to2d(segs2[0][1])
-
     cp = dim_pair['common_point']
     search_points = [cp, dim_pair['DIM1_common'], dim_pair['DIM2_common']]
-
     best: Optional[Tuple[Any, np.ndarray, np.ndarray, float]] = None
-
     for sp in search_points:
         for qp, cand in idx.query(sp, tol):
             try:
                 ent, v0, v1 = cand
-                # 가장 가까운 유효성 스코어(작을수록 좋음)
                 d_cp = min(distance(v0, cp), distance(v1, cp))
                 d1 = min(distance(v0, dim_pair['DIM1_common']), point_to_line_distance(v0, d1s, d1e),
                          distance(v1, dim_pair['DIM1_common']), point_to_line_distance(v1, d1s, d1e))
@@ -594,7 +559,6 @@ def find_g1_entities_indexed(all_line_entities: List[Any], dim1_ent: Any, dim2_e
                         best = (ent, v0, v1, score)
             except Exception:
                 continue
-
     return [(best[0], best[1], best[2])] if best else []
 
 
@@ -621,55 +585,39 @@ def build_text_index(text_entities: List[Any], cell: float = 10.0) -> SpatialHas
 def find_ct_texts_indexed(msp, g1_entities: List[Tuple[Any, np.ndarray, np.ndarray]], text_entities: List[Any], dim_pair: Dict[str, Any], text_index: SpatialHash2D, search_radius: float = CT_SEARCH_RADIUS) -> List[Any]:
     ct_texts: List[Any] = []
     cp = dim_pair['common_point']
-
     for g1_ent, v0, v1 in g1_entities:
-        # CP에서 더 먼 쪽
         sp = v0 if distance(v0, cp) > distance(v1, cp) else v1
-
         candidates: List[Tuple[float, Any, int, Dict[str, Any]]] = []
         for qp, txt in text_index.query(sp, search_radius):
             try:
-                # 위치/반경 필터
                 if distance(qp, sp) > search_radius:
                     continue
-
-                # 색상/레이어 필터
                 if hasattr(txt.dxf, 'color') and int(getattr(txt.dxf, 'color', 0)) == 1:
-                    continue  # RED 제외
+                    continue
                 if hasattr(txt.dxf, 'layer') and 'WDNO' in str(txt.dxf.layer).upper():
                     continue
-
-                # 회전 0 근처
                 rot = float(getattr(txt.dxf, 'rotation', 0.0))
                 if abs(rot) > 0.1:
                     continue
-
-                # 값이 10 초과 정수
                 val = txt.plain_text() if hasattr(txt, "plain_text") else txt.dxf.text
                 if not str(val).isdigit():
                     continue
                 iv = int(val)
                 if iv <= 10:
                     continue
-
-                # 폐영역 내부 제외
                 if is_enclosed(qp, msp):
                     continue
-
                 tbox = create_tbox(txt)
                 if not tbox:
                     continue
-
                 min_d_tbox = min(distance(sp, corner) for corner in tbox['corners'])
                 candidates.append((min_d_tbox, txt, iv, tbox))
             except Exception:
                 continue
-
         if candidates:
             candidates.sort(key=lambda x: x[0])
             ct_texts.append(candidates[0][1])
             break
-
     return ct_texts
 
 
@@ -697,10 +645,7 @@ def calculate_text_angle(chain_dir: float) -> float:
 def find_parallel_polylines_for_ang(msp, dim_pair: Dict[str, Any], tol: float = 0.5) -> float:
     dim1_opp = dim_pair['DIM1_opposite']
     dim2_opp = dim_pair['DIM2_opposite']
-
     excl = {get_entity_handle(dim_pair['DIM1']), get_entity_handle(dim_pair['DIM2'])}
-
-    # 후보(정확히 2점) 수집 및 인덱스
     cands: List[Tuple[Any, np.ndarray, np.ndarray]] = []
     for ent in msp.query("LWPOLYLINE POLYLINE"):
         try:
@@ -718,15 +663,12 @@ def find_parallel_polylines_for_ang(msp, dim_pair: Dict[str, Any], tol: float = 
             cands.append((ent, v0, v1))
         except Exception:
             continue
-
     idx = SpatialHash2D(cell=tol)
     for ent, v0, v1 in cands:
         idx.insert(v0, (ent, v0, v1))
         idx.insert(v1, (ent, v0, v1))
-
     search_points = [dim1_opp, dim2_opp]
-    best: Optional[Tuple[Any, float, float]] = None  # (ent, angle, dist)
-
+    best: Optional[Tuple[Any, float, float]] = None
     for sp in search_points:
         for qp, payload in idx.query(sp, tol):
             try:
@@ -739,7 +681,6 @@ def find_parallel_polylines_for_ang(msp, dim_pair: Dict[str, Any], tol: float = 
                     best = (ent, ang, d)
             except Exception:
                 continue
-
     return 0.0 if best is None else float(best[1])
 
 
@@ -747,7 +688,6 @@ def find_and_color_ct1_polylines(msp, dim_pair: Dict[str, Any], tol: float = 0.5
     d1c = dim_pair['DIM1_common']
     d1o = dim_pair['DIM1_opposite']
     excl = {get_entity_handle(dim_pair['DIM1']), get_entity_handle(dim_pair['DIM2'])}
-
     cands: List[Tuple[Any, np.ndarray, np.ndarray]] = []
     for ent in msp.query("LWPOLYLINE POLYLINE"):
         try:
@@ -765,12 +705,10 @@ def find_and_color_ct1_polylines(msp, dim_pair: Dict[str, Any], tol: float = 0.5
             cands.append((ent, v0, v1))
         except Exception:
             continue
-
     idx = SpatialHash2D(cell=tol)
     for ent, v0, v1 in cands:
         idx.insert(v0, ent)
         idx.insert(v1, ent)
-
     found: List[Tuple[Any, float]] = []
     for sp in (d1c, d1o):
         for qp, ent in idx.query(sp, tol):
@@ -779,7 +717,6 @@ def find_and_color_ct1_polylines(msp, dim_pair: Dict[str, Any], tol: float = 0.5
                     found.append((ent, distance(qp, sp)))
             except Exception:
                 continue
-
     if found:
         found.sort(key=lambda x: x[1])
         ent = found[0][0]
@@ -792,18 +729,15 @@ def find_and_color_ct1_polylines(msp, dim_pair: Dict[str, Any], tol: float = 0.5
 def check_ct_dim_interference(ct_pos: np.ndarray, text_length: float, text_height: float,
                               d1s: np.ndarray, d1e: np.ndarray, d2s: np.ndarray, d2e: np.ndarray,
                               window_radius: float = CT_SEARCH_RADIUS) -> Tuple[bool, float, float]:
-    # ±50mm 윈도우 내에서만 간섭 검사
     d1 = point_to_line_distance(ct_pos, d1s, d1e)
     d2 = point_to_line_distance(ct_pos, d2s, d2e)
     if min(d1, d2) > window_radius:
         return False, d1, d2
-
     thr = text_height * 0.6
     return (d1 < thr or d2 < thr), d1, d2
 
 
 def process_ct_text(txt, g1_ent, v0, v1, text_angle: float, cp: np.ndarray, dim_pair: Dict[str, Any], msp) -> bool:
-    # 위치
     try:
         if hasattr(txt.dxf, 'insert') and txt.dxf.insert is not None:
             cur = to2d(txt.dxf.insert)
@@ -813,18 +747,14 @@ def process_ct_text(txt, g1_ent, v0, v1, text_angle: float, cp: np.ndarray, dim_
             return False
     except Exception:
         return False
-
-    # DIM 선 준비
     segs1 = extract_segments(dim_pair['DIM1'])
     segs2 = extract_segments(dim_pair['DIM2'])
     if not segs1 or not segs2:
         return False
     d1s, d1e = to2d(segs1[0][0]), to2d(segs1[0][1])
     d2s, d2e = to2d(segs2[0][0]), to2d(segs2[0][1])
-
     dim_len = float(dim_pair['length'])
     is_ct1 = 1.2 <= dim_len <= 1.5
-
     if is_ct1:
         final_ang = 0.0
         find_and_color_ct1_polylines(msp, dim_pair)
@@ -834,41 +764,23 @@ def process_ct_text(txt, g1_ent, v0, v1, text_angle: float, cp: np.ndarray, dim_
             final_ang = find_parallel_polylines_for_ang(msp, dim_pair)
         else:
             final_ang = text_angle
-
     tlen, th = get_text_dimensions(txt)
     half = tlen / 2.0
-
     ang_rad = math.radians(final_ang)
     dir_vec = np.array([math.cos(ang_rad), math.sin(ang_rad)])
     perp = np.array([-math.sin(ang_rad), math.cos(ang_rad)])
-
-    # 1) 중심 CP 정렬
     cp_centered = cp - dir_vec * half
-
-    # 2) CP -> 텍스트 중심 0.6mm 이동
     cur_center = cp_centered + dir_vec * half
     v = cur_center - cp
     vlen = float(np.linalg.norm(v))
-    if vlen > 0:
-        step = v / vlen * 0.6
-    else:
-        step = dir_vec * 0.6
+    step = (v / vlen * 0.6) if vlen > 0 else (dir_vec * 0.6)
     inter = cp_centered + step
-
-    # 3) 간섭 검사 (±50mm 윈도우내)
     clash, _, _ = check_ct_dim_interference(inter, tlen, th, d1s, d1e, d2s, d2e)
     final = inter
-
     if clash:
-        # 4) 반대방향 1.2mm 이동
-        if vlen > 0:
-            cand = inter - (v / vlen) * 1.2
-        else:
-            cand = inter - dir_vec * 1.2
+        cand = inter - ((v / vlen) * 1.2 if vlen > 0 else (dir_vec * 1.2))
         clash2, _, _ = check_ct_dim_interference(cand, tlen, th, d1s, d1e, d2s, d2e)
         final = cand if not clash2 else inter
-
-        # 5) 여전히 간섭이면 좌우/위아래 탐색(최대 8회)
         if clash2:
             positions: List[np.ndarray] = []
             for off in [1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0]:
@@ -880,14 +792,10 @@ def process_ct_text(txt, g1_ent, v0, v1, text_angle: float, cp: np.ndarray, dim_
                 if not ok:
                     final = p
                     break
-
-    # 6) 최종 위치에서 CP 방향으로 2mm 추가 이동
     dvec = cp - final
     dlen = float(np.linalg.norm(dvec))
     if dlen > 0:
         final = final + (dvec / dlen) * 2.0
-
-    # 7) DIM1 기울기 기준 -2mm 평행 이동(요구사항 유지)
     segs1 = extract_segments(dim_pair['DIM1'])
     if segs1:
         d1s2, d1e2 = to2d(segs1[0][0]), to2d(segs1[0][1])
@@ -897,9 +805,7 @@ def process_ct_text(txt, g1_ent, v0, v1, text_angle: float, cp: np.ndarray, dim_
             unit = vec / vecl
             proj = float(np.dot(cp - final, unit))
             move_dir = unit if proj > 0 else -unit
-            final = final + move_dir * (-2.0)  # 기존 코드 유지
-
-    # 적용
+            final = final + move_dir * (-2.0)
     try:
         if txt.dxftype() == "TEXT":
             old_z = float(txt.dxf.insert[2]) if len(txt.dxf.insert) > 2 else 0.0
@@ -919,7 +825,6 @@ def process_ct_text(txt, g1_ent, v0, v1, text_angle: float, cp: np.ndarray, dim_
             txt.dxf.rotation = float(final_ang)
     except Exception:
         return is_ct1
-
     return is_ct1
 
 
@@ -929,34 +834,23 @@ def process_ct_text(txt, g1_ent, v0, v1, text_angle: float, cp: np.ndarray, dim_
 
 def process_dimension_system(msp, text_entities: List[Any]):
     all_line_entities = list(msp.query("LINE LWPOLYLINE POLYLINE"))
-
-    # DIM 쌍 찾기
     dim_pairs, overlapped_entities = find_dim_pairs_indexed(all_line_entities)
-
     all_processed: List[Any] = []
     all_processed.extend(overlapped_entities)
-
     ct_texts: List[Any] = []
     ct1_texts: List[Any] = []
     g1_to_delete: List[Any] = []
     ad3_to_delete: List[Any] = []
     arrow_lines_to_delete: List[Any] = []
-
     protected_handles: Set[str] = set()
     protected_entities: List[Any] = []
     ad1ad2_all: List[Any] = []
-
-    # 모든 DIM 엔티티 핸들(후속 제외용)
     used_dim_handles: Set[str] = set()
     for dp in dim_pairs:
         used_dim_handles.add(get_entity_handle(dp['DIM1']))
         used_dim_handles.add(get_entity_handle(dp['DIM2']))
-
-    # 텍스트 인덱스(반경 질의)
     text_index = build_text_index(text_entities, cell=10.0)
-
     all_dim_far_points: List[np.ndarray] = []
-
     for dp in dim_pairs:
         d1 = dp['DIM1']
         d2 = dp['DIM2']
@@ -964,8 +858,6 @@ def process_dimension_system(msp, text_entities: List[Any]):
         d2o = dp['DIM2_opposite']
         d1c = dp['DIM1_common']
         d2c = dp['DIM2_common']
-
-        # 보호 설정 + 색상 표시
         protected_handles.update({get_entity_handle(d1), get_entity_handle(d2)})
         protected_entities.extend([d1, d2])
         try:
@@ -974,15 +866,10 @@ def process_dimension_system(msp, text_entities: List[Any]):
         except Exception:
             pass
         all_processed.extend([d1, d2])
-
-        # 체인 방향/텍스트 각도
         chain_dir = calculate_chain_direction(d1, d2)
         text_ang = calculate_text_angle(chain_dir)
-
-        # AD1/AD2 (공간 인덱스)
         ad1_list = find_arrow_entities_indexed(all_line_entities, d1o, tol=AD_TOL)
         ad2_list = find_arrow_entities_indexed(all_line_entities, d2o, tol=AD_TOL)
-
         for e in ad1_list + ad2_list:
             protected_handles.add(get_entity_handle(e))
             protected_entities.append(e)
@@ -992,14 +879,8 @@ def process_dimension_system(msp, text_entities: List[Any]):
             except Exception:
                 pass
             all_processed.append(e)
-
-        # AD3 (CP 근방)
         ad3_list = find_ad3_entities_indexed(all_line_entities, dp, ad1_list, ad2_list, tol=AD_TOL)
-
-        # G1 (모든 DIM 제외 후 탐색)
         g1_list = find_g1_entities_indexed(all_line_entities, d1, d2, dp, used_dim_handles, tol=0.2)
-
-        # CT 탐색/처리
         ct_found = False
         cts = find_ct_texts_indexed(msp, g1_list, text_entities, dp, text_index, search_radius=CT_SEARCH_RADIUS)
         for g1_ent, v0, v1 in g1_list:
@@ -1009,7 +890,6 @@ def process_dimension_system(msp, text_entities: List[Any]):
                 pass
             all_processed.append(g1_ent)
             g1_to_delete.append(g1_ent)
-
         if cts:
             ct_found = True
             for ct in cts:
@@ -1022,8 +902,6 @@ def process_dimension_system(msp, text_entities: List[Any]):
                     ct1_texts.append(ct)
                 else:
                     ct_texts.append(ct)
-
-        # CT가 있을 때만 AD3 삭제 후보 지정
         if ct_found:
             for ad3 in ad3_list:
                 h = get_entity_handle(ad3)
@@ -1047,8 +925,6 @@ def process_dimension_system(msp, text_entities: List[Any]):
                 except Exception:
                     pass
                 all_processed.append(ad3)
-
-        # DIM 선분에 접하는 AD3 (ARROW, 0.2mm)
         touching_ad3 = find_ad3_touching_dims_indexed(all_line_entities, d1, d2, ad1_list, ad2_list, tol=TOUCH_TOL)
         for e in touching_ad3:
             h = get_entity_handle(e)
@@ -1059,10 +935,7 @@ def process_dimension_system(msp, text_entities: List[Any]):
                     pass
                 all_processed.append(e)
                 ad3_to_delete.append(e)
-
         all_dim_far_points.extend([d1o, d2o])
-
-    # AD1/AD2 보호: ARROW 레이어에서 DIM 반대편 끝점 근처 0.5mm 이내는 보호
     for ent in all_line_entities:
         try:
             if getattr(ent.dxf, 'layer', '').upper() != 'ARROW':
@@ -1080,8 +953,6 @@ def process_dimension_system(msp, text_entities: List[Any]):
                     break
         except Exception:
             continue
-
-    # AD3 점에 접하는 ARROW Line (<=1mm)
     arrow_lines = find_arrow_lines_touching_ad3_indexed(all_line_entities, ad3_to_delete, tol=ARROW_LINE_TOL)
     for ln in arrow_lines:
         h = get_entity_handle(ln)
@@ -1092,8 +963,6 @@ def process_dimension_system(msp, text_entities: List[Any]):
                 pass
             all_processed.append(ln)
             arrow_lines_to_delete.append(ln)
-
-    # 실제 삭제 수행(보호 제외)
     for e in ad3_to_delete:
         try:
             h = get_entity_handle(e)
@@ -1101,26 +970,43 @@ def process_dimension_system(msp, text_entities: List[Any]):
                 msp.delete_entity(e)
         except Exception:
             pass
-
     for g1 in g1_to_delete:
         try:
             if get_entity_handle(g1) not in protected_handles:
                 msp.delete_entity(g1)
         except Exception:
             pass
-
     for ln in arrow_lines_to_delete:
         try:
             if get_entity_handle(ln) not in protected_handles and ln not in protected_entities:
                 msp.delete_entity(ln)
         except Exception:
             pass
-
     return all_processed, ct_texts, ct1_texts
 
 
 # ─────────────────────────────────────────────────────────────
-# 파이프라인/파일 처리
+# In‑Memory Runner Entry
+# ─────────────────────────────────────────────────────────────
+
+def process(doc: ezdxf.document.Drawing) -> ezdxf.document.Drawing:
+    """스텝 런너가 in-memory로 호출할 때 사용하는 엔트리 포인트.
+    입력 doc을 수정하고 같은 객체를 반환한다.
+    """
+    try:
+        clear_tbox_cache()
+        msp = doc.modelspace()
+        texts = list(msp.query("TEXT MTEXT"))
+        process_dimension_system(msp, texts)
+        clear_tbox_cache()
+        return doc
+    except Exception:
+        clear_tbox_cache()
+        return doc
+
+
+# ─────────────────────────────────────────────────────────────
+# 파일 I/O 파이프라인(무조건 저장)
 # ─────────────────────────────────────────────────────────────
 
 def auto_align_dxf(input_dxf: str, output_dxf: str) -> bool:
@@ -1129,11 +1015,7 @@ def auto_align_dxf(input_dxf: str, output_dxf: str) -> bool:
     try:
         clear_tbox_cache()
         doc = ezdxf.readfile(input_dxf)
-        msp = doc.modelspace()
-
-        texts = list(msp.query("TEXT MTEXT"))
-        process_dimension_system(msp, texts)
-
+        process(doc)
         doc.saveas(output_dxf)
         clear_tbox_cache()
         return True
@@ -1142,90 +1024,29 @@ def auto_align_dxf(input_dxf: str, output_dxf: str) -> bool:
         return False
 
 
+def process_file(path: str, out_path: Optional[str] = None) -> Optional[str]:
+    if not os.path.isfile(path):
+        return None
+    base = os.path.splitext(os.path.basename(path))[0]
+    d = os.path.dirname(path)
+    out = out_path if out_path else os.path.join(d, f"{base}_DIM.dxf")
+    ok = auto_align_dxf(path, out)
+    return out if ok else None
+
+
 # ─────────────────────────────────────────────────────────────
-# GUI: 파일 선택/프로그레스 (원문 유지, 불필요 로그 제거)
+# 명령행 엔트리
 # ─────────────────────────────────────────────────────────────
-
-def select_dxf_files() -> List[str]:
-    root = tk.Tk()
-    root.withdraw()
-    file_paths = filedialog.askopenfilenames(
-        title="DXF 파일을 선택하세요 (여러 개 선택 가능)",
-        filetypes=[("DXF files", "*.dxf"), ("All files", "*.*")],
-        multiple=True,
-    )
-    root.destroy()
-    return list(file_paths)
-
-
-def show_progress_window(total_files: int):
-    win = tk.Tk()
-    win.title("DXF 처리 진행 상황")
-    win.geometry("500x150")
-    win.resizable(False, False)
-    try:
-        win.eval('tk::PlaceWindow . center')
-    except Exception:
-        pass
-
-    label = tk.Label(win, text="DXF 파일을 처리 중입니다...", font=("Arial", 12))
-    label.pack(pady=10)
-
-    file_label = tk.Label(win, text="", font=("Arial", 10), fg="blue")
-    file_label.pack(pady=5)
-
-    var = tk.DoubleVar()
-    bar = ttk.Progressbar(win, variable=var, maximum=total_files, length=400, mode='determinate')
-    bar.pack(pady=10)
-
-    text = tk.Label(win, text=f"0 / {total_files}", font=("Arial", 10))
-    text.pack()
-
-    win.update()
-    return win, var, file_label, text
-
-
-def update_progress(win, var, file_label, text, cur: int, total: int, fname: str):
-    if win and win.winfo_exists():
-        var.set(cur)
-        try:
-            file_label.config(text=f"처리 중: {os.path.basename(fname)}")
-            text.config(text=f"{cur} / {total}")
-        except Exception:
-            pass
-        win.update()
-
-
-def close_progress_window(win):
-    if win and win.winfo_exists():
-        win.destroy()
-
-
-def process_multiple_files():
-    files = select_dxf_files()
-    if not files:
-        return
-
-    win, var, file_label, text = show_progress_window(len(files))
-    success = 0
-    failed: List[str] = []
-    try:
-        for i, input_file in enumerate(files):
-            update_progress(win, var, file_label, text, i, len(files), input_file)
-            d = os.path.dirname(input_file)
-            name = os.path.splitext(os.path.basename(input_file))[0]
-            out = os.path.join(d, f"{name}_DIM.dxf")
-            if auto_align_dxf(input_file, out):
-                success += 1
-            else:
-                failed.append(os.path.basename(input_file))
-        update_progress(win, var, file_label, text, len(files), len(files), "완료")
-    finally:
-        close_progress_window(win)
-
-
 if __name__ == "__main__":
-    if len(sys.argv) == 3:
-        auto_align_dxf(sys.argv[1], sys.argv[2])
+    # 사용법: python PLTONEWLINE.PY A.DXF B.DXF C.DXF...
+    if len(sys.argv) >= 2:
+        # 여러 파일을 받아 각자 *_DIM.dxf로 저장(무조건 저장 시도)
+        for arg in sys.argv[1:]:
+            try:
+                process_file(arg)
+            except Exception:
+                # 무소음 실패
+                pass
     else:
-        process_multiple_files()
+        # 인자가 없으면 아무 작업도 하지 않음(GUI 없음)
+        pass

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import ezdxf
 import os
 import math
@@ -82,11 +83,11 @@ def process_weldsymbol(doc):
         points = get_poly_points(weld)
         if len(points) != 7:
             continue
-        
+
         # 모든 점이 거의 같은 위치에 있는지 확인
         if is_nearly_same_points(points):
             continue
-        
+
         # 점들 간 거리가 너무 멀지 않은지 확인 (2mm 이내)
         too_far = False
         for i in range(6):
@@ -96,12 +97,12 @@ def process_weldsymbol(doc):
                 break
         if too_far:
             continue
-        
+
         # 중심점 계산
         weld_center = midpoint([pt[:2] for pt in points])
         if not is_valid_center(weld_center):
             continue
-        
+
         # 폴리라인 길이 확인
         length = polyline_length(weld)
         if length < 1 or length > 100:
@@ -128,7 +129,7 @@ def process_weldsymbol(doc):
         main_circle.dxf.layer = "SW" if len(short_plines) >= 5 else "OW"
 
         # linetype이 BYLAYER인 경우 안쪽에 여러 개의 원 그리기
-        if hasattr(weld.dxf, 'linetype') and weld.dxf.linetype.upper() == "BYLAYER":
+        if hasattr(weld.dxf, 'linetype') and str(weld.dxf.linetype).upper() == "BYLAYER":
             for r in [0.85, 0.7, 0.55, 0.4, 0.25]:
                 inner = msp.add_circle(center=weld_center, radius=r, dxfattribs={"color": 2})
                 inner.dxf.lineweight = 20
@@ -139,36 +140,49 @@ def process_weldsymbol(doc):
         weld_count += 1
 
     # 엔티티 삭제
-    deleted_count = 0
     for ent in to_delete:
         try:
             msp.delete_entity(ent)
-            deleted_count += 1
         except Exception:
             pass
 
-### 메인 실행 ###
+# ── ★ 런너 연동용 엔트리: in-memory 문서만 수정 ★
+def process(doc):
+    """
+    SAE3D_ON_RUNTEST.PY가 호출하는 엔트리.
+    - 파일 I/O 없이 현재 문서(doc)만 수정 후 반환
+    - 오류 시 None → 런너가 직전 상태 유지
+    """
+    try:
+        process_weldsymbol(doc)
+        return doc
+    except Exception:
+        return None
+
+# (선택) 호환 별칭: 런너가 다양한 이름을 찾도록 지원
+run = process
+pipeline = process
+main_process = process
+
+### 메인 실행 (단독 실행용) ###
 if __name__ == "__main__":
-    # Command line arguments 확인
     if len(sys.argv) < 2:
         sys.exit(1)
-    
-    # 첫 번째 인자는 스크립트 이름이므로 제외
+
     filepaths = sys.argv[1:]
-    
     for filepath in filepaths:
         try:
             # DXF 파일 읽기
             doc = ezdxf.readfile(filepath)
-            
-            # WELD 레이어 처리
+
+            # WELD 처리
             process_weldsymbol(doc)
-            
+
             # 출력 파일명 생성
             basename = os.path.splitext(os.path.basename(filepath))[0]
             output_dir = os.path.dirname(filepath)
             output_path = os.path.join(output_dir, basename + "_WELD.dxf")
-            
+
             # 파일 저장
             try:
                 doc.saveas(output_path)
@@ -184,8 +198,9 @@ if __name__ == "__main__":
                     current_dir_path = f"./{basename}_WELD.dxf"
                     try:
                         doc.saveas(current_dir_path)
-                    except Exception as e:
+                    except Exception:
                         pass
-            
-        except Exception as e:
+
+        except Exception:
+            # 개별 파일 실패는 넘어가고 다음 파일 처리
             continue

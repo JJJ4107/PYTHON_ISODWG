@@ -357,34 +357,35 @@ def process_tee_groups(doc, msp, counters):
         for idx in cluster_idxs:
             visited[idx] = True
 
-# -------------------- 기존 파이프/엘보/치수 처리 --------------------
-def process_dxf_file(filepath):
+# -------------------- 핵심 처리 로직 (인메모리) --------------------
+def process_core(doc, msp):
+    """
+    핵심 DXF 처리 로직 - doc와 msp를 받아서 처리
+    반환: (성공여부, 처리통계딕셔너리)
+    """
+    entities_to_delete = []
+    pipe_lines = []
+
+    counters = {
+        'pipe_line_color': 0,
+        'pipe_line_yellow': 0,
+        'pipe_arc': 0,
+        'dimlines_line': 0,
+        'fittings_line': 0,
+        'isotext_line': 0,
+        'dimlines_polyline': 0,
+        'isotext_polyline': 0,
+        'elbo_arc_moved': 0,
+        'hatch_deleted': 0,
+        # TEE 관련
+        'tee_labeled': 0,
+        'tee_skipped_no_A1': 0,
+        'tee_skipped_no_TSIZE': 0,
+        'tee_skipped_parse_fail': 0,
+        'tee_layer_errors': 0,
+    }
+
     try:
-        doc = ezdxf.readfile(filepath)
-        msp = doc.modelspace()
-
-        entities_to_delete = []
-        pipe_lines = []
-
-        counters = {
-            'pipe_line_color': 0,
-            'pipe_line_yellow': 0,
-            'pipe_arc': 0,
-            'dimlines_line': 0,
-            'fittings_line': 0,
-            'isotext_line': 0,
-            'dimlines_polyline': 0,
-            'isotext_polyline': 0,
-            'elbo_arc_moved': 0,
-            'hatch_deleted': 0,
-            # TEE 관련
-            'tee_labeled': 0,
-            'tee_skipped_no_A1': 0,
-            'tee_skipped_no_TSIZE': 0,
-            'tee_skipped_parse_fail': 0,
-            'tee_layer_errors': 0,
-        }
-
         for entity in msp:
             try:
                 # HATCH: 면적 <= 0.9 삭제
@@ -496,9 +497,70 @@ def process_dxf_file(filepath):
                 except Exception:
                     continue
 
-        # ---------- ▼ 추가: TEE 탐지/레이어 지정 ----------
+        # TEE 탐지/레이어 지정
         process_tee_groups(doc, msp, counters)
-        # ---------- ▲ 추가 끝 ----------
+
+        return True, counters
+
+    except Exception as e:
+        return False, {'error': str(e)}
+
+# -------------------- 인메모리 처리 엔트리 --------------------
+def process(doc):
+    """
+    인메모리 DXF 문서 처리 엔트리 포인트
+    
+    Args:
+        doc: ezdxf Document 객체
+    
+    Returns:
+        tuple: (처리된 doc 객체, 성공여부, 처리결과 정보)
+    """
+    try:
+        msp = doc.modelspace()
+        success, counters = process_core(doc, msp)
+        
+        if success:
+            # 결과 리포트 생성
+            result_info = "처리 통계:\n"
+            result_info += f"  - PIPE 라인 (0.2~1.1mm) → YELLOW: {counters['pipe_line_yellow']}개\n"
+            result_info += f"  - PIPE 흰색 LINE → GREEN: {counters['pipe_line_color']}개\n"
+            result_info += f"  - PIPE ARC → GREEN/ELBO: {counters['pipe_arc']}개\n"
+            result_info += f"  - DIMLINES LINE → 흰색: {counters['dimlines_line']}개\n"
+            result_info += f"  - FITTINGS LINE → YELLOW: {counters['fittings_line']}개\n"
+            result_info += f"  - ISOTEXT LINE → 흰색: {counters['isotext_line']}개\n"
+            result_info += f"  - DIMLINES 폴리라인 삭제: {counters['dimlines_polyline']}개\n"
+            result_info += f"  - ISOTEXT 폴리라인 삭제: {counters['isotext_polyline']}개\n"
+            result_info += f"  - HATCH 삭제 (면적 ≤ 0.9): {counters['hatch_deleted']}개\n"
+            result_info += f"  - ELBO ARC 이동: {counters['elbo_arc_moved']}개\n"
+            result_info += f"  - TEE 레이어 지정 완료: {counters['tee_labeled']}건\n"
+            result_info += f"    · A1 미발견 스킵: {counters['tee_skipped_no_A1']}건\n"
+            result_info += f"    · TSIZE 미발견 스킵: {counters['tee_skipped_no_TSIZE']}건\n"
+            result_info += f"    · TSIZE 파싱 실패: {counters['tee_skipped_parse_fail']}건\n"
+            result_info += f"    · 레이어 지정 오류: {counters['tee_layer_errors']}건"
+            
+            return doc, True, result_info
+        else:
+            error_msg = counters.get('error', 'Unknown error')
+            return doc, False, f"처리 중 오류 발생: {error_msg}"
+            
+    except Exception as e:
+        return doc, False, f"처리 중 오류 발생: {str(e)}"
+
+# -------------------- 파일 처리 (기존 방식) --------------------
+def process_dxf_file(filepath):
+    """
+    파일 경로를 받아서 DXF 파일을 처리하고 새 파일로 저장
+    """
+    try:
+        doc = ezdxf.readfile(filepath)
+        msp = doc.modelspace()
+        
+        success, counters = process_core(doc, msp)
+        
+        if not success:
+            error_msg = counters.get('error', 'Unknown error')
+            return False, f"처리 중 오류 발생: {error_msg}"
 
         # 저장
         base_name = os.path.splitext(os.path.basename(filepath))[0]
@@ -536,6 +598,7 @@ def process_dxf_file(filepath):
 # -------------------- 실행부 --------------------
 if __name__ == "__main__":
     if len(sys.argv) < 2:
+        print("사용법: python script.py <DXF파일경로> [추가파일들...]")
         sys.exit(1)
     
     file_paths = sys.argv[1:]
@@ -544,8 +607,19 @@ if __name__ == "__main__":
     error_files = []
     
     for filepath in file_paths:
+        print(f"\n처리중: {filepath}")
         success, result = process_dxf_file(filepath)
         if success:
             success_count += 1
+            print(f"성공: {result}")
         else:
             error_files.append((filepath, result))
+            print(f"실패: {result}")
+    
+    # 전체 결과 요약
+    print(f"\n\n==== 전체 처리 결과 ====")
+    print(f"총 {len(file_paths)}개 파일 중 {success_count}개 성공")
+    if error_files:
+        print(f"\n실패한 파일들:")
+        for filepath, error in error_files:
+            print(f"  - {filepath}: {error}")

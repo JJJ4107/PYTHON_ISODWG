@@ -5,7 +5,7 @@ import glob
 import math
 from ezdxf.math import Vec2
 
-# TextBoxLineFinder 클래스
+# -------------------- TextBoxLineFinder 클래스 --------------------
 class TextBoxLineFinder:
     """TEXT를 BOX화하여 가장 가까운 LINE을 찾는 유틸리티 클래스"""
 
@@ -183,6 +183,7 @@ class TextBoxLineFinder:
                     farthest_point = start
         return found_line, closest_point, farthest_point
 
+# -------------------- 유틸리티 함수들 --------------------
 def distance(p1, p2):
     return math.hypot(p2.x - p1.x, p2.y - p1.y)
 
@@ -454,383 +455,527 @@ def check_interference(itno_entities, msp, exclude_entities, threshold=0.5, draw
     else:
         return False
 
-def process_dxf(file_path):
-    try:
-        doc = ezdxf.readfile(file_path)
-    except Exception:
-        return
-    msp = doc.modelspace()
+# -------------------- 핵심 처리 로직 (인메모리) --------------------
+def process_core(doc, msp):
+    """
+    핵심 DXF 처리 로직 - doc와 msp를 받아서 처리
+    반환: (성공여부, 처리통계)
+    """
     modified = False
-    for st1 in msp.query('TEXT'):
-        if '<' not in st1.dxf.text or '>' not in st1.dxf.text:
-            continue
-        st1_pos = get_text_position(st1)
-        candidate_st2 = []
-        for e in msp.query('TEXT LINE'):
-            if e is st1:
+    processed_count = 0
+    errors = []
+    
+    try:
+        for st1 in msp.query('TEXT'):
+            if '<' not in st1.dxf.text or '>' not in st1.dxf.text:
                 continue
-            pos = get_text_position(e) if e.dxftype() == 'TEXT' else get_line_midpoint(e)
-            dx = pos.x - st1_pos.x
-            dy = abs(pos.y - st1_pos.y)
-            if 0 < dx <= 15 and dy <= 5:
-                candidate_st2.append(e)
-        text_st2s = [e for e in candidate_st2 if e.dxftype() == 'TEXT' and abs(get_text_position(e).y - st1_pos.y) <= 0.5]
-        line_st2s = []
-        for e in candidate_st2:
-            if e.dxftype() == 'LINE':
-                start = e.dxf.start
-                end = e.dxf.end
-                length = distance(Vec2(start.x, start.y), Vec2(end.x, end.y))
-                if 2.8 <= length <= 4.5:
-                    line_st2s.append(e)
-        if not (text_st2s and len(line_st2s) >= 4):
-            continue
-        original_line_count = len(line_st2s)
-        all_original_lines = line_st2s.copy()
-        if len(line_st2s) > 4:
-            line_distances = []
-            for line in line_st2s:
-                start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                min_dist_val = min(distance(start, st1_pos), distance(end, st1_pos))
-                line_distances.append((min_dist_val, line))
-            line_distances.sort(key=lambda x: x[0])
-            first_line = line_distances[0][1]
-            first_line_start = Vec2(first_line.dxf.start.x, first_line.dxf.start.y)
-            first_line_end = Vec2(first_line.dxf.end.x, first_line.dxf.end.y)
-            remaining_lines = [item[1] for item in line_distances[1:]]
-            remaining_distances = []
-            for line in remaining_lines:
-                start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                min_dist_to_first = min(
-                    distance(start, first_line_start),
-                    distance(start, first_line_end),
-                    distance(end, first_line_start),
-                    distance(end, first_line_end)
-                )
-                remaining_distances.append((min_dist_to_first, line))
-            remaining_distances.sort(key=lambda x: x[0])
-            selected_lines = [first_line] + [item[1] for item in remaining_distances[:3]]
-            unselected_lines = [item[1] for item in line_distances[4:]] + [item[1] for item in remaining_distances[3:]]
-            line_st2s = selected_lines
-        line_group = line_st2s
-        st1.dxf.layer = "ITNO"
-        text_st2 = text_st2s[0]
-        text_st2.dxf.layer = "ITNO"
-        for l in line_group:
-            l.dxf.layer = "ITNO"
-        set_entity_color(st1, 1)
-        set_entity_color(text_st2, 1)
-        for l in line_group:
-            set_entity_color(l, 1)
-        modified = True
-        itno_dn_text = None
-        for e in msp.query('TEXT'):
-            if e is st1 or e is text_st2:
+            st1_pos = get_text_position(st1)
+            candidate_st2 = []
+            
+            # 후보 엔티티 찾기
+            for e in msp.query('TEXT LINE'):
+                if e is st1:
+                    continue
+                pos = get_text_position(e) if e.dxftype() == 'TEXT' else get_line_midpoint(e)
+                dx = pos.x - st1_pos.x
+                dy = abs(pos.y - st1_pos.y)
+                if 0 < dx <= 15 and dy <= 5:
+                    candidate_st2.append(e)
+            
+            text_st2s = [e for e in candidate_st2 if e.dxftype() == 'TEXT' and abs(get_text_position(e).y - st1_pos.y) <= 0.5]
+            line_st2s = []
+            for e in candidate_st2:
+                if e.dxftype() == 'LINE':
+                    start = e.dxf.start
+                    end = e.dxf.end
+                    length = distance(Vec2(start.x, start.y), Vec2(end.x, end.y))
+                    if 2.8 <= length <= 4.5:
+                        line_st2s.append(e)
+            
+            if not (text_st2s and len(line_st2s) >= 4):
                 continue
-            pos = get_text_position(e)
-            dx = abs(pos.x - st1_pos.x)
-            dy = st1_pos.y - pos.y
-            if dx <= 2.0 and 0 < dy <= 4.0:
-                text_upper = e.dxf.text.upper()
-                if "DN" in text_upper or '"' in e.dxf.text:
-                    itno_dn_text = e
-                    break
-        if itno_dn_text:
-            itno_dn_text.dxf.layer = "ITNODN"
-            set_entity_color(itno_dn_text, 1)
-        found_PLINE = None
-        SPOS = None
-        itno_group_for_a1 = [st1, text_st2] + line_group
-        if itno_dn_text:
-            itno_group_for_a1.append(itno_dn_text)
-        found_A1, AP1, AP2 = TextBoxLineFinder.find_closest_line_to_group(
-            entities=itno_group_for_a1,
-            lines=msp.query('LINE'),
-            exclude_entities=line_group,
-            exclude_layers=['FRAME'],
-            min_length=None,
-            debug=False
-        )
-        if not found_A1:
-            continue
-        found_A1.dxf.layer = "A1"
-        set_entity_color(found_A1, 4)
-        additional_a1_lines = []
-        del1_lines = []
-        for attempt in range(10):
+            
+            # 라인 선택 로직
+            original_line_count = len(line_st2s)
+            all_original_lines = line_st2s.copy()
+            if len(line_st2s) > 4:
+                line_distances = []
+                for line in line_st2s:
+                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                    min_dist_val = min(distance(start, st1_pos), distance(end, st1_pos))
+                    line_distances.append((min_dist_val, line))
+                line_distances.sort(key=lambda x: x[0])
+                first_line = line_distances[0][1]
+                first_line_start = Vec2(first_line.dxf.start.x, first_line.dxf.start.y)
+                first_line_end = Vec2(first_line.dxf.end.x, first_line.dxf.end.y)
+                remaining_lines = [item[1] for item in line_distances[1:]]
+                remaining_distances = []
+                for line in remaining_lines:
+                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                    min_dist_to_first = min(
+                        distance(start, first_line_start),
+                        distance(start, first_line_end),
+                        distance(end, first_line_start),
+                        distance(end, first_line_end)
+                    )
+                    remaining_distances.append((min_dist_to_first, line))
+                remaining_distances.sort(key=lambda x: x[0])
+                selected_lines = [first_line] + [item[1] for item in remaining_distances[:3]]
+                unselected_lines = [item[1] for item in line_distances[4:]] + [item[1] for item in remaining_distances[3:]]
+                line_st2s = selected_lines
+            
+            line_group = line_st2s
+            
+            # ITNO 레이어 설정
+            st1.dxf.layer = "ITNO"
+            text_st2 = text_st2s[0]
+            text_st2.dxf.layer = "ITNO"
+            for l in line_group:
+                l.dxf.layer = "ITNO"
+            set_entity_color(st1, 1)
+            set_entity_color(text_st2, 1)
+            for l in line_group:
+                set_entity_color(l, 1)
+            modified = True
+            
+            # DN 텍스트 찾기
+            itno_dn_text = None
+            for e in msp.query('TEXT'):
+                if e is st1 or e is text_st2:
+                    continue
+                pos = get_text_position(e)
+                dx = abs(pos.x - st1_pos.x)
+                dy = st1_pos.y - pos.y
+                if dx <= 2.0 and 0 < dy <= 4.0:
+                    text_upper = e.dxf.text.upper()
+                    if "DN" in text_upper or '"' in e.dxf.text:
+                        itno_dn_text = e
+                        break
+            
+            if itno_dn_text:
+                itno_dn_text.dxf.layer = "ITNODN"
+                set_entity_color(itno_dn_text, 1)
+            
+            # A1 라인 찾기
+            found_PLINE = None
+            SPOS = None
+            itno_group_for_a1 = [st1, text_st2] + line_group
+            if itno_dn_text:
+                itno_group_for_a1.append(itno_dn_text)
+            
+            found_A1, AP1, AP2 = TextBoxLineFinder.find_closest_line_to_group(
+                entities=itno_group_for_a1,
+                lines=msp.query('LINE'),
+                exclude_entities=line_group,
+                exclude_layers=['FRAME'],
+                min_length=None,
+                debug=False
+            )
+            
+            if not found_A1:
+                continue
+            
+            found_A1.dxf.layer = "A1"
+            set_entity_color(found_A1, 4)
+            
+            # 추가 A1 라인 및 DEL1 라인 찾기
+            additional_a1_lines = []
             del1_lines = []
-            if found_A1:
-                all_endpoints = []
-                a1_start = Vec2(found_A1.dxf.start.x, found_A1.dxf.start.y)
-                a1_end = Vec2(found_A1.dxf.end.x, found_A1.dxf.end.y)
-                all_endpoints.extend([a1_start, a1_end])
-                for add_line in additional_a1_lines:
-                    add_start = Vec2(add_line.dxf.start.x, add_line.dxf.start.y)
-                    add_end = Vec2(add_line.dxf.end.x, add_line.dxf.end.y)
-                    all_endpoints.extend([add_start, add_end])
-                for line in msp.query('LINE'):
-                    if line is found_A1 or line in line_group:
-                        continue
-                    if line in additional_a1_lines:
-                        continue
-                    if line in del1_lines:
-                        continue
-                    if line.dxf.layer.upper() == "FRAME":
-                        continue
-                    line_len = get_line_length(line)
-                    if line_len > 2.0:
-                        continue
-                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                    for endpoint in all_endpoints:
-                        if (distance(start, endpoint) <= 2.0 or distance(end, endpoint) <= 2.0):
-                            del1_lines.append(line)
-                            break
-                    if len(del1_lines) >= 3:
-                        break
-                if del1_lines:
-                    break
-                found_additional = False
-                for line in msp.query('LINE'):
-                    if line is found_A1 or line in line_group:
-                        continue
-                    if line in additional_a1_lines:
-                        continue
-                    if line.dxf.layer.upper() == "FRAME":
-                        continue
-                    line_len = get_line_length(line)
-                    if line_len <= 2.0:
-                        continue
-                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                    for endpoint in all_endpoints:
-                        dist_to_start = distance(start, endpoint)
-                        dist_to_end = distance(end, endpoint)
-                        if dist_to_start <= 0.3:
-                            additional_a1_lines.append(line)
-                            AP2 = end
-                            found_additional = True
-                            break
-                        elif dist_to_end <= 0.3:
-                            additional_a1_lines.append(line)
-                            AP2 = start
-                            found_additional = True
-                            break
-                    if found_additional:
-                        break
-                if not found_additional:
-                    break
-        if not del1_lines:
-            isotext_line = None
-            min_isotext_dist = float("inf")
-            for line in msp.query('LINE'):
-                if line is found_A1 or line in line_group:
-                    continue
-                if line.dxf.layer.upper() != "ISOTEXT":
-                    continue
-                line_len = get_line_length(line)
-                if line_len < 2.0:
-                    continue
-                start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                dist_to_start = distance(AP2, start)
-                dist_to_end = distance(AP2, end)
-                min_dist_to_ap2 = min(dist_to_start, dist_to_end)
-                if min_dist_to_ap2 < min_isotext_dist:
-                    min_isotext_dist = min_dist_to_ap2
-                    isotext_line = line
-            if isotext_line:
-                isotext_line.dxf.layer = "A1"
-                set_entity_color(isotext_line, 4)
-                additional_a1_lines.append(isotext_line)
-                start = Vec2(isotext_line.dxf.start.x, isotext_line.dxf.start.y)
-                end = Vec2(isotext_line.dxf.end.x, isotext_line.dxf.end.y)
-                if distance(AP2, start) < distance(AP2, end):
-                    AP2 = end
-                else:
-                    AP2 = start
-                all_endpoints = []
-                all_endpoints.extend([Vec2(found_A1.dxf.start.x, found_A1.dxf.start.y),
-                                      Vec2(found_A1.dxf.end.x, found_A1.dxf.end.y)])
-                for add_line in additional_a1_lines:
-                    all_endpoints.extend([Vec2(add_line.dxf.start.x, add_line.dxf.start.y),
-                                          Vec2(add_line.dxf.end.x, add_line.dxf.end.y)])
-                for line in msp.query('LINE'):
-                    if line is found_A1 or line in line_group:
-                        continue
-                    if line in additional_a1_lines:
-                        continue
-                    if line in del1_lines:
-                        continue
-                    if line.dxf.layer.upper() == "FRAME":
-                        continue
-                    line_len = get_line_length(line)
-                    if line_len > 2.0:
-                        continue
-                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                    for endpoint in all_endpoints:
-                        if (distance(start, endpoint) <= 2.0 or distance(end, endpoint) <= 2.0):
-                            del1_lines.append(line)
-                            break
-        found_PLINE = None
-        min_pline_dist = float("inf")
-        pipe_too_short = False
-        for line in msp.query('LINE'):
-            if line is found_A1 or line in line_group:
-                continue
-            if "PIPE" not in line.dxf.layer.upper():
-                continue
-            if get_line_length(line) <= 1.8:
-                continue
-            if check_line_passes_near_point(line, AP2, 2.0):
-                center = get_line_center(line)
-                if center:
-                    dist = distance(center, AP2)
-                    if dist < min_pline_dist:
-                        min_pline_dist = dist
-                        found_PLINE = line
-        if not found_PLINE:
-            continue
-        else:
-            line_len = get_line_length(found_PLINE)
-            pipe_too_short = line_len <= 10.0
-        ppos = get_line_center(found_PLINE)
-        if not ppos:
-            continue
-        pline_angle = get_line_angle(found_PLINE)
-        found_AD1 = None
-        min_ad1_dist = float("inf")
-        for line in msp.query('LINE'):
-            if line is found_A1 or line is found_PLINE or line in line_group:
-                continue
-            line_len = get_line_length(line)
-            if line_len > 5:
-                continue
-            start = Vec2(line.dxf.start.x, line.dxf.start.y)
-            end = Vec2(line.dxf.end.x, line.dxf.end.y)
-            min_dist_to_ap2 = min(distance(start, AP2), distance(end, AP2))
-            if min_dist_to_ap2 < min_ad1_dist:
-                min_ad1_dist = min_dist_to_ap2
-                found_AD1 = line
-        if found_AD1:
-            found_AD1.dxf.layer = "AD1"
-            set_entity_color(found_AD1, 3)
-        for add_line in additional_a1_lines:
-            add_line.dxf.layer = "A1"
-            set_entity_color(add_line, 4)
-        for i, line in enumerate(del1_lines):
-            line.dxf.layer = "DEL1"
-            set_entity_color(line, 5)
-        itno_entities = [st1, text_st2] + line_group
-        if itno_dn_text:
-            itno_entities.append(itno_dn_text)
-        exclude_entities = [st1, text_st2, itno_dn_text] if itno_dn_text else [st1, text_st2]
-        itno_center_before = get_entity_center(itno_entities)
-        SPOS = Vec2(itno_center_before.x, itno_center_before.y)
-        itno_to_ppos_offset = Vec2(ppos.x - itno_center_before.x, ppos.y - itno_center_before.y)
-        for ent in itno_entities:
-            move_entity(ent, itno_to_ppos_offset)
-        for ent in itno_entities:
-            rotate_entity_around(ent, ppos, pline_angle)
-        perp_angle = pline_angle + 90
-        move_distance_perp = 1.65 if itno_dn_text else 2.5
-        perp_offset = get_perpendicular_offset(pline_angle, move_distance_perp)
-        for ent in itno_entities:
-            move_entity(ent, perp_offset)
-        if pline_angle <= -89:
-            set_mirrtext_zero(doc)
-            for ent in itno_entities:
-                rotate_entity_around(ent, ppos, 180)
-        st1_pos_current = get_text_position(st1)
-        st2_pos_current = get_text_position(text_st2)
-        if st1_pos_current.x > st2_pos_current.x:
-            set_mirrtext_zero(doc)
-            itno_center_before_correction = get_entity_center(itno_entities)
-            for ent in itno_entities:
-                rotate_entity_around(ent, itno_center_before_correction, 180)
-            perp_offset_correction = get_perpendicular_offset(pline_angle, -6)
-            for ent in itno_entities:
-                move_entity(ent, perp_offset_correction)
-        if check_interference(itno_entities, msp, exclude_entities):
-            current_itno_center = get_entity_center(itno_entities)
-            pline_center = get_line_center(found_PLINE)
-            from_pipe_vector = Vec2(current_itno_center.x - pline_center.x,
-                                    current_itno_center.y - pline_center.y)
-            vector_length = math.sqrt(from_pipe_vector.x**2 + from_pipe_vector.y**2)
-            if vector_length > 0:
-                interference_offset = Vec2(
-                    -2 * from_pipe_vector.x,
-                    -2 * from_pipe_vector.y
-                )
-            else:
-                fallback_distance = 1.65 if itno_dn_text else 2.5
-                interference_offset = get_perpendicular_offset(pline_angle, fallback_distance * 2)
-            for ent in itno_entities:
-                move_entity(ent, interference_offset)
-            check_interference(itno_entities, msp, exclude_entities, draw_all_itno_boxes=False)
-        if pipe_too_short:
-            itno_center_final = get_entity_center(itno_entities)
-            FPOS = Vec2(itno_center_final.x, itno_center_final.y)
-            restore_offset = Vec2(SPOS.x - FPOS.x, SPOS.y - FPOS.y)
-            for ent in itno_entities:
-                move_entity(ent, restore_offset)
-            if del1_lines:
-                for line in del1_lines:
-                    set_entity_color(line, 4)
-        else:
-            to_remove = []
-            removed_entities = set()
-            if found_A1:
-                to_remove.append((found_A1, "A1"))
-                removed_entities.add(found_A1)
-            for i, add_line in enumerate(additional_a1_lines):
-                if add_line not in removed_entities:
-                    to_remove.append((add_line, f"A1-ADD{i+1}"))
-                    removed_entities.add(add_line)
-            if found_AD1 and found_AD1 not in removed_entities:
-                to_remove.append((found_AD1, "AD1"))
-                removed_entities.add(found_AD1)
-            for i, line in enumerate(del1_lines):
-                if line not in removed_entities:
-                    to_remove.append((line, f"DEL1-{i+1}"))
-                    removed_entities.add(line)
-            if found_AD1:
-                ad1_start = Vec2(found_AD1.dxf.start.x, found_AD1.dxf.start.y)
-                ad1_end = Vec2(found_AD1.dxf.end.x, found_AD1.dxf.end.y)
-                ad1_points = [ad1_start, ad1_end]
-                for line in msp.query('LINE'):
-                    try:
-                        if not hasattr(line, 'dxf') or not hasattr(line.dxf, 'layer'):
+            
+            for attempt in range(10):
+                del1_lines = []
+                if found_A1:
+                    all_endpoints = []
+                    a1_start = Vec2(found_A1.dxf.start.x, found_A1.dxf.start.y)
+                    a1_end = Vec2(found_A1.dxf.end.x, found_A1.dxf.end.y)
+                    all_endpoints.extend([a1_start, a1_end])
+                    for add_line in additional_a1_lines:
+                        add_start = Vec2(add_line.dxf.start.x, add_line.dxf.start.y)
+                        add_end = Vec2(add_line.dxf.end.x, add_line.dxf.end.y)
+                        all_endpoints.extend([add_start, add_end])
+                    
+                    # DEL1 라인 찾기
+                    for line in msp.query('LINE'):
+                        if line is found_A1 or line in line_group:
                             continue
-                        if line.dxf.layer.upper() != "ARROW":
+                        if line in additional_a1_lines:
+                            continue
+                        if line in del1_lines:
+                            continue
+                        if line.dxf.layer.upper() == "FRAME":
+                            continue
+                        line_len = get_line_length(line)
+                        if line_len > 2.0:
                             continue
                         start = Vec2(line.dxf.start.x, line.dxf.start.y)
                         end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                        line_length = distance(start, end)
-                        if line_length > 1.0:
-                            continue
-                        for ad1_pt in ad1_points:
-                            if distance(ad1_pt, start) < 0.01 or distance(ad1_pt, end) < 0.01:
-                                to_remove.append((line, "ARROW"))
+                        for endpoint in all_endpoints:
+                            if (distance(start, endpoint) <= 2.0 or distance(end, endpoint) <= 2.0):
+                                del1_lines.append(line)
                                 break
-                    except Exception:
+                        if len(del1_lines) >= 3:
+                            break
+                    
+                    if del1_lines:
+                        break
+                    
+                    # 추가 A1 라인 찾기
+                    found_additional = False
+                    for line in msp.query('LINE'):
+                        if line is found_A1 or line in line_group:
+                            continue
+                        if line in additional_a1_lines:
+                            continue
+                        if line.dxf.layer.upper() == "FRAME":
+                            continue
+                        line_len = get_line_length(line)
+                        if line_len <= 2.0:
+                            continue
+                        start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                        end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                        for endpoint in all_endpoints:
+                            dist_to_start = distance(start, endpoint)
+                            dist_to_end = distance(end, endpoint)
+                            if dist_to_start <= 0.3:
+                                additional_a1_lines.append(line)
+                                AP2 = end
+                                found_additional = True
+                                break
+                            elif dist_to_end <= 0.3:
+                                additional_a1_lines.append(line)
+                                AP2 = start
+                                found_additional = True
+                                break
+                        if found_additional:
+                            break
+                    
+                    if not found_additional:
+                        break
+            
+            # ISOTEXT 라인 처리
+            if not del1_lines:
+                isotext_line = None
+                min_isotext_dist = float("inf")
+                for line in msp.query('LINE'):
+                    if line is found_A1 or line in line_group:
                         continue
-            for entity, _ in to_remove:
-                try:
-                    msp.delete_entity(entity)
-                except Exception:
-                    pass
-    box_layers = ["ITEMNO_BOX", "INTERFERENCE_ITNO", "INTERFERENCE_TEXT"]
-    delete_boxes_by_layer(msp, box_layers)
-    save_path = os.path.splitext(file_path)[0] + "_ITNO.dxf"
-    try:
-        doc.saveas(save_path)
-    except Exception:
-        pass
+                    if line.dxf.layer.upper() != "ISOTEXT":
+                        continue
+                    line_len = get_line_length(line)
+                    if line_len < 2.0:
+                        continue
+                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                    dist_to_start = distance(AP2, start)
+                    dist_to_end = distance(AP2, end)
+                    min_dist_to_ap2 = min(dist_to_start, dist_to_end)
+                    if min_dist_to_ap2 < min_isotext_dist:
+                        min_isotext_dist = min_dist_to_ap2
+                        isotext_line = line
+                
+                if isotext_line:
+                    isotext_line.dxf.layer = "A1"
+                    set_entity_color(isotext_line, 4)
+                    additional_a1_lines.append(isotext_line)
+                    start = Vec2(isotext_line.dxf.start.x, isotext_line.dxf.start.y)
+                    end = Vec2(isotext_line.dxf.end.x, isotext_line.dxf.end.y)
+                    if distance(AP2, start) < distance(AP2, end):
+                        AP2 = end
+                    else:
+                        AP2 = start
+                    
+                    # ISOTEXT DEL1 라인 찾기
+                    all_endpoints = []
+                    all_endpoints.extend([Vec2(found_A1.dxf.start.x, found_A1.dxf.start.y),
+                                          Vec2(found_A1.dxf.end.x, found_A1.dxf.end.y)])
+                    for add_line in additional_a1_lines:
+                        all_endpoints.extend([Vec2(add_line.dxf.start.x, add_line.dxf.start.y),
+                                              Vec2(add_line.dxf.end.x, add_line.dxf.end.y)])
+                    
+                    for line in msp.query('LINE'):
+                        if line is found_A1 or line in line_group:
+                            continue
+                        if line in additional_a1_lines:
+                            continue
+                        if line in del1_lines:
+                            continue
+                        if line.dxf.layer.upper() == "FRAME":
+                            continue
+                        line_len = get_line_length(line)
+                        if line_len > 2.0:
+                            continue
+                        start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                        end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                        for endpoint in all_endpoints:
+                            if (distance(start, endpoint) <= 2.0 or distance(end, endpoint) <= 2.0):
+                                del1_lines.append(line)
+                                break
+            
+            # PLINE 찾기
+            found_PLINE = None
+            min_pline_dist = float("inf")
+            pipe_too_short = False
+            for line in msp.query('LINE'):
+                if line is found_A1 or line in line_group:
+                    continue
+                if "PIPE" not in line.dxf.layer.upper():
+                    continue
+                if get_line_length(line) <= 1.8:
+                    continue
+                if check_line_passes_near_point(line, AP2, 2.0):
+                    center = get_line_center(line)
+                    if center:
+                        dist = distance(center, AP2)
+                        if dist < min_pline_dist:
+                            min_pline_dist = dist
+                            found_PLINE = line
+            
+            if not found_PLINE:
+                continue
+            else:
+                line_len = get_line_length(found_PLINE)
+                pipe_too_short = line_len <= 10.0
+            
+            ppos = get_line_center(found_PLINE)
+            if not ppos:
+                continue
+            
+            pline_angle = get_line_angle(found_PLINE)
+            
+            # AD1 찾기
+            found_AD1 = None
+            min_ad1_dist = float("inf")
+            for line in msp.query('LINE'):
+                if line is found_A1 or line is found_PLINE or line in line_group:
+                    continue
+                line_len = get_line_length(line)
+                if line_len > 5:
+                    continue
+                start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                min_dist_to_ap2 = min(distance(start, AP2), distance(end, AP2))
+                if min_dist_to_ap2 < min_ad1_dist:
+                    min_ad1_dist = min_dist_to_ap2
+                    found_AD1 = line
+            
+            if found_AD1:
+                found_AD1.dxf.layer = "AD1"
+                set_entity_color(found_AD1, 3)
+            
+            # 추가 A1 라인 처리
+            for add_line in additional_a1_lines:
+                add_line.dxf.layer = "A1"
+                set_entity_color(add_line, 4)
+            
+            # DEL1 라인 처리
+            for i, line in enumerate(del1_lines):
+                line.dxf.layer = "DEL1"
+                set_entity_color(line, 5)
+            
+            # ITNO 엔티티 그룹
+            itno_entities = [st1, text_st2] + line_group
+            if itno_dn_text:
+                itno_entities.append(itno_dn_text)
+            exclude_entities = [st1, text_st2, itno_dn_text] if itno_dn_text else [st1, text_st2]
+            
+            # ITNO 이동 및 회전
+            itno_center_before = get_entity_center(itno_entities)
+            SPOS = Vec2(itno_center_before.x, itno_center_before.y)
+            itno_to_ppos_offset = Vec2(ppos.x - itno_center_before.x, ppos.y - itno_center_before.y)
+            
+            for ent in itno_entities:
+                move_entity(ent, itno_to_ppos_offset)
+            
+            for ent in itno_entities:
+                rotate_entity_around(ent, ppos, pline_angle)
+            
+            perp_angle = pline_angle + 90
+            move_distance_perp = 1.65 if itno_dn_text else 2.5
+            perp_offset = get_perpendicular_offset(pline_angle, move_distance_perp)
+            
+            for ent in itno_entities:
+                move_entity(ent, perp_offset)
+            
+            if pline_angle <= -89:
+                set_mirrtext_zero(doc)
+                for ent in itno_entities:
+                    rotate_entity_around(ent, ppos, 180)
+            
+            # 좌우 확인 및 조정
+            st1_pos_current = get_text_position(st1)
+            st2_pos_current = get_text_position(text_st2)
+            if st1_pos_current.x > st2_pos_current.x:
+                set_mirrtext_zero(doc)
+                itno_center_before_correction = get_entity_center(itno_entities)
+                for ent in itno_entities:
+                    rotate_entity_around(ent, itno_center_before_correction, 180)
+                perp_offset_correction = get_perpendicular_offset(pline_angle, -6)
+                for ent in itno_entities:
+                    move_entity(ent, perp_offset_correction)
+            
+            # 간섭 체크
+            if check_interference(itno_entities, msp, exclude_entities):
+                current_itno_center = get_entity_center(itno_entities)
+                pline_center = get_line_center(found_PLINE)
+                from_pipe_vector = Vec2(current_itno_center.x - pline_center.x,
+                                        current_itno_center.y - pline_center.y)
+                vector_length = math.sqrt(from_pipe_vector.x**2 + from_pipe_vector.y**2)
+                if vector_length > 0:
+                    interference_offset = Vec2(
+                        -2 * from_pipe_vector.x,
+                        -2 * from_pipe_vector.y
+                    )
+                else:
+                    fallback_distance = 1.65 if itno_dn_text else 2.5
+                    interference_offset = get_perpendicular_offset(pline_angle, fallback_distance * 2)
+                for ent in itno_entities:
+                    move_entity(ent, interference_offset)
+                check_interference(itno_entities, msp, exclude_entities, draw_all_itno_boxes=False)
+            
+            # 파이프가 너무 짧은 경우 원위치
+            if pipe_too_short:
+                itno_center_final = get_entity_center(itno_entities)
+                FPOS = Vec2(itno_center_final.x, itno_center_final.y)
+                restore_offset = Vec2(SPOS.x - FPOS.x, SPOS.y - FPOS.y)
+                for ent in itno_entities:
+                    move_entity(ent, restore_offset)
+                if del1_lines:
+                    for line in del1_lines:
+                        set_entity_color(line, 4)
+            else:
+                # 엔티티 삭제
+                to_remove = []
+                removed_entities = set()
+                
+                if found_A1:
+                    to_remove.append((found_A1, "A1"))
+                    removed_entities.add(found_A1)
+                
+                for i, add_line in enumerate(additional_a1_lines):
+                    if add_line not in removed_entities:
+                        to_remove.append((add_line, f"A1-ADD{i+1}"))
+                        removed_entities.add(add_line)
+                
+                if found_AD1 and found_AD1 not in removed_entities:
+                    to_remove.append((found_AD1, "AD1"))
+                    removed_entities.add(found_AD1)
+                
+                for i, line in enumerate(del1_lines):
+                    if line not in removed_entities:
+                        to_remove.append((line, f"DEL1-{i+1}"))
+                        removed_entities.add(line)
+                
+                # ARROW 라인 삭제
+                if found_AD1:
+                    ad1_start = Vec2(found_AD1.dxf.start.x, found_AD1.dxf.start.y)
+                    ad1_end = Vec2(found_AD1.dxf.end.x, found_AD1.dxf.end.y)
+                    ad1_points = [ad1_start, ad1_end]
+                    for line in msp.query('LINE'):
+                        try:
+                            if not hasattr(line, 'dxf') or not hasattr(line.dxf, 'layer'):
+                                continue
+                            if line.dxf.layer.upper() != "ARROW":
+                                continue
+                            start = Vec2(line.dxf.start.x, line.dxf.start.y)
+                            end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                            line_length = distance(start, end)
+                            if line_length > 1.0:
+                                continue
+                            for ad1_pt in ad1_points:
+                                if distance(ad1_pt, start) < 0.01 or distance(ad1_pt, end) < 0.01:
+                                    to_remove.append((line, "ARROW"))
+                                    break
+                        except Exception:
+                            continue
+                
+                for entity, _ in to_remove:
+                    try:
+                        msp.delete_entity(entity)
+                    except Exception:
+                        pass
+            
+            processed_count += 1
+        
+        # 박스 레이어 삭제
+        box_layers = ["ITEMNO_BOX", "INTERFERENCE_ITNO", "INTERFERENCE_TEXT"]
+        delete_boxes_by_layer(msp, box_layers)
+        
+        return True, {'modified': modified, 'processed_count': processed_count, 'errors': errors}
+        
+    except Exception as e:
+        return False, {'error': str(e)}
 
+# -------------------- 인메모리 처리 엔트리 --------------------
+def process(doc):
+    """
+    인메모리 DXF 문서 처리 엔트리 포인트
+    
+    Args:
+        doc: ezdxf Document 객체
+    
+    Returns:
+        tuple: (처리된 doc 객체, 성공여부, 처리결과 정보)
+    """
+    try:
+        msp = doc.modelspace()
+        success, stats = process_core(doc, msp)
+        
+        if success:
+            result_info = f"처리 완료: {stats['processed_count']}개 아이템 번호 처리됨"
+            if stats.get('modified'):
+                result_info += " (수정됨)"
+            if stats.get('errors'):
+                result_info += f"\n오류: {len(stats['errors'])}건"
+            return doc, True, result_info
+        else:
+            error_msg = stats.get('error', 'Unknown error')
+            return doc, False, f"처리 중 오류 발생: {error_msg}"
+            
+    except Exception as e:
+        return doc, False, f"처리 중 오류 발생: {str(e)}"
+
+# -------------------- 파일 처리 (기존 방식) --------------------
+def process_dxf_file(file_path):
+    """
+    파일 경로를 받아서 DXF 파일을 처리하고 새 파일로 저장
+    """
+    try:
+        doc = ezdxf.readfile(file_path)
+        msp = doc.modelspace()
+        
+        success, stats = process_core(doc, msp)
+        
+        if not success:
+            error_msg = stats.get('error', 'Unknown error')
+            print(f"오류: {error_msg}")
+            return
+        
+        # 저장
+        save_path = os.path.splitext(file_path)[0] + "_ITNO.dxf"
+        try:
+            doc.saveas(save_path)
+            print(f"저장 완료: {save_path}")
+            print(f"처리 완료: {stats['processed_count']}개 아이템 번호 처리됨")
+            if stats.get('modified'):
+                print("파일이 수정되었습니다.")
+        except Exception as e:
+            print(f"저장 오류: {e}")
+            
+    except IOError as e:
+        print(f"파일 읽기 오류: {e}")
+    except ezdxf.DXFStructureError as e:
+        print(f"DXF 구조 오류: {e}")
+    except Exception as e:
+        print(f"처리 중 오류: {e}")
+
+# 별칭 함수 (기존 호환성)
+def process_dxf(file_path):
+    """기존 함수명과의 호환성을 위한 별칭"""
+    process_dxf_file(file_path)
+
+# -------------------- 유틸리티 함수 --------------------
 def _expand_cli_paths(argv):
     paths = []
     for a in argv:
@@ -848,10 +993,14 @@ def _expand_cli_paths(argv):
             uniq.append(ap)
     return uniq
 
+# -------------------- 실행부 --------------------
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
+        print("사용법: python script.py <DXF파일경로> [추가파일들...]")
         sys.exit(0)
+    
     files = _expand_cli_paths(args)
     for f in files:
-        process_dxf(f)
+        print(f"\n처리중: {f}")
+        process_dxf_file(f)

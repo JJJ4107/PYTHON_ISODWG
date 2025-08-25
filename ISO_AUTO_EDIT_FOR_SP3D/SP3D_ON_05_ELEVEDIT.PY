@@ -235,28 +235,30 @@ def check_fl_el_text(text):
     pattern = r'(FL|EL)\s*[+\-]'
     return bool(re.search(pattern, text_upper))
 
-def process_dxf(file_path):
-    try:
-        doc = ezdxf.readfile(file_path)
-    except Exception:
-        return
+def process(doc):
+    """Process ezdxf document object directly (in-memory)"""
     msp = doc.modelspace()
     processed_count = 0
     all_texts = list(msp.query('TEXT'))
     fl_el_texts = []
+    
     for text in all_texts:
         if check_fl_el_text(text.dxf.text):
             rotation = getattr(text.dxf, 'rotation', 0)
             fl_el_texts.append((text, rotation))
+    
     for st1 in msp.query('TEXT'):
         if not check_fl_el_text(st1.dxf.text):
             continue
+        
         st1_original_rotation = getattr(st1.dxf, 'rotation', 0)
         if st1_original_rotation != 0:
             continue
+        
         st1_pos = get_text_position(st1)
         initial_fl_bbox = get_text_bbox(st1)
         skip_this_fl = False
+        
         for text in msp.query('TEXT'):
             if text is st1:
                 continue
@@ -269,11 +271,14 @@ def process_dxf(file_path):
                 if re.search(pattern, text_upper):
                     skip_this_fl = True
                     break
+        
         if skip_this_fl:
             continue
+        
         st1.dxf.layer = "ELEDIT"
         set_entity_color(st1, 4)
         eledit_dn_text = None
+        
         for e in msp.query('TEXT'):
             if e is st1:
                 continue
@@ -285,9 +290,11 @@ def process_dxf(file_path):
                 if "DN" in text_upper or '"' in e.dxf.text:
                     eledit_dn_text = e
                     break
+        
         if eledit_dn_text:
             eledit_dn_text.dxf.layer = "ELEDITDN"
             set_entity_color(eledit_dn_text, 4)
+        
         found_DIMLINE = None
         fl_bbox = get_text_bbox(st1)
         fl_left_point = st1_pos
@@ -296,6 +303,7 @@ def process_dxf(file_path):
         found_A1 = None
         AP1, AP2 = None, None
         min_dist = float("inf")
+        
         for line in msp.query('LINE'):
             if line.dxf.layer.upper() == "FRAME":
                 continue
@@ -323,12 +331,15 @@ def process_dxf(file_path):
                 else:
                     AP1 = end
                     AP2 = start
+        
         if not found_A1:
             continue
+        
         found_A1.dxf.layer = "A1"
         set_entity_color(found_A1, 4)
         additional_a1_lines = []
         del1_lines = []
+        
         for attempt in range(10):
             del1_lines = []
             if found_A1:
@@ -336,10 +347,12 @@ def process_dxf(file_path):
                 a1_start = Vec2(found_A1.dxf.start.x, found_A1.dxf.start.y)
                 a1_end = Vec2(found_A1.dxf.end.x, found_A1.dxf.end.y)
                 all_endpoints.extend([a1_start, a1_end])
+                
                 for add_line in additional_a1_lines:
                     add_start = Vec2(add_line.dxf.start.x, add_line.dxf.start.y)
                     add_end = Vec2(add_line.dxf.end.x, add_line.dxf.end.y)
                     all_endpoints.extend([add_start, add_end])
+                
                 for line in msp.query('LINE'):
                     if line is found_A1:
                         continue
@@ -362,8 +375,10 @@ def process_dxf(file_path):
                             break
                     if len(del1_lines) >= 3:
                         break
+                
                 if del1_lines:
                     break
+                
                 found_additional = False
                 for line in msp.query('LINE'):
                     if line is found_A1:
@@ -381,6 +396,7 @@ def process_dxf(file_path):
                         continue
                     start = Vec2(line.dxf.start.x, line.dxf.start.y)
                     end = Vec2(line.dxf.end.x, line.dxf.end.y)
+                    
                     for endpoint in all_endpoints:
                         dist_to_start = distance(start, endpoint)
                         dist_to_end = distance(end, endpoint)
@@ -396,8 +412,10 @@ def process_dxf(file_path):
                             break
                     if found_additional:
                         break
+                
                 if not found_additional:
                     break
+        
         if not del1_lines:
             isotext_line = None
             min_isotext_dist = float("inf")
@@ -417,6 +435,7 @@ def process_dxf(file_path):
                 if min_dist_to_ap2 < min_isotext_dist:
                     min_isotext_dist = min_dist_to_ap2
                     isotext_line = line
+            
             if isotext_line:
                 isotext_line.dxf.layer = "A1"
                 set_entity_color(isotext_line, 4)
@@ -427,12 +446,14 @@ def process_dxf(file_path):
                     AP2 = end
                 else:
                     AP2 = start
+                
                 all_endpoints = []
                 all_endpoints.extend([Vec2(found_A1.dxf.start.x, found_A1.dxf.start.y),
                                       Vec2(found_A1.dxf.end.x, found_A1.dxf.end.y)])
                 for add_line in additional_a1_lines:
                     all_endpoints.extend([Vec2(add_line.dxf.start.x, add_line.dxf.start.y),
                                           Vec2(add_line.dxf.end.x, add_line.dxf.end.y)])
+                
                 for line in msp.query('LINE'):
                     if line is found_A1:
                         continue
@@ -453,6 +474,7 @@ def process_dxf(file_path):
                         if (distance(start, endpoint) <= 2.0 or distance(end, endpoint) <= 2.0):
                             del1_lines.append(line)
                             break
+        
         found_DIMLINE = None
         min_dimline_dist = float("inf")
         for line in msp.query('LINE'):
@@ -474,6 +496,7 @@ def process_dxf(file_path):
                     if dist < min_dimline_dist:
                         min_dimline_dist = dist
                         found_DIMLINE = line
+        
         if not found_DIMLINE:
             continue
         else:
@@ -482,12 +505,15 @@ def process_dxf(file_path):
             set_entity_color(found_DIMLINE, 4)
             if line_len <= 10.0:
                 continue
+        
         dpos = get_line_center(found_DIMLINE)
         if not dpos:
             continue
+        
         dimline_angle = get_line_angle(found_DIMLINE)
         found_AD1 = None
         min_ad1_dist = float("inf")
+        
         for line in msp.query('LINE'):
             if line is found_A1 or line is found_DIMLINE:
                 continue
@@ -502,27 +528,34 @@ def process_dxf(file_path):
             if min_dist_to_ap2 < min_ad1_dist:
                 min_ad1_dist = min_dist_to_ap2
                 found_AD1 = line
+        
         if found_AD1:
             found_AD1.dxf.layer = "AD1"
             set_entity_color(found_AD1, 3)
+        
         for add_line in additional_a1_lines:
             add_line.dxf.layer = "A1"
             set_entity_color(add_line, 4)
+        
         for i, line in enumerate(del1_lines):
             line.dxf.layer = "DEL1"
             set_entity_color(line, 4)
+        
         eledit_entities = [st1]
         if eledit_dn_text:
             eledit_entities.append(eledit_dn_text)
+        
         fl_insert_point = get_text_position(st1)
         dim_start = Vec2(found_DIMLINE.dxf.start.x, found_DIMLINE.dxf.start.y)
         dim_end = Vec2(found_DIMLINE.dxf.end.x, found_DIMLINE.dxf.end.y)
         dim_vector = Vec2(dim_end.x - dim_start.x, dim_end.y - dim_start.y)
         dim_length = math.sqrt(dim_vector.x**2 + dim_vector.y**2)
+        
         if dim_length > 0:
             dim_unit_vector = Vec2(dim_vector.x / dim_length, dim_vector.y / dim_length)
         else:
             dim_unit_vector = Vec2(1, 0)
+        
         fl_to_start = Vec2(fl_insert_point.x - dim_start.x, fl_insert_point.y - dim_start.y)
         projection_length = (fl_to_start.x * dim_unit_vector.x + fl_to_start.y * dim_unit_vector.y)
         projection_length = max(0, min(dim_length, projection_length))
@@ -530,22 +563,29 @@ def process_dxf(file_path):
             dim_start.x + dim_unit_vector.x * projection_length,
             dim_start.y + dim_unit_vector.y * projection_length
         )
+        
         perp_offset = get_perpendicular_offset(dimline_angle, 0.8)
         if perp_offset.y < 0:
             perp_offset = Vec2(-perp_offset.x, -perp_offset.y)
+        
         target_fl_pos = Vec2(
             projection_point.x + perp_offset.x,
             projection_point.y + perp_offset.y
         )
+        
         move_to_target = Vec2(
             target_fl_pos.x - fl_insert_point.x,
             target_fl_pos.y - fl_insert_point.y
         )
+        
         for ent in eledit_entities:
             move_entity(ent, move_to_target)
+        
         current_fl_pos = get_text_position(st1)
+        
         for ent in eledit_entities:
             rotate_entity_around(ent, current_fl_pos, dimline_angle)
+        
         rotated_fl_pos = get_text_position(st1)
         fl_to_start = Vec2(rotated_fl_pos.x - dim_start.x, rotated_fl_pos.y - dim_start.y)
         projection_length = (fl_to_start.x * dim_unit_vector.x + fl_to_start.y * dim_unit_vector.y)
@@ -554,25 +594,31 @@ def process_dxf(file_path):
             dim_start.x + dim_unit_vector.x * projection_length,
             dim_start.y + dim_unit_vector.y * projection_length
         )
+        
         perp_offset = get_perpendicular_offset(dimline_angle, 0.8)
         if perp_offset.y < 0:
             perp_offset = Vec2(-perp_offset.x, -perp_offset.y)
+        
         final_fl_pos = Vec2(
             projection_point.x + perp_offset.x,
             projection_point.y + perp_offset.y
         )
+        
         final_adjustment = Vec2(
             final_fl_pos.x - rotated_fl_pos.x,
             final_fl_pos.y - rotated_fl_pos.y
         )
+        
         if abs(final_adjustment.x) > 0.01 or abs(final_adjustment.y) > 0.01:
             for ent in eledit_entities:
                 move_entity(ent, final_adjustment)
+        
         if dimline_angle > 90 or dimline_angle <= -90:
             set_mirrtext_zero(doc)
             fl_pos_for_rotation = get_text_position(st1)
             for ent in eledit_entities:
                 rotate_entity_around(ent, fl_pos_for_rotation, 180)
+            
             rotated_fl_pos = get_text_position(st1)
             fl_to_start = Vec2(rotated_fl_pos.x - dim_start.x, rotated_fl_pos.y - dim_start.y)
             projection_length = (fl_to_start.x * dim_unit_vector.x + fl_to_start.y * dim_unit_vector.y)
@@ -581,20 +627,25 @@ def process_dxf(file_path):
                 dim_start.x + dim_unit_vector.x * projection_length,
                 dim_start.y + dim_unit_vector.y * projection_length
             )
+            
             perp_offset = get_perpendicular_offset(dimline_angle, 0.8)
             if perp_offset.y < 0:
                 perp_offset = Vec2(-perp_offset.x, -perp_offset.y)
+            
             final_fl_pos = Vec2(
                 projection_point.x + perp_offset.x,
                 projection_point.y + perp_offset.y
             )
+            
             final_adjustment = Vec2(
                 final_fl_pos.x - rotated_fl_pos.x,
                 final_fl_pos.y - rotated_fl_pos.y
             )
+            
             if abs(final_adjustment.x) > 0.01 or abs(final_adjustment.y) > 0.01:
                 for ent in eledit_entities:
                     move_entity(ent, final_adjustment)
+        
         current_fl_bbox = get_text_bbox(st1)
         fl_bounds = get_rotated_bbox_bounds(current_fl_bbox)
         fl_corners = [
@@ -603,26 +654,32 @@ def process_dxf(file_path):
             Vec2(fl_bounds['max_x'], fl_bounds['max_y']),
             Vec2(fl_bounds['min_x'], fl_bounds['max_y'])
         ]
+        
         dim_start = Vec2(found_DIMLINE.dxf.start.x, found_DIMLINE.dxf.start.y)
         dim_end = Vec2(found_DIMLINE.dxf.end.x, found_DIMLINE.dxf.end.y)
         dim_vector = Vec2(dim_end.x - dim_start.x, dim_end.y - dim_start.y)
         dim_length = math.sqrt(dim_vector.x**2 + dim_vector.y**2)
+        
         if dim_length > 0:
             dim_unit_vector = Vec2(dim_vector.x / dim_length, dim_vector.y / dim_length)
         else:
             dim_unit_vector = Vec2(1, 0)
+        
         min_projection = float('inf')
         max_projection = float('-inf')
+        
         for corner in fl_corners:
             corner_to_start = Vec2(corner.x - dim_start.x, corner.y - dim_start.y)
             projection = (corner_to_start.x * dim_unit_vector.x + corner_to_start.y * dim_unit_vector.y)
             min_projection = min(min_projection, projection)
             max_projection = max(max_projection, projection)
+        
         fl_text_length = current_fl_bbox['max_x'] - current_fl_bbox['min_x']
         max_extend = fl_text_length * 0.5
         min_extend = fl_text_length * 0.25
         fl_position_adjustment_needed = False
         fl_adjustment_offset = Vec2(0, 0)
+        
         if min_projection < 0:
             original_extend = abs(min_projection)
             extend_length = original_extend
@@ -641,6 +698,7 @@ def process_dxf(file_path):
                 dim_start.y - dim_unit_vector.y * extend_length
             )
             found_DIMLINE.dxf.start = (new_start.x, new_start.y, 0)
+        
         if max_projection > dim_length:
             original_extend = max_projection - dim_length
             extend_length = original_extend
@@ -659,30 +717,38 @@ def process_dxf(file_path):
                 dim_end.y + dim_unit_vector.y * extend_length
             )
             found_DIMLINE.dxf.end = (new_end.x, new_end.y, 0)
+        
         if fl_position_adjustment_needed:
             for ent in eledit_entities:
                 move_entity(ent, fl_adjustment_offset)
+        
         processed_count += 1
         to_remove = []
         removed_entities = set()
+        
         if found_A1:
             to_remove.append((found_A1, f"A1"))
             removed_entities.add(found_A1)
+        
         for i, add_line in enumerate(additional_a1_lines):
             if add_line not in removed_entities:
                 to_remove.append((add_line, f"A1-ADD{i+1}"))
                 removed_entities.add(add_line)
+        
         if found_AD1 and found_AD1 not in removed_entities:
             to_remove.append((found_AD1, f"AD1"))
             removed_entities.add(found_AD1)
+        
         for i, line in enumerate(del1_lines):
             if line not in removed_entities:
                 to_remove.append((line, f"DEL1-{i+1}"))
                 removed_entities.add(line)
+        
         if found_AD1:
             ad1_start = Vec2(found_AD1.dxf.start.x, found_AD1.dxf.start.y)
             ad1_end = Vec2(found_AD1.dxf.end.x, found_AD1.dxf.end.y)
             ad1_points = [ad1_start, ad1_end]
+            
             for line in msp.query('LINE'):
                 try:
                     if not hasattr(line, 'dxf') or not hasattr(line.dxf, 'layer'):
@@ -700,11 +766,13 @@ def process_dxf(file_path):
                             break
                 except Exception:
                     continue
+        
         for entity, _ in to_remove:
             try:
                 msp.delete_entity(entity)
             except Exception:
                 pass
+    
     entities_to_delete = []
     for entity in msp:
         if entity.dxftype() == 'LINE':
@@ -712,18 +780,36 @@ def process_dxf(file_path):
                 entities_to_delete.append(entity)
             elif entity.dxf.layer == "FL_BOX":
                 entities_to_delete.append(entity)
+    
     for entity in entities_to_delete:
         try:
             msp.delete_entity(entity)
         except Exception:
             pass
+    
+    return processed_count
+
+def process_dxf(file_path):
+    """Process DXF file from disk"""
+    try:
+        doc = ezdxf.readfile(file_path)
+    except Exception as e:
+        print(f"Error reading file {file_path}: {e}")
+        return
+    
+    # Process the document
+    processed_count = process(doc)
+    
+    # Save the result
     save_path = os.path.splitext(file_path)[0] + "_ELEDIT.dxf"
     try:
         doc.saveas(save_path)
-    except Exception:
-        pass
+        print(f"Processed {processed_count} FL/EL texts. Saved to: {save_path}")
+    except Exception as e:
+        print(f"Error saving file {save_path}: {e}")
 
 def _expand_cli_paths(argv):
+    """Expand glob patterns and return unique file paths"""
     paths = []
     for a in argv:
         expanded = glob.glob(a)
@@ -743,7 +829,12 @@ def _expand_cli_paths(argv):
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
+        print("Usage: python dxf_processor.py <file1.dxf> [file2.dxf ...]")
         sys.exit(0)
+    
     files = _expand_cli_paths(args)
+    print(f"Processing {len(files)} DXF files...")
+    
     for f in files:
+        print(f"Processing: {f}")
         process_dxf(f)
