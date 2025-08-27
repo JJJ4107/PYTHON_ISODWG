@@ -1,7 +1,8 @@
 import os
 import re
 import ezdxf
-import sys
+import tkinter as tk
+from tkinter import filedialog
 from collections import defaultdict
 import shutil
 import tempfile
@@ -27,12 +28,14 @@ def safe_save_dxf(doc, target_path: str):
     try:
         ensure_parent_dir(target_path)
         doc.saveas(target_path)
+        print(f"[SAVE] {os.path.basename(target_path)} 저장 완료")
         return target_path
     except Exception as e:
         try:
             alt_path = next_unique_path(target_path)
             ensure_parent_dir(alt_path)
             doc.saveas(alt_path)
+            print(f"[SAVE-ALT] {os.path.basename(target_path)} 실패 → {os.path.basename(alt_path)} 로 저장")
             return alt_path
         except Exception as e2:
             try:
@@ -41,8 +44,10 @@ def safe_save_dxf(doc, target_path: str):
                 if os.path.exists(fallback):
                     fallback = next_unique_path(fallback)
                 doc.saveas(fallback)
+                print(f"[SAVE-TMP] {os.path.basename(target_path)} 실패 → 임시폴더로 저장: {fallback}")
                 return fallback
             except Exception as e3:
+                print(f"[ERROR] 저장 실패: {target_path}\n  - {e}\n  - {e2}\n  - {e3}")
                 return None
 
 # === 최적화된 엔티티 인덱스 클래스 ===
@@ -183,19 +188,20 @@ def find_chain_below_optimized(index: EntityIndex, cont_e, cont_x, cont_y, x_tol
     return chain if len(chain) == 5 else None
 
 # === 메인 프로그램 시작 ===
-# Command line arguments로 파일 경로 받기
-if len(sys.argv) < 2:
-    sys.exit(1)
-
-file_paths = []
-for arg in sys.argv[1:]:
-    if os.path.exists(arg) and arg.lower().endswith('.dxf'):
-        file_paths.append(os.path.abspath(arg))
-
+# 파일 선택
+root = tk.Tk()
+root.withdraw()
+file_paths = filedialog.askopenfilenames(
+    title="DXF 도면 선택", filetypes=[("DXF files", "*.dxf")]
+)
+root.destroy()
 if not file_paths:
-    sys.exit(1)
+    print("DXF 파일이 선택되지 않았습니다.")
+    exit()
 
 # === STEP 1: 첫 번째 파일의 로직 실행 (메모리상에서만) ===
+print("=== STEP 1: FDNO 처리 시작 ===")
+
 group_by_dall = defaultdict(list)
 def parse_filename(filepath):
     base = os.path.basename(filepath)
@@ -282,6 +288,7 @@ for f in fdno_list:
                 except:
                     pass
     except Exception as e:
+        print(f"{f['path']} 읽기 오류: {e}")
         continue
     
     # LINENO 추출 (인덱스 활용)
@@ -456,6 +463,15 @@ for f in fdno_list:
                 except:
                     pass
 
+# 결과 요약 출력
+print("\n==== FDNO-LINENO-도면명 매핑 ====")
+for fdno, lineno, (x, y), filename in all_linenos:
+    print(f"FDNO: {fdno}   <->   LINENO: {lineno}   <->   FILE: {filename}")
+
+print("\n==== CONT-DLNO-FDNO-LINENO 매핑 ====")
+for cont, dlno, fdno, (x, y) in cont_dlno_map:
+    print(f"CONT: {cont}   DLNO: {dlno}   FDNO: {fdno}   (좌표: {x:.1f}, {y:.1f})")
+
 # === STEP 2: FNAME/FDNO 최종 매칭 ===
 group_by_dall_dn = defaultdict(list)
 for f in fdno_list:
@@ -497,8 +513,14 @@ for key, group in group_by_dall_dn.items():
         info = group[0]
         fdno_mapping[info['path']] = info['FDNO']
 
+print("\n=== STEP 2: APOS 매칭 및 치환 시작 ===")
+
 dxf_folder = os.path.dirname(file_paths[0])
 ALLCHK = []
+
+header = f"{'도면명':<28} | {'CONT':<16} | {'AFDNO':<16} | {'ADLNO':<16} | {'APOS':<28}"
+print(header)
+print("-" * len(header))
 
 # ALLCHK 구성 - 인덱스 활용
 for path in file_paths:
@@ -507,6 +529,7 @@ for path in file_paths:
     doc = doc_cache.get(path)
     index = index_cache.get(path)
     if not doc or not index:
+        print(f"{file} 읽기 오류: 캐시에 없음")
         continue
     msp = doc.modelspace()
 
@@ -522,11 +545,13 @@ for path in file_paths:
                 pass
 
     if not cont_entities:
+        print(f"{file_nx:<28} | {'[CONT 없음]':<16}")
         continue
 
     for cont_e, cont_txt, cont_x, cont_y in cont_entities:
         chain = find_chain_below_optimized(index, cont_e, cont_x, cont_y)
         if not chain:
+            print(f"{file_nx:<28} | [CONT 5개 미만 SKIP]")
             continue
 
         # 최적화된 AFDNO 검색
@@ -566,6 +591,7 @@ for path in file_paths:
             apos = ''.join([epos, npos, flpos]).replace(' ', '')
 
             if all([cont_txt, afdno, adlno, apos]):
+                print(f"{file_nx:<28} | {cont_txt:<16} | {afdno:<16} | {adlno:<16} | {apos:<28}")
                 ALLCHK.append({
                     'CHFILE': file_nx,
                     'AFDNO': afdno,
@@ -577,6 +603,8 @@ for path in file_paths:
                 })
 
 # APOS 매칭 최적화 - 해시맵 사용으로 O(k²) → O(k)
+print("\n[APOS MATCH & MUTUAL UPDATE]")
+
 apos_groups = defaultdict(list)
 for item in ALLCHK:
     apos_groups[item['APOS']].append(item)
@@ -588,6 +616,7 @@ for apos, group in apos_groups.items():
         for i in range(len(group)):
             for j in range(i + 1, len(group)):
                 a, b = group[i], group[j]
+                print(f"[APOS MATCH] {a['CHFILE']} <-> {b['CHFILE']} : APOS = {a['APOS']}")
                 
                 for obj, newval, path, afdno in [
                     (a, b['CHFILE'], a['ORIG_PATH'], a['AFDNO']),
@@ -603,18 +632,23 @@ for apos, group in apos_groups.items():
                     for entity_data in index.text_entities:
                         if entity_data['text'] == afdno:
                             set_text(entity_data['entity'], newval, color=2)
+                            print(f"  -> {os.path.basename(path)} : {afdno} → {newval}")
                             break
 
 # === STEP 3: 최종 저장 (FDNO_FIX.dxf) ===
+print("\n=== STEP 3: 최종 저장 ===")
 for path, fdno in fdno_mapping.items():
     doc = doc_cache.get(path)
     if not doc:
         try:
             doc = ezdxf.readfile(path)
         except Exception as e:
+            print(f"[ERROR] {os.path.basename(path)} 재오픈 실패: {e}")
             continue
     fix_path = os.path.join(os.path.dirname(path), f"{fdno}_FIX.dxf")
     saved = safe_save_dxf(doc, fix_path)
+    if not saved:
+        print(f"[ERROR] {os.path.basename(path)} 저장 실패(최종)")
 
 # 매핑에 없던 파일도 저장
 unmapped = [p for p in file_paths if p not in fdno_mapping]
@@ -624,7 +658,19 @@ for path in unmapped:
         try:
             doc = ezdxf.readfile(path)
         except Exception as e:
+            print(f"[ERROR] {os.path.basename(path)} 재오픈 실패: {e}")
             continue
     base = filename_base(path)
     fallback_fix = os.path.join(os.path.dirname(path), f"{base}_FIX.dxf")
     saved = safe_save_dxf(doc, fallback_fix)
+    if not saved:
+        print(f"[ERROR] {os.path.basename(path)} 저장 실패(최종)")
+
+# 최종 ALLCHK 결과 표로 출력
+print("\n최종 결과:")
+print(header)
+print("-" * len(header))
+for row in ALLCHK:
+    print(f"{row['CHFILE']:<28} | {'CONT':<16} | {row['AFDNO']:<16} | {row['ADLNO']:<16} | {row['APOS']:<28}")
+
+print("\n==== 전체 작업 완료 ====")

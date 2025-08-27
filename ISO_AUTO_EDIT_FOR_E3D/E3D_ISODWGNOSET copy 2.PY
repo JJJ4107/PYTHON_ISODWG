@@ -555,9 +555,6 @@ def main():
     # APOS 정보 수집
     ALLCHK = []
     
-    print("\n[APOS 추출 중...]")
-    apos_extraction_count = 0
-    
     for f in fdno_list:
         doc = doc_cache.get(f['path'])
         index = index_cache.get(f['path'])
@@ -625,10 +622,6 @@ def main():
                             'AFDNO_X': afdno_x,
                             'AFDNO_Y': afdno_y
                         })
-                        apos_extraction_count += 1
-                        print(f"  ✓ {f['FDNO']}: APOS='{apos}' 추출 완료")
-    
-    print(f"\n총 {apos_extraction_count}개의 APOS 정보 추출 완료")
     
     # === STEP 3: APOS 기반 FDNO 재매핑 ===
     print("\n=== STEP 3: APOS 기반 전체 도면 FDNO 재매핑 ===")
@@ -639,48 +632,27 @@ def main():
         apos_groups[item['APOS']].append(item)
     
     # APOS 그룹 요약 출력
-    print("\n" + "="*100)
-    print("[APOS 수집 결과]")
-    print("="*100)
+    print("\n[APOS 그룹 요약]")
     print(f"총 {len(apos_groups)}개의 고유한 APOS 발견")
-    
-    # 디버깅: 모든 도면의 APOS 정보 출력
-    print("\n[전체 도면 APOS 매핑 정보]")
-    print(f"{'FDNO':<30} {'APOS':<25} {'파일명':<40}")
-    print("-"*95)
-    for item in sorted(ALLCHK, key=lambda x: x['INITIAL_FDNO']):
-        print(f"{item['INITIAL_FDNO']:<30} {item['APOS']:<25} {os.path.basename(item['PATH']):<40}")
-    
-    print("\n[APOS 그룹별 상세]")
     for apos, group in sorted(apos_groups.items()):
-        print(f"\n● APOS '{apos}' ({len(group)}개 도면)")
-        if len(group) >= 2:
-            print("  ▶ 교환 대상:")
-        else:
-            print("  ▶ 단독 (교환 없음):")
-        for item in sorted(group, key=lambda x: x['INITIAL_FDNO']):
-            print(f"    - FDNO: {item['INITIAL_FDNO']:<25} 파일: {os.path.basename(item['PATH'])}")
+        print(f"\nAPOS '{apos}': {len(group)}개 도면")
+        for item in group:
+            print(f"  - 초기 FDNO: {item['INITIAL_FDNO']}")
     
     # 최종 FDNO 매핑 테이블 생성 (path -> 최종 FDNO)
     final_fdno_mapping = {}
     fdno_change_log = {}  # 변경 내역 추적
     
     # APOS 기반으로 FDNO 재할당
-    print("\n" + "="*100)
-    print("[APOS 기반 FDNO 교환 상세]")
-    print("="*100)
+    print("\n=== APOS 기반 FDNO 재할당 ===")
     
     # 각 APOS 그룹 처리
     for apos, group in sorted(apos_groups.items()):
         if len(group) >= 2:
-            print(f"\n▣ APOS '{apos}' 그룹 교환 ({len(group)}개 도면)")
+            print(f"\nAPOS '{apos}' 그룹 처리 ({len(group)}개 도면)")
             
             # 그룹 내에서 가장 작은 FDNO를 기준으로 정렬
             sorted_group = sorted(group, key=lambda x: x['INITIAL_FDNO'])
-            
-            # 교환 매핑 시각화
-            print("\n  [교환 매핑]")
-            mapping_visual = []
             
             # 순환 매핑 생성 (A→B, B→C, ..., Z→A)
             for i in range(len(sorted_group)):
@@ -698,30 +670,13 @@ def main():
                     fdno_change_log[current['PATH']] = {
                         'old': old_fdno,
                         'new': new_fdno,
-                        'apos': apos,
-                        'file': os.path.basename(current['PATH'])
+                        'apos': apos
                     }
-                    mapping_visual.append(f"    {old_fdno:<25} → {new_fdno:<25} ({os.path.basename(current['PATH'])})")
-            
-            # 교환 매핑 출력
-            for mapping in mapping_visual:
-                print(mapping)
-            
-            # 교환 사이클 시각화
-            print("\n  [교환 사이클]")
-            cycle_str = ""
-            for i in range(len(sorted_group)):
-                if i > 0:
-                    cycle_str += " → "
-                cycle_str += sorted_group[i]['INITIAL_FDNO']
-            cycle_str += f" → {sorted_group[0]['INITIAL_FDNO']} (순환)"
-            print(f"    {cycle_str}")
-            
+                    print(f"  {old_fdno} → {new_fdno}")
         else:
             # 그룹에 하나만 있으면 변경 없음
             item = group[0]
             final_fdno_mapping[item['PATH']] = item['INITIAL_FDNO']
-            print(f"\n▣ APOS '{apos}' - 단독 도면 (교환 없음): {item['INITIAL_FDNO']}")
     
     # 매핑되지 않은 도면들은 원래 FDNO 유지
     for path in file_paths:
@@ -812,38 +767,26 @@ def main():
                 'original': os.path.basename(path),
                 'saved_as': os.path.basename(saved),
                 'fdno': final_fdno,
-                'changed': path in fdno_change_log,
-                'path': path
+                'changed': path in fdno_change_log
             })
         else:
             print(f"[ERROR] {os.path.basename(path)} 저장 실패")
     
     # === 최종 결과 출력 ===
-    print("\n" + "="*120)
-    print("[최종 저장 결과 요약]")
-    print("="*120)
-    print(f"{'원본 파일':<40} | {'저장된 파일':<40} | {'FDNO':<20} | {'변경':<6} | {'APOS':<20}")
-    print("-" * 140)
+    print("\n=== 최종 저장 결과 요약 ===")
+    print(f"{'원본 파일':<40} | {'저장된 파일':<40} | {'FDNO':<20} | {'변경 여부':<10}")
+    print("-" * 120)
     
     for file_info in saved_files:
         change_status = "변경됨" if file_info['changed'] else "유지"
-        apos_info = ""
-        if file_info['changed'] and file_info['path'] in fdno_change_log:
-            change_data = fdno_change_log[file_info['path']]
-            apos_info = change_data.get('apos', '')
-        print(f"{file_info['original']:<40} | {file_info['saved_as']:<40} | {file_info['fdno']:<20} | {change_status:<6} | {apos_info:<20}")
+        print(f"{file_info['original']:<40} | {file_info['saved_as']:<40} | {file_info['fdno']:<20} | {change_status:<10}")
     
     print(f"\n총 {len(saved_files)}개 파일 저장 완료")
     
     # FDNO 변경 내역 상세 출력
-    print("\n" + "="*120)
-    print("[FDNO 변경 내역 상세]")
-    print("="*120)
-    print(f"{'파일명':<40} | {'변경 전 FDNO':<25} | {'변경 후 FDNO':<25} | {'APOS':<20}")
-    print("-" * 120)
-    
-    for path, change_info in sorted(fdno_change_log.items(), key=lambda x: x[1]['old']):
-        print(f"{change_info['file']:<40} | {change_info['old']:<25} | {change_info['new']:<25} | {change_info['apos']:<20}")
+    print("\n=== FDNO 변경 내역 상세 ===")
+    for path, change_info in fdno_change_log.items():
+        print(f"{os.path.basename(path)}: {change_info['old']} → {change_info['new']} (APOS: {change_info['apos']})")
     
     print(f"\n총 {len(fdno_change_log)}개 도면의 FDNO가 변경됨")
     

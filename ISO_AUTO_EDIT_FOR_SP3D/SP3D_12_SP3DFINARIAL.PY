@@ -5,6 +5,7 @@ from tkinter import filedialog
 import os
 import math
 from ezdxf.colors import RED, YELLOW, CYAN, WHITE, BLUE
+from ezdxf import bbox
 
 # --- T1 탐색 파라미터 ---
 T1_X_MIN = 600.0
@@ -46,18 +47,63 @@ def calculate_line_length(line_entity):
         (end[2] - start[2])**2
     )
 
+def calculate_arc_length(arc_entity):
+    """ARC 엔티티의 길이 계산"""
+    radius = arc_entity.dxf.radius
+    start_angle = math.radians(arc_entity.dxf.start_angle)
+    end_angle = math.radians(arc_entity.dxf.end_angle)
+    
+    # 각도 차이 계산 (0~2π 범위)
+    angle_diff = end_angle - start_angle
+    if angle_diff < 0:
+        angle_diff += 2 * math.pi
+    
+    return radius * angle_diff
+
+def arc_to_points(arc_entity, num_segments=16):
+    """ARC를 폴리라인 점들로 변환"""
+    center = arc_entity.dxf.center
+    radius = arc_entity.dxf.radius
+    start_angle = math.radians(arc_entity.dxf.start_angle)
+    end_angle = math.radians(arc_entity.dxf.end_angle)
+    
+    # 각도 차이 계산
+    angle_diff = end_angle - start_angle
+    if angle_diff < 0:
+        angle_diff += 2 * math.pi
+    
+    # 세그먼트별 각도
+    angle_step = angle_diff / num_segments
+    
+    points = []
+    for i in range(num_segments + 1):
+        angle = start_angle + i * angle_step
+        x = center[0] + radius * math.cos(angle)
+        y = center[1] + radius * math.sin(angle)
+        points.append((x, y))
+    
+    return points
+
 def process_single_dxf(file_path):
     doc = ezdxf.readfile(file_path)
     msp = doc.modelspace()
 
-    # PIPE, TEE, ELBO 레이어의 LINE을 변환할 리스트
+    # PIPE, TEE, ELBO 레이어의 LINE과 ARC를 변환할 리스트
     lines_to_convert = []
+    arcs_to_convert = []
 
     # 색상 변경 작업 수행
     for entity in msp:
         layer_name = entity.dxf.layer.upper()
+        
+        # LINE 수집
         if entity.dxftype() == 'LINE' and ('PIPE' in layer_name or 'TEE' in layer_name or 'ELBO' in layer_name):
             lines_to_convert.append(entity)
+            continue
+            
+        # ARC 수집 (ELBO만)
+        if entity.dxftype() == 'ARC' and 'ELBO' in layer_name:
+            arcs_to_convert.append(entity)
             continue
 
         if entity.dxftype() == 'CIRCLE' and layer_name == 'WDC':
@@ -110,6 +156,20 @@ def process_single_dxf(file_path):
             pline.dxf.layer = line.dxf.layer
         msp.delete_entity(line)
 
+    # ELBO 레이어의 ARC → POLYLINE 변환
+    for arc in arcs_to_convert:
+        # ARC를 점들로 변환 (16개 세그먼트 사용)
+        points = arc_to_points(arc, num_segments=16)
+        
+        # POLYLINE 생성
+        pline = msp.add_lwpolyline(points)
+        pline.dxf.const_width = 0.6
+        pline.dxf.color = BLUE
+        pline.dxf.layer = arc.dxf.layer
+        
+        # 원래 ARC 삭제
+        msp.delete_entity(arc)
+
     # --- T1 처리: x=600~850, y=550~250 ---
     apply_t1_formatting(
         doc, msp,
@@ -117,6 +177,27 @@ def process_single_dxf(file_path):
         y_top=T1_Y_TOP, y_bottom=T1_Y_BOTTOM,
         width_factor=TARGET_WIDTH_FACTOR
     )
+
+    # ZOOM ALL 적용
+    try:
+        # 방법 1: 간단한 방법
+        doc.set_modelspace_vport(center='*', height='*')
+        print("ZOOM ALL 적용 완료 (방법 1)")
+    except Exception:
+        try:
+            # 방법 2: bbox를 이용한 방법
+            cache = bbox.Cache()
+            extents = bbox.extents(msp, cache=cache)
+            if extents.has_data:
+                center = extents.center
+                size = extents.size
+                height = max(size.x, size.y) * 1.1  # 10% 여백 추가
+                doc.set_modelspace_vport(center=center, height=height)
+                print("ZOOM ALL 적용 완료 (방법 2)")
+            else:
+                print("ZOOM ALL 적용 실패: 도면에 객체가 없습니다")
+        except Exception as e:
+            print(f"ZOOM ALL 적용 중 오류 (무시하고 계속): {e}")
 
     # 저장
     dir_name = os.path.dirname(file_path)
@@ -233,6 +314,9 @@ if __name__ == "__main__":
     print("    - 스타일 ARIAL 통일")
     print("    - 폭 비율 0.87 적용")
     print("    - 공백 = 글자 높이 × 2/3 (유니코드 1/3em × 2)로 치환, 인라인 코드 미사용")
+    print("14. (추가) ELBO 레이어의 ARC도 POLYLINE으로 변환")
+    print("    - 폭 0.6, 색상 BLUE")
+    print("15. (추가) 저장 시 ZOOM ALL 자동 적용")
     print("=====================================\n")
 
     try:

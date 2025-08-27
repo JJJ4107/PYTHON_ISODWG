@@ -4,6 +4,7 @@ import os
 import sys
 import math
 from ezdxf.colors import RED, YELLOW, CYAN, WHITE, BLUE
+from ezdxf import bbox
 
 # --- T1 탐색 파라미터 ---
 T1_X_MIN = 600.0
@@ -18,6 +19,23 @@ TARGET_WIDTH_FACTOR = 0.87
 THREE_PER_EM = "\u2004"  # 1/3 em
 TWO_THIRDS_EM = THREE_PER_EM + THREE_PER_EM  # 2/3 em
 
+def main():
+    """Command line 인터페이스 메인 함수"""
+    if len(sys.argv) < 2:
+        sys.exit(1)
+    
+    file_paths = sys.argv[1:]
+    
+    for file_path in file_paths:
+        if not os.path.exists(file_path):
+            continue
+        if not file_path.lower().endswith('.dxf'):
+            continue
+        try:
+            process_single_dxf(file_path)
+        except Exception as e:
+            pass
+
 def calculate_line_length(line_entity):
     start = line_entity.dxf.start
     end = line_entity.dxf.end
@@ -27,18 +45,63 @@ def calculate_line_length(line_entity):
         (end[2] - start[2])**2
     )
 
-def process_single_dxf(file_path):
-    doc = ezdxf.readfile(file_path)
+def calculate_arc_length(arc_entity):
+    """ARC 엔티티의 길이 계산"""
+    radius = arc_entity.dxf.radius
+    start_angle = math.radians(arc_entity.dxf.start_angle)
+    end_angle = math.radians(arc_entity.dxf.end_angle)
+    
+    # 각도 차이 계산 (0~2π 범위)
+    angle_diff = end_angle - start_angle
+    if angle_diff < 0:
+        angle_diff += 2 * math.pi
+    
+    return radius * angle_diff
+
+def arc_to_points(arc_entity, num_segments=16):
+    """ARC를 폴리라인 점들로 변환"""
+    center = arc_entity.dxf.center
+    radius = arc_entity.dxf.radius
+    start_angle = math.radians(arc_entity.dxf.start_angle)
+    end_angle = math.radians(arc_entity.dxf.end_angle)
+    
+    # 각도 차이 계산
+    angle_diff = end_angle - start_angle
+    if angle_diff < 0:
+        angle_diff += 2 * math.pi
+    
+    # 세그먼트별 각도
+    angle_step = angle_diff / num_segments
+    
+    points = []
+    for i in range(num_segments + 1):
+        angle = start_angle + i * angle_step
+        x = center[0] + radius * math.cos(angle)
+        y = center[1] + radius * math.sin(angle)
+        points.append((x, y))
+    
+    return points
+
+def process(doc):
+    """In-memory DXF document 처리 함수"""
     msp = doc.modelspace()
 
-    # PIPE, TEE, ELBO 레이어의 LINE을 변환할 리스트
+    # PIPE, TEE, ELBO 레이어의 LINE과 ARC를 변환할 리스트
     lines_to_convert = []
+    arcs_to_convert = []
 
     # 색상 변경 작업 수행
     for entity in msp:
         layer_name = entity.dxf.layer.upper()
+        
+        # LINE 수집
         if entity.dxftype() == 'LINE' and ('PIPE' in layer_name or 'TEE' in layer_name or 'ELBO' in layer_name):
             lines_to_convert.append(entity)
+            continue
+            
+        # ARC 수집 (ELBO만)
+        if entity.dxftype() == 'ARC' and 'ELBO' in layer_name:
+            arcs_to_convert.append(entity)
             continue
 
         if entity.dxftype() == 'CIRCLE' and layer_name == 'WDC':
@@ -91,6 +154,20 @@ def process_single_dxf(file_path):
             pline.dxf.layer = line.dxf.layer
         msp.delete_entity(line)
 
+    # ELBO 레이어의 ARC → POLYLINE 변환
+    for arc in arcs_to_convert:
+        # ARC를 점들로 변환 (16개 세그먼트 사용)
+        points = arc_to_points(arc, num_segments=16)
+        
+        # POLYLINE 생성
+        pline = msp.add_lwpolyline(points)
+        pline.dxf.const_width = 0.6
+        pline.dxf.color = BLUE
+        pline.dxf.layer = arc.dxf.layer
+        
+        # 원래 ARC 삭제
+        msp.delete_entity(arc)
+
     # --- T1 처리: x=600~850, y=550~250 ---
     apply_t1_formatting(
         doc, msp,
@@ -99,6 +176,30 @@ def process_single_dxf(file_path):
         width_factor=TARGET_WIDTH_FACTOR
     )
 
+    # ZOOM ALL 적용
+    try:
+        # 방법 1: 간단한 방법
+        doc.set_modelspace_vport(center='*', height='*')
+    except Exception:
+        try:
+            # 방법 2: bbox를 이용한 방법
+            cache = bbox.Cache()
+            extents = bbox.extents(msp, cache=cache)
+            if extents.has_data:
+                center = extents.center
+                size = extents.size
+                height = max(size.x, size.y) * 1.1  # 10% 여백 추가
+                doc.set_modelspace_vport(center=center, height=height)
+        except Exception:
+            pass
+
+def process_single_dxf(file_path):
+    """파일을 읽어서 처리하고 저장하는 함수"""
+    doc = ezdxf.readfile(file_path)
+    
+    # 메인 처리 함수 호출
+    process(doc)
+    
     # 저장
     dir_name = os.path.dirname(file_path)
     base_name = os.path.basename(file_path)
@@ -166,7 +267,6 @@ def replace_spaces_two_thirds_em(text: str) -> str:
 def apply_t1_formatting(doc, msp, x_min, x_max, y_top, y_bottom, width_factor: float = 0.87):
     """T1 영역의 TEXT/MTEXT에 ARIAL + 폭비율 + 공백(높이*2/3) 적용"""
     ensure_text_style(doc, "ARIAL", "arial.ttf", width_factor=width_factor)
-    t1_count = 0
 
     for e in list(msp):
         if e.dxftype() not in ("TEXT", "MTEXT"):
@@ -198,22 +298,7 @@ def apply_t1_formatting(doc, msp, x_min, x_max, y_top, y_bottom, width_factor: f
                 e.text = replace_spaces_two_thirds_em(e.text)
             except Exception:
                 pass
-
-        t1_count += 1
 # -------------------- 추가 유틸 끝 --------------------
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit(1)
-    
-    # 첫 번째 인자는 스크립트 이름이므로 제외
-    input_files = sys.argv[1:]
-    
-    for input_file in input_files:
-        if not input_file.lower().endswith('.dxf'):
-            continue
-            
-        try:
-            process_single_dxf(input_file)
-        except Exception as e:
-            pass
+    main()
