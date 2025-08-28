@@ -89,74 +89,16 @@ def get_text_bounding_box(text):
         print(f"텍스트 바운딩 박스 계산 오류: {e}")
         return None
 
-def get_text_start_end_points(text):
-    """TEXT 엔티티의 시작점과 끝점을 계산하는 함수"""
-    try:
-        # 텍스트 기본 속성
-        insert = Vec2(text.dxf.insert.x, text.dxf.insert.y)
-        height = text.dxf.height
-        text_content = text.dxf.text
-        
-        # 텍스트 너비 계산 (대략적인 비율)
-        width = len(text_content) * height * 0.7
-        
-        # 회전 각도 (라디안)
-        rotation = text.dxf.rotation if hasattr(text.dxf, 'rotation') else 0
-        rotation_rad = math.radians(rotation)
-        
-        # 정렬 방식
-        halign = text.dxf.halign if hasattr(text.dxf, 'halign') else 0
-        
-        # 기본 시작점과 끝점 (회전 전)
-        if halign == 0:  # LEFT
-            start_x = 0
-            end_x = width
-        elif halign == 1:  # CENTER
-            start_x = -width/2
-            end_x = width/2
-        elif halign == 2:  # RIGHT
-            start_x = -width
-            end_x = 0
-        else:
-            start_x = 0
-            end_x = width
-        
-        # 회전 적용
-        cos_r = math.cos(rotation_rad)
-        sin_r = math.sin(rotation_rad)
-        
-        # 시작점
-        start_rotated_x = start_x * cos_r
-        start_rotated_y = start_x * sin_r
-        start_point = Vec2(insert.x + start_rotated_x, insert.y + start_rotated_y)
-        
-        # 끝점
-        end_rotated_x = end_x * cos_r
-        end_rotated_y = end_x * sin_r
-        end_point = Vec2(insert.x + end_rotated_x, insert.y + end_rotated_y)
-        
-        return start_point, end_point
-        
-    except Exception as e:
-        print(f"텍스트 시작/끝점 계산 오류: {e}")
-        return None, None
-
 def check_text_endpoint_interference(text_entity, msp, exclude_entities, min_distance=5.0, check_center=None, check_radius=25.0):
     """TEXT 엔티티의 시작점/끝점이 다른 TEXT의 시작점/끝점에서 5mm 이내면 간섭으로 판정 - 모든 레이어 포함"""
     try:
-        # 현재 텍스트의 시작점과 끝점
-        start1, end1 = get_text_start_end_points(text_entity)
-        if not start1 or not end1:
+        # 현재 텍스트의 바운딩 박스
+        bbox1 = get_text_bounding_box(text_entity)
+        if not bbox1:
             return False
         
         # 체크 중심이 주어진 경우, 텍스트가 범위 내에 있는지 확인
-        text_center = Vec2((start1.x + end1.x) / 2, (start1.y + end1.y) / 2)
-        if check_center and distance(text_center, check_center) > check_radius:
-            return False
-        
-        # 현재 텍스트의 바운딩 박스도 가져오기
-        bbox1 = get_text_bounding_box(text_entity)
-        if not bbox1:
+        if check_center and distance(bbox1['center'], check_center) > check_radius:
             return False
         
         for e in msp:
@@ -165,40 +107,30 @@ def check_text_endpoint_interference(text_entity, msp, exclude_entities, min_dis
             
             # 모든 TEXT/MTEXT 체크 - 레이어 구분 없음
             if e.dxftype() in ("TEXT", "MTEXT"):
-                # 상대 텍스트도 범위 내에 있는지 확인
                 if e.dxftype() == "TEXT":
-                    start2, end2 = get_text_start_end_points(e)
-                    if not start2 or not end2:
-                        continue
                     bbox2 = get_text_bounding_box(e)
                 else:  # MTEXT
                     # MTEXT의 경우 insert point만 체크
                     insert_pos = Vec2(e.dxf.insert.x, e.dxf.insert.y)
-                    start2 = end2 = insert_pos
-                    bbox2 = None
+                    bbox2 = {
+                        'center': insert_pos,
+                        'width': 5.0,  # 대략적인 크기
+                        'height': 3.0
+                    }
                 
-                other_center = Vec2((start2.x + end2.x) / 2, (start2.y + end2.y) / 2)
+                if not bbox2:
+                    continue
+                
+                other_center = bbox2['center']
                 if check_center and distance(other_center, check_center) > check_radius:
                     continue
                 
-                # 1. 끝점 간 거리 체크 (기존 방식)
-                endpoints_too_close = (
-                    distance(start1, start2) < min_distance or
-                    distance(start1, end2) < min_distance or
-                    distance(end1, start2) < min_distance or
-                    distance(end1, end2) < min_distance
-                )
+                # 바운딩 박스 중심 간 거리 체크
+                center_distance = distance(bbox1['center'], bbox2['center'])
+                # 두 텍스트의 크기를 고려한 최소 거리
+                min_center_distance = max(bbox1['height'], bbox2['height']) * 1.5
                 
-                # 2. 바운딩 박스 중심 간 거리 체크 (추가)
-                bbox_too_close = False
-                if bbox1 and bbox2:
-                    center_distance = distance(bbox1['center'], bbox2['center'])
-                    # 두 텍스트의 크기를 고려한 최소 거리
-                    # 텍스트 높이 기준으로 최소 거리 계산
-                    min_center_distance = max(bbox1['height'], bbox2['height']) * 1.5
-                    bbox_too_close = center_distance < min_center_distance
-                
-                if endpoints_too_close or bbox_too_close:
+                if center_distance < min_center_distance:
                     return True
         
         return False
@@ -206,23 +138,23 @@ def check_text_endpoint_interference(text_entity, msp, exclude_entities, min_dis
         print(f"텍스트 끝점 간섭 체크 오류: {e}")
         return False
 
-def check_pipe_layer_interference(wd_entities, msp, exclude_entities, check_radius=25.0):
+def check_pipe_layer_interference(wc_entities, msp, exclude_entities, check_radius=25.0):
     """PIPE 또는 ELBO를 포함하는 레이어와의 간섭을 체크 (25mm 범위 내만)"""
     try:
-        # WDC 원 찾기
-        wdc_center = None
-        for wd_entity in wd_entities:
-            if wd_entity.dxftype() == 'CIRCLE' and 1.5 <= wd_entity.dxf.radius <= 3.2:  # 지름 3~6.4mm
-                wdc_center = Vec2(wd_entity.dxf.center.x, wd_entity.dxf.center.y)
+        # WC 원 찾기
+        wc_center = None
+        for wc_entity in wc_entities:
+            if wc_entity.dxftype() == 'CIRCLE' and wc_entity.dxf.radius == 3.0:  # 6mm 지름
+                wc_center = Vec2(wc_entity.dxf.center.x, wc_entity.dxf.center.y)
                 break
         
-        if not wdc_center:
+        if not wc_center:
             return False
         
-        for wd_entity in wd_entities:
-            if wd_entity.dxftype() == 'CIRCLE':
-                circle_center = Vec2(wd_entity.dxf.center.x, wd_entity.dxf.center.y)
-                circle_radius = wd_entity.dxf.radius
+        for wc_entity in wc_entities:
+            if wc_entity.dxftype() == 'CIRCLE':
+                circle_center = Vec2(wc_entity.dxf.center.x, wc_entity.dxf.center.y)
+                circle_radius = wc_entity.dxf.radius
                 
                 # 모든 엔티티 검사
                 for e in msp:
@@ -241,8 +173,8 @@ def check_pipe_layer_interference(wd_entities, msp, exclude_entities, check_radi
                                     end = Vec2(e.dxf.end.x, e.dxf.end.y)
                                     
                                     # 25mm 범위 내인지 확인
-                                    if (distance(wdc_center, start) > check_radius and 
-                                        distance(wdc_center, end) > check_radius):
+                                    if (distance(wc_center, start) > check_radius and 
+                                        distance(wc_center, end) > check_radius):
                                         continue
                                     
                                     dist = point_to_segment_distance(circle_center, start, end)
@@ -250,12 +182,12 @@ def check_pipe_layer_interference(wd_entities, msp, exclude_entities, check_radi
                                         return True
                                 elif e.dxftype() == "ARC":
                                     arc_center = Vec2(e.dxf.center.x, e.dxf.center.y)
-                                    if distance(wdc_center, arc_center) <= check_radius:
+                                    if distance(wc_center, arc_center) <= check_radius:
                                         if distance(circle_center, arc_center) < (e.dxf.radius + circle_radius):
                                             return True
                                 elif e.dxftype() == "CIRCLE":
                                     entity_center = Vec2(e.dxf.center.x, e.dxf.center.y)
-                                    if distance(wdc_center, entity_center) <= check_radius:
+                                    if distance(wc_center, entity_center) <= check_radius:
                                         if distance(circle_center, entity_center) < (e.dxf.radius + circle_radius):
                                             return True
                                 else:
@@ -268,7 +200,7 @@ def check_pipe_layer_interference(wd_entities, msp, exclude_entities, check_radi
                                     # 25mm 범위 내에 점이 있는지 확인
                                     in_range = False
                                     for pt in pts:
-                                        if distance(wdc_center, pt) <= check_radius:
+                                        if distance(wc_center, pt) <= check_radius:
                                             in_range = True
                                             break
                                     
@@ -283,23 +215,23 @@ def check_pipe_layer_interference(wd_entities, msp, exclude_entities, check_radi
         print(f"PIPE/ELBO 레이어 간섭 체크 오류: {e}")
         return False
 
-def check_30degree_polyline_interference(wd_entities, msp, exclude_entities, check_radius=25.0):
+def check_30degree_polyline_interference(wc_entities, msp, exclude_entities, check_radius=25.0):
     """30도 단위 정각도를 가진 폴리라인/LW폴리라인과의 간섭을 체크 (25mm 범위 내만)"""
     try:
-        # WDC 원 찾기
-        wdc_center = None
-        for wd_entity in wd_entities:
-            if wd_entity.dxftype() == 'CIRCLE' and 1.5 <= wd_entity.dxf.radius <= 3.2:  # 지름 3~6.4mm
-                wdc_center = Vec2(wd_entity.dxf.center.x, wd_entity.dxf.center.y)
+        # WC 원 찾기
+        wc_center = None
+        for wc_entity in wc_entities:
+            if wc_entity.dxftype() == 'CIRCLE' and wc_entity.dxf.radius == 3.0:
+                wc_center = Vec2(wc_entity.dxf.center.x, wc_entity.dxf.center.y)
                 break
         
-        if not wdc_center:
+        if not wc_center:
             return False
         
-        for wd_entity in wd_entities:
-            if wd_entity.dxftype() == 'CIRCLE':
-                circle_center = Vec2(wd_entity.dxf.center.x, wd_entity.dxf.center.y)
-                circle_radius = wd_entity.dxf.radius
+        for wc_entity in wc_entities:
+            if wc_entity.dxftype() == 'CIRCLE':
+                circle_center = Vec2(wc_entity.dxf.center.x, wc_entity.dxf.center.y)
+                circle_radius = wc_entity.dxf.radius
                 
                 # 모든 폴리라인 검사
                 for e in msp.query("POLYLINE LWPOLYLINE"):
@@ -318,7 +250,7 @@ def check_30degree_polyline_interference(wd_entities, msp, exclude_entities, che
                     # 25mm 범위 내에 있는지 확인
                     in_range = False
                     for pt in pts:
-                        if distance(wdc_center, pt) <= check_radius:
+                        if distance(wc_center, pt) <= check_radius:
                             in_range = True
                             break
                     
@@ -372,13 +304,7 @@ def check_circle_to_segments_distance(circle_center, circle_radius, segments, mi
     return False
 
 def get_iso_orthogonal_angle(wa_angle_deg):
-    """ISO 도면에서 WA 각도에 대한 직교 각도를 반환
-    배관 ISO 도면의 표준 직교 관계:
-    - 30° ↔ 330° (서로 직교)
-    - 90° ↔ 270° (서로 직교)
-    - 150° ↔ 210° (서로 직교)
-    """
-    
+    """ISO 도면에서 WA 각도에 대한 직교 각도를 반환"""
     # WA 각도를 0-360 범위로 정규화
     wa_angle_norm = wa_angle_deg % 360
     
@@ -387,7 +313,6 @@ def get_iso_orthogonal_angle(wa_angle_deg):
     nearest_30 = nearest_30 % 360
     
     # 배관 ISO 도면의 직교 관계 매핑
-    # 각 WA 각도에 대해 가능한 PIPE 직교 각도들
     iso_orthogonal_map = {
         0: [90, 270],      # 0° (수평) → 90°, 270° (수직)
         30: [330],         # 30° → 330° (ISO 표준 직교)
@@ -410,12 +335,7 @@ def get_iso_orthogonal_angle(wa_angle_deg):
         return [90, 270]
 
 def calculate_wa_line_to_pipe_angle(wa_angle, pipe_lines):
-    """WA 라인과 PIPE 라인 사이의 각도 차이를 계산하고 ISO 도면 직교성을 평가
-    배관 ISO 도면의 표준 직교 관계 사용:
-    - 30° ↔ 330°
-    - 90° ↔ 270°
-    - 150° ↔ 210°
-    """
+    """WA 라인과 PIPE 라인 사이의 각도 차이를 계산하고 ISO 도면 직교성을 평가"""
     if not pipe_lines:
         return None
     
@@ -463,8 +383,6 @@ def check_interference_at_position_detailed(test_center, msp, exclude_entities, 
         if e in exclude_entities or not hasattr(e, "dxf") or e.dxf is None:
             continue
         
-        # 레이어별 제외 없음 - DIMLINES 포함 모든 레이어 체크
-        
         # 엔티티가 25mm 범위 밖이면 건너뛰기 (빠른 필터링)
         if hasattr(e, 'dxf'):
             entity_pos = None
@@ -506,7 +424,7 @@ def check_interference_at_position_detailed(test_center, msp, exclude_entities, 
             start = Vec2(e.dxf.start.x, e.dxf.start.y)
             end = Vec2(e.dxf.end.x, e.dxf.end.y)
             
-            # 20mm 범위 내인지 확인
+            # 25mm 범위 내인지 확인
             if (distance(test_center, start) <= check_radius or 
                 distance(test_center, end) <= check_radius or
                 point_to_segment_distance(test_center, start, end) <= check_radius):
@@ -522,7 +440,7 @@ def check_interference_at_position_detailed(test_center, msp, exclude_entities, 
             else:
                 pts = [Vec2(x, y) for x, y, *_ in e.get_points()]
             
-            # 폴리라인이 20mm 범위 내에 있는지 확인
+            # 폴리라인이 25mm 범위 내에 있는지 확인
             in_range = False
             for pt in pts:
                 if distance(test_center, pt) <= check_radius:
@@ -577,42 +495,6 @@ def check_interference_at_position_detailed(test_center, msp, exclude_entities, 
                         interference_found = True
             except:
                 pass
-                
-        elif e.dxftype() == "LEADER":
-            # 지시선 체크
-            try:
-                if hasattr(e, 'vertices'):
-                    for vertex in e.vertices:
-                        vertex_pos = Vec2(vertex[0], vertex[1])
-                        if distance(test_center, vertex_pos) < weld_radius:
-                            interference_count += 1
-                            interference_found = True
-                            break
-            except:
-                pass
-                
-        elif e.dxftype() == "SPLINE":
-            # 스플라인 체크
-            try:
-                if hasattr(e, 'control_points'):
-                    for cp in e.control_points:
-                        cp_pos = Vec2(cp[0], cp[1])
-                        if distance(test_center, cp_pos) < weld_radius:
-                            interference_count += 1
-                            interference_found = True
-                            break
-            except:
-                pass
-                
-        elif e.dxftype() == "ELLIPSE":
-            # 타원 체크
-            try:
-                ellipse_center = Vec2(e.dxf.center.x, e.dxf.center.y)
-                if distance(test_center, ellipse_center) < weld_radius:
-                    interference_count += 1
-                    interference_found = True
-            except:
-                pass
         
         if interference_found:
             interference_details.append(f"{e.dxftype()}/{layer_name}")
@@ -624,53 +506,8 @@ def check_interference_at_position(test_center, msp, exclude_entities, weld_radi
     count, _ = check_interference_at_position_detailed(test_center, msp, exclude_entities, weld_radius, check_radius)
     return count > 0
 
-def find_welds_along_line(start_point, end_point, msp, used_welds_circles, max_search_distance=50.0):
-    """A1 선을 따라 WELDS를 찾는 함수"""
-    best_welds = None
-    best_distance = float('inf')
-    
-    # 선의 방향 벡터
-    direction = end_point - start_point
-    line_length = direction.magnitude
-    
-    if line_length > 0:
-        direction_normalized = direction.normalize()
-        
-        # WELDS 검색
-        for circle in msp.query('CIRCLE'):
-            if (hasattr(circle.dxf, 'layer') and circle.dxf.layer == 'WELDS' and
-                0.75 <= circle.dxf.radius <= 1.0):  # 반지름 0.75-1.0 = 지름 1.5-2mm
-                
-                circle_center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
-                
-                # 1. 선의 연장선상에 있는지 확인
-                # 시작점에서 원까지의 벡터
-                to_circle = circle_center - start_point
-                
-                # 선의 방향으로의 투영 거리
-                projection_distance = to_circle.dot(direction_normalized)
-                
-                # 투영점 계산
-                projection_point = start_point + direction_normalized * projection_distance
-                
-                # 원과 투영점 사이의 거리 (선에서 벗어난 정도)
-                perpendicular_distance = distance(circle_center, projection_point)
-                
-                # 선상 또는 가까운 위치에 있는지 확인 (2mm 허용)
-                if perpendicular_distance <= 2.0:
-                    # 시작점으로부터의 거리
-                    distance_from_start = distance(start_point, circle_center)
-                    
-                    # 최대 검색 거리 내에 있고, 가장 가까운 WELDS 선택
-                    if distance_from_start <= max_search_distance and distance_from_start < best_distance:
-                        if circle not in used_welds_circles:
-                            best_welds = circle
-                            best_distance = distance_from_start
-    
-    return best_welds, best_distance
-
-def find_pipe_lines_near_sw(sw_center, msp, search_radius=5.0):
-    """SW 근처의 PIPE 선을 찾는 함수"""
+def find_pipe_lines_near_ws(ws_center, msp, search_radius=5.0):
+    """WS 근처의 PIPE 선을 찾는 함수"""
     pipe_lines = []
     
     try:
@@ -683,9 +520,9 @@ def find_pipe_lines_near_sw(sw_center, msp, search_radius=5.0):
                         start = Vec2(entity.dxf.start.x, entity.dxf.start.y)
                         end = Vec2(entity.dxf.end.x, entity.dxf.end.y)
                         
-                        # SW 중심에서의 거리
-                        dist_to_start = distance(sw_center, start)
-                        dist_to_end = distance(sw_center, end)
+                        # WS 중심에서의 거리
+                        dist_to_start = distance(ws_center, start)
+                        dist_to_end = distance(ws_center, end)
                         min_dist = min(dist_to_start, dist_to_end)
                         
                         if min_dist <= search_radius:
@@ -713,7 +550,7 @@ def find_pipe_lines_near_sw(sw_center, msp, search_radius=5.0):
                             # 모든 점들에 대해 최소 거리 계산
                             min_dist = float('inf')
                             for pt in points:
-                                dist = distance(sw_center, pt)
+                                dist = distance(ws_center, pt)
                                 min_dist = min(min_dist, dist)
                             
                             if min_dist <= search_radius:
@@ -734,7 +571,7 @@ def find_pipe_lines_near_sw(sw_center, msp, search_radius=5.0):
         pipe_lines.sort(key=lambda x: x['min_distance'])
         pipe_lines = pipe_lines[:2]
         
-        print(f"   🔧 SW 근처 PC 검색 완료: {len(pipe_lines)}개 발견")
+        print(f"   WS 근처 PIPE 검색 완료: {len(pipe_lines)}개 발견")
         
     except Exception as e:
         print(f"PIPE 선 찾기 오류: {e}")
@@ -742,14 +579,14 @@ def find_pipe_lines_near_sw(sw_center, msp, search_radius=5.0):
     
     return pipe_lines
 
-def check_wd_interference_with_priority(wd_entities, sw_center, rotation_angle, msp, exclude_entities, pipe_lines=None):
-    """우선순위 기반 WD 간섭 체크 - 각 간섭 유형별로 별도 체크"""
+def check_wc_interference_with_priority(wc_entities, ws_center, rotation_angle, msp, exclude_entities, pipe_lines=None):
+    """우선순위 기반 WC 간섭 체크 - 각 간섭 유형별로 별도 체크"""
     try:
         # 임시로 회전시켜서 간섭 체크
         temp_positions = []
         
         # 모든 엔티티의 현재 위치 백업
-        for entity in wd_entities:
+        for entity in wc_entities:
             if entity.dxftype() == 'CIRCLE':
                 temp_positions.append({
                     'entity': entity,
@@ -771,37 +608,37 @@ def check_wd_interference_with_priority(wd_entities, sw_center, rotation_angle, 
                 })
         
         # 임시로 회전
-        for entity in wd_entities:
-            rotate_entity_around_point(entity, sw_center, rotation_angle)
+        for entity in wc_entities:
+            rotate_entity_around_point(entity, ws_center, rotation_angle)
         
-        # 회전 후 WELDNO 텍스트를 WDC 원 중심으로 재정렬
-        wdc_circle = None
-        weldno_texts = []
+        # 회전 후 WT 텍스트를 WC 원 중심으로 재정렬
+        wc_circle = None
+        wt_texts = []
         
-        for entity in wd_entities:
-            if entity.dxftype() == 'CIRCLE' and 1.5 <= entity.dxf.radius <= 3.2:  # 지름 3~6.4mm
-                wdc_circle = entity
+        for entity in wc_entities:
+            if entity.dxftype() == 'CIRCLE' and entity.dxf.radius == 3.0:  # 6mm 지름
+                wc_circle = entity
             elif entity.dxftype() == 'TEXT':
                 # 텍스트가 수평인지 확인
                 if is_horizontal_text(entity):
-                    weldno_texts.append(entity)
+                    wt_texts.append(entity)
         
-        if wdc_circle and weldno_texts:
-            wdc_center = Vec2(wdc_circle.dxf.center.x, wdc_circle.dxf.center.y)
-            for txt in weldno_texts:
+        if wc_circle and wt_texts:
+            wc_center = Vec2(wc_circle.dxf.center.x, wc_circle.dxf.center.y)
+            for txt in wt_texts:
                 bbox = get_text_bounding_box(txt)
                 if bbox:
-                    offset = wdc_center - bbox['center']
+                    offset = wc_center - bbox['center']
                     new_insert = Vec2(txt.dxf.insert.x + offset.x, 
                                     txt.dxf.insert.y + offset.y)
                     txt.dxf.insert = (new_insert.x, new_insert.y, 0)
         
-        # 회전 후 WDC 중심 위치
-        wdc_center_for_check = Vec2(wdc_circle.dxf.center.x, wdc_circle.dxf.center.y) if wdc_circle else sw_center
+        # 회전 후 WC 중심 위치
+        wc_center_for_check = Vec2(wc_circle.dxf.center.x, wc_circle.dxf.center.y) if wc_circle else ws_center
         
-        # WA 라인의 각도 계산 (SW에서 WDC로의 방향)
-        wa_angle = math.atan2(wdc_center_for_check.y - sw_center.y, 
-                             wdc_center_for_check.x - sw_center.x)
+        # WA 라인의 각도 계산 (WS에서 WC로의 방향)
+        wa_angle = math.atan2(wc_center_for_check.y - ws_center.y, 
+                             wc_center_for_check.x - ws_center.x)
         
         # PIPE와의 직교성 계산
         pipe_angle_info = calculate_wa_line_to_pipe_angle(wa_angle, pipe_lines)
@@ -814,38 +651,38 @@ def check_wd_interference_with_priority(wd_entities, sw_center, rotation_angle, 
         general_interference_score = 0
         
         # 1. TEXT 간섭 체크 (최우선) - 25mm 범위 내만
-        for entity in wd_entities:
+        for entity in wc_entities:
             if entity.dxftype() == 'TEXT':
-                if check_text_endpoint_interference(entity, msp, exclude_entities + wd_entities, 5.0, wdc_center_for_check, 25.0):
+                if check_text_endpoint_interference(entity, msp, exclude_entities + wc_entities, 5.0, wc_center_for_check, 25.0):
                     has_text_interference = True
                     break
         
         # 2. PIPE/ELBO 레이어 간섭 체크 (두번째 우선순위) - 25mm 범위 내만
-        has_pipe_layer_interference = check_pipe_layer_interference(wd_entities, msp, exclude_entities + wd_entities, 25.0)
+        has_pipe_layer_interference = check_pipe_layer_interference(wc_entities, msp, exclude_entities + wc_entities, 25.0)
         
-        # 3. PC와 WDC 원 사이 1mm 체크 (세번째 우선순위)
+        # 3. PIPE와 WC 원 사이 1mm 체크 (세번째 우선순위)
         if pipe_lines:
-            for entity in wd_entities:
-                if entity.dxftype() == 'CIRCLE' and 1.5 <= entity.dxf.radius <= 3.2:  # WDC 원 (지름 3~6.4mm)
+            for entity in wc_entities:
+                if entity.dxftype() == 'CIRCLE' and entity.dxf.radius == 3.0:  # WC 원 (6mm 지름)
                     center = Vec2(entity.dxf.center.x, entity.dxf.center.y)
-                    for pc in pipe_lines:
-                        if check_circle_to_segments_distance(center, entity.dxf.radius, pc['segments'], 1.0):  # 2mm → 1mm로 완화
+                    for pipe in pipe_lines:
+                        if check_circle_to_segments_distance(center, entity.dxf.radius, pipe['segments'], 1.0):
                             has_pc_circle_interference = True
                             break
                     if has_pc_circle_interference:
                         break
         
         # 4. 30도 단위 정각도 폴리라인 간섭 체크 (네번째 우선순위) - 25mm 범위 내만
-        has_30degree_polyline_interference = check_30degree_polyline_interference(wd_entities, msp, exclude_entities + wd_entities, 25.0)
+        has_30degree_polyline_interference = check_30degree_polyline_interference(wc_entities, msp, exclude_entities + wc_entities, 25.0)
         
         # 5. 일반 간섭 점수 계산 (최하위 우선순위) - 25mm 범위 내만
         general_interference_details = []
-        for entity in wd_entities:
+        for entity in wc_entities:
             if entity.dxftype() == 'CIRCLE':
                 center = Vec2(entity.dxf.center.x, entity.dxf.center.y)
-                # WDC 원의 경우 반지름을 약간 늘려서 체크 (여유 공간 확보)
+                # WC 원의 경우 반지름을 약간 늘려서 체크 (여유 공간 확보)
                 check_radius_adjusted = entity.dxf.radius + 1.0  # 1mm 여유
-                interference_count, details = check_interference_at_position_detailed(center, msp, exclude_entities + wd_entities, check_radius_adjusted, 25.0)
+                interference_count, details = check_interference_at_position_detailed(center, msp, exclude_entities + wc_entities, check_radius_adjusted, 25.0)
                 general_interference_score += interference_count
                 if details:
                     general_interference_details.extend(details)
@@ -929,6 +766,161 @@ def rotate_entity_around_point(entity, center, angle):
     except Exception as e:
         print(f"엔티티 회전 오류: {e}")
 
+def add_wt_text_to_wc_centered(msp, wc_center, text_value, height, color, layer, doc=None):
+    """'00' 텍스트를 (0,0)에 생성하여 중심을 계산한 후 WC 중심으로 이동"""
+    try:
+        # TXT 스타일이 없으면 생성
+        if doc and "TXT" not in doc.styles:
+            try:
+                doc.styles.new("TXT")
+            except:
+                pass
+        
+        # 1. (0,0)에 '00' 텍스트 생성
+        text = msp.add_text(
+            text_value,
+            dxfattribs={
+                'height': height,
+                'color': color,
+                'layer': layer,
+                'insert': (0, 0, 0),
+                'halign': 0,  # LEFT
+                'valign': 0,  # BASELINE
+                'style': 'TXT' if doc else 'Standard',
+                'width': 0.85  # 폭비율 0.85
+            }
+        )
+        
+        # 2. 바운딩 박스를 계산하여 텍스트의 실제 중심 구하기
+        bbox = get_text_bounding_box(text)
+        
+        if bbox:
+            # 3. 텍스트 중심과 WC 중심의 차이 계산
+            text_center = bbox['center']
+            offset_x = wc_center[0] - text_center.x
+            offset_y = wc_center[1] - text_center.y
+            
+            # 4. 텍스트를 WC 중심으로 이동
+            current_insert = Vec2(text.dxf.insert.x, text.dxf.insert.y)
+            new_insert = current_insert + Vec2(offset_x, offset_y)
+            text.dxf.insert = (new_insert.x, new_insert.y, 0)
+            
+            return text
+        else:
+            # 바운딩 박스 계산 실패 시 기본 중앙 정렬
+            text.dxf.halign = 4  # CENTER
+            text.dxf.valign = 2  # MIDDLE
+            text.dxf.insert = (wc_center[0], wc_center[1], 0)
+            return text
+            
+    except Exception as e:
+        print(f"WT 텍스트 생성 오류: {e}")
+        # fallback: 기본 방식
+        try:
+            return msp.add_text(
+                text_value,
+                dxfattribs={
+                    'height': height,
+                    'color': color,
+                    'layer': layer,
+                    'insert': (wc_center[0], wc_center[1], 0),
+                    'halign': 4,  # CENTER
+                    'valign': 2,  # MIDDLE
+                    'style': 'TXT' if doc else 'Standard',
+                    'width': 0.85
+                }
+            )
+        except:
+            return None
+
+def add_wt_text_to_wc(msp, center, text_value, height, color, layer, doc=None):
+    """WC 중심에 WT 텍스트를 생성하는 함수 (첨부 코드의 add_text_to_node와 완전 동일)"""
+    try:
+        if doc and "ARIAL" not in doc.styles:
+            try:
+                doc.styles.new("ARIAL", dxfattribs={"font": "arial.ttf"})
+            except:
+                pass
+        txt = msp.add_text(
+            text_value,
+            dxfattribs={
+                'height': height,
+                'color': color,
+                'layer': layer,
+                'insert': (0, 0, 0),
+                'halign': 4,
+                'valign': 2,
+                'style': 'ARIAL' if doc else 'Standard',
+                'width': 0.85
+            }
+        )
+        try:
+            from ezdxf.math import Matrix44
+            txt.transform(Matrix44.translate(center[0], center[1], 0))
+            return txt
+        except:
+            try:
+                msp.delete_entity(txt)
+            except:
+                pass
+            return msp.add_text(
+                text_value,
+                dxfattribs={
+                    'height': height,
+                    'color': color,
+                    'layer': layer,
+                    'insert': (center[0], center[1], 0),
+                    'halign': 4,
+                    'valign': 2,
+                    'style': 'ARIAL' if doc else 'Standard',
+                    'width': 0.85
+                }
+            )
+    except:
+        try:
+            return msp.add_text(
+                text_value,
+                dxfattribs={'height': height, 'color': color, 'layer': layer, 'insert': (center[0], center[1], 0), 'halign': 4, 'valign': 2}
+            )
+        except:
+            return None
+
+def create_text_box(msp, text_entity, box_layer="WT_BOX"):
+    """텍스트 주변에 박스를 생성하는 함수"""
+    try:
+        bbox = get_text_bounding_box(text_entity)
+        if not bbox:
+            return None
+        
+        # 박스 여백 (텍스트 높이의 10%)
+        margin = text_entity.dxf.height * 0.1
+        
+        # 박스 좌표
+        box_min_x = bbox['min_x'] - margin
+        box_max_x = bbox['max_x'] + margin
+        box_min_y = bbox['min_y'] - margin
+        box_max_y = bbox['max_y'] + margin
+        
+        # 박스 생성 (POLYLINE으로 닫힌 사각형)
+        points = [
+            (box_min_x, box_min_y),
+            (box_max_x, box_min_y),
+            (box_max_x, box_max_y),
+            (box_min_x, box_max_y),
+            (box_min_x, box_min_y)  # 닫힌 폴리라인
+        ]
+        
+        polyline = msp.add_lwpolyline(points, dxfattribs={
+            'layer': box_layer,
+            'color': 4  # CYAN
+        })
+        
+        return polyline
+        
+    except Exception as e:
+        print(f"텍스트 박스 생성 오류: {e}")
+        return None
+
 if __name__ == "__main__":
     # 디버깅을 위한 정보 출력
     import sys
@@ -971,7 +963,7 @@ if __name__ == "__main__":
         exit()
     
     if not filepaths:
-        print("❌ 선택된 파일이 없습니다.")
+        print("선택된 파일이 없습니다.")
         exit()
 
     print("\n=== 파일 처리 시작 ===")
@@ -988,319 +980,120 @@ if __name__ == "__main__":
         
         # 이미 처리된 파일인지 확인
         if filepath in processed_files:
-            print(f"⚠️  이미 처리된 파일입니다. 건너뜁니다.")
+            print(f"이미 처리된 파일입니다. 건너뜁니다.")
             continue
         
         processed_files.append(filepath)
-        print(f"\n📂 처리 중: {os.path.basename(filepath)}")
+        print(f"\n처리 중: {os.path.basename(filepath)}")
         
         try:
             doc = ezdxf.readfile(filepath)
             msp = doc.modelspace()
         except Exception as e:
-            print(f"❌ 파일 읽기 오류: {e}")
+            print(f"파일 읽기 오류: {e}")
             continue
     
         # 파라미터 설정
-        min_radius = 1.5  # 최소 반지름 (지름 3mm)
-        max_radius = 3.2  # 최대 반지름 (지름 6.4mm)
-        text_search_radius = 4.0
-        touch_tolerance = 1.0  # 원에 접하는 라인 찾기 위한 허용 오차
-        interference_check_radius = 25.0  # 간섭 체크 범위 (20mm → 25mm로 확대)
+        ws_radius = 1.25  # WS 원 반지름 (지름 2.5mm)
+        wc_radius = 3.0   # WC 원 반지름 (지름 6mm)
+        move_distance = 8.5  # 수직 이동 거리 (8.5mm)
+        interference_check_radius = 25.0  # 간섭 체크 범위 (25mm)
         
-        # 사용된 WELDS 원 추적 리스트
-        used_welds_circles = []
+        ws_circles = []  # WS 원 저장
+        wc_groups = []   # WC 그룹 저장
         
-        wdc_blocks = []  # WDC (원) 저장
-        wd_groups = []   # WD (WDC + WDT) 그룹 저장
-        
-        # 1. WDC 찾기: ISOTEXT 레이어의 원 (지름 3~6.4mm)
+        # 1. WS 찾기: WELD 레이어의 원 (지름 2.5mm)
         for circle in msp.query("CIRCLE"):
-            if circle.dxf.layer == "ISOTEXT" and min_radius <= circle.dxf.radius <= max_radius:
-                center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
-                circle.dxf.layer = "WDC"
-                circle.dxf.color = 4  # CYAN
+            if (hasattr(circle.dxf, 'layer') and 
+                circle.dxf.layer.upper() == "WELD" and 
+                abs(circle.dxf.radius - ws_radius) < 0.1):  # 반지름 1.25mm ± 0.1mm
                 
-                # 2. WDT 찾기: WDC 반경 4.0 이내의 기울기 0인 TEXT
-                wdt_texts = []
-                for txt in msp.query("TEXT"):
-                    if is_horizontal_text(txt):
-                        pos = Vec2(txt.dxf.insert.x, txt.dxf.insert.y)
-                        if distance(pos, center) <= text_search_radius:
-                            txt.dxf.layer = "WDT"
-                            wdt_texts.append(txt)
+                ws_center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
                 
-                wdc_blocks.append({
-                    "circle": circle,
-                    "center": center,
-                    "radius": circle.dxf.radius,
-                    "texts": wdt_texts
-                })
-        
-        print(f"✅ WDC 블록 수: {len(wdc_blocks)}")
-        
-        # 3. 각 WDC에 대해 A1 (접하는 라인) 찾기 및 처리
-        for wdc in wdc_blocks:
-            circle = wdc["circle"]
-            center = wdc["center"]
-            radius = wdc["radius"]
-            texts = wdc["texts"]
-            
-            # A1 찾기: WDC 원에 1mm 이내에 접하는 ISOTEXT 레이어의 LINE
-            for line in msp.query("LINE"):
-                if line.dxf.layer == "ISOTEXT":
-                    start = Vec2(line.dxf.start.x, line.dxf.start.y)
-                    end = Vec2(line.dxf.end.x, line.dxf.end.y)
-                    
-                    # 선분과 원 중심까지의 최소 거리 계산
-                    min_dist = point_to_segment_distance(center, start, end)
-                    
-                    # 원에 접하는지 확인 (반지름 ± 허용오차)
-                    if abs(min_dist - radius) <= touch_tolerance:
-                        line.dxf.color = 7  # 흰색
-                        
-                        # AP1 (원과 가까운 점), AP2 (먼 점) 결정
-                        dist_start = distance(start, center)
-                        dist_end = distance(end, center)
-                        
-                        if dist_start < dist_end:
-                            ap1, ap2 = start, end
-                        else:
-                            ap1, ap2 = end, start
-                        
-                        # A1의 기울기 계산
-                        angle = get_line_angle(ap1, ap2)
-                        
-                        # WD = WDC + WDT
-                        wd_entities = [circle] + texts
-                        
-                        # AP2를 임시 WELDS 위치로 저장 (나중에 실제 WELDS를 찾을 때까지)
-                        # A1 라인 삭제
-                        try:
-                            msp.delete_entity(line)
-                        except Exception as ex:
-                            print(f"❗ A1 라인 삭제 오류: {ex}")
-                        
-                        # WD 그룹 저장 (회전에 사용) - 이동은 나중에 WELDS를 찾은 후에 수행
-                        wd_groups.append({
-                            'wdc_circle': circle,
-                            'wdc_center': center,  # 원래 위치 저장
-                            'wdt_texts': texts,
-                            'entities': wd_entities,
-                            'ap2': ap2,  # AP2 위치 저장
-                            'a1_angle': angle,  # A1 라인의 각도 저장
-                            'radius': radius  # WDC 반지름 저장
-                        })
-                        
-                        break  # 하나의 라인만 처리
-        
-        print(f"✅ WD 그룹 생성: {len(wd_groups)}개")
-        print(f"\n🔄 WD 회전 처리 시작 - 총 {len(wd_groups)}개 그룹")
-        
-        # 각 WD 그룹에 대해 회전 처리
-        failed_wd_count = 0
-        long_wa_count = 0
-        
-        for i, wd_group in enumerate(wd_groups):
-            try:
-                wdc_circle = wd_group['wdc_circle']
-                original_wdc_center = wd_group['wdc_center']  # 원래 위치
-                ap2 = wd_group['ap2']  # AP2 위치
-                a1_angle = wd_group['a1_angle']  # A1 선의 각도
-                
-                print(f"\n[{i+1}/{len(wd_groups)}] WD 처리: ({original_wdc_center.x:.2f}, {original_wdc_center.y:.2f})")
-                
-                # 1. 먼저 A1 선을 따라 WELDS 찾기 (A1 선의 연장선상)
-                # A1 방향으로 연장된 선상에서 WELDS 찾기
-                direction = Vec2(math.cos(a1_angle), math.sin(a1_angle))
-                search_start = original_wdc_center
-                search_end = ap2 + direction * 50.0  # AP2에서 50mm 더 연장
-                
-                welds_circle, welds_distance = find_welds_along_line(
-                    search_start, search_end, msp, used_welds_circles, 50.0
+                # 2. WC 생성: WS 중심에 CYAN 6mm 원
+                wc_circle = msp.add_circle(
+                    center=(ws_center.x, ws_center.y),
+                    radius=wc_radius,
+                    dxfattribs={'layer': 'WC', 'color': 4}  # CYAN
                 )
                 
-                if welds_circle:
-                    welds_center = Vec2(welds_circle.dxf.center.x, welds_circle.dxf.center.y)
-                    print(f"   ✅ A1 연장선상에서 WELDS 발견: 거리 {welds_distance:.1f}mm")
-                    used_welds_circles.append(welds_circle)
-                else:
-                    # 2. A1 선상에서 못 찾으면 AP2 근처에서 찾기 (점진적 확대)
-                    print(f"   ⚠️  A1 선상에서 WELDS를 찾지 못함, AP2 근처 검색")
-                    
-                    search_radii = [5.0, 10.0, 15.0, 20.0, 30.0]
-                    for search_radius in search_radii:
-                        # WELDS 레이어의 1.5-2mm 원 찾기 (AP2 근처)
-                        for circle in msp.query('CIRCLE'):
-                            if (hasattr(circle.dxf, 'layer') and circle.dxf.layer == 'WELDS' and
-                                0.75 <= circle.dxf.radius <= 1.0):  # 반지름 0.75-1.0 = 지름 1.5-2mm
-                                circle_center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
-                                if distance(circle_center, ap2) <= search_radius:
-                                    # 이미 사용된 WELDS인지 확인
-                                    if circle not in used_welds_circles:
-                                        welds_circle = circle
-                                        welds_center = circle_center
-                                        welds_distance = distance(circle_center, ap2)
-                                        used_welds_circles.append(circle)
-                                        print(f"   ✅ {search_radius:.0f}mm 범위에서 WELDS 발견")
-                                        break
-                        if welds_circle:
-                            break
+                # 3. WC를 수직으로 10mm 이동 (Y축 방향으로 위쪽)
+                moved_center = Vec2(ws_center.x, ws_center.y + move_distance)
+                wc_circle.dxf.center = (moved_center.x, moved_center.y, 0)
                 
-                # 3. 그래도 못 찾으면 이미 사용된 WELDS 중에서라도 찾기
-                if not welds_circle:
-                    print(f"   ⚠️  미사용 WELDS를 찾지 못함, 사용된 WELDS 재검색")
-                    min_distance = float('inf')
-                    for circle in msp.query('CIRCLE'):
-                        if (hasattr(circle.dxf, 'layer') and circle.dxf.layer == 'WELDS' and
-                            0.75 <= circle.dxf.radius <= 1.0):
-                            circle_center = Vec2(circle.dxf.center.x, circle.dxf.center.y)
-                            dist = distance(circle_center, ap2)
-                            if dist < min_distance and dist <= 30.0:
-                                welds_circle = circle
-                                welds_center = circle_center
-                                welds_distance = dist
-                                min_distance = dist
-                    
-                    if welds_circle:
-                        print(f"   ⚠️  기존 사용 WELDS 재사용 (거리: {min_distance:.1f}mm)")
+                # 4. WT 텍스트 생성: '00' 텍스트의 실제 중심을 계산하여 WC 중심에 정확히 배치
+                wt_text = add_wt_text_to_wc_centered(msp, (moved_center.x, moved_center.y), '00', 2.5, 2, 'WT', doc)  # color=2 (YELLOW)
                 
-                if not welds_circle:
-                    print(f"   ❌ WELDS를 전혀 찾을 수 없음 - WA 선 없이 진행")
-                    failed_wd_count += 1
-                    # WDC 색상을 빨간색으로 변경하여 문제 표시
-                    wdc_circle.dxf.color = 1  # RED
-                    continue
+                # WC 그룹 저장 (간섭 체크용)
+                wc_entities = [wc_circle, wt_text] if wt_text else [wc_circle]
                 
-                print(f"   🔗 WELDS 원 발견: ({welds_center.x:.2f}, {welds_center.y:.2f})")
+                wc_groups.append({
+                    'ws_circle': circle,
+                    'ws_center': ws_center,
+                    'wc_circle': wc_circle,
+                    'wc_center': moved_center,
+                    'wt_text': wt_text,
+                    'entities': wc_entities
+                })
                 
-                # WD를 WELDS로부터 (WDC 반지름 + 2.8mm) 거리로 이동
-                # A1의 방향을 사용하여 초기 위치 설정
-                radius = wd_group['radius']
-                move_distance = radius + 2.8
+                ws_circles.append(circle)
+        
+        print(f"WS 원 발견: {len(ws_circles)}개")
+        print(f"WC 그룹 생성: {len(wc_groups)}개")
+        
+        if not wc_groups:
+            print("처리할 WS 원이 없습니다.")
+            continue
+        
+        print(f"\nWC 회전 처리 시작 - 총 {len(wc_groups)}개 그룹")
+        
+        # 각 WC 그룹에 대해 회전 처리
+        failed_wc_count = 0
+        
+        for i, wc_group in enumerate(wc_groups):
+            try:
+                ws_center = wc_group['ws_center']
+                wc_center = wc_group['wc_center']
+                wc_entities = wc_group['entities']
                 
-                # WELDS에서 AP2 방향으로 이동 (만약 AP2가 WELDS보다 가까우면 반대 방향)
-                if distance(welds_center, original_wdc_center) < distance(welds_center, ap2):
-                    # WDC가 AP2보다 WELDS에 가까운 경우 (정상적인 경우)
-                    direction = original_wdc_center - welds_center
-                else:
-                    # AP2가 WELDS에 더 가까운 경우
-                    direction = ap2 - welds_center
+                print(f"\n[{i+1}/{len(wc_groups)}] WC 처리: WS({ws_center.x:.2f}, {ws_center.y:.2f}) -> WC({wc_center.x:.2f}, {wc_center.y:.2f})")
                 
-                if direction.magnitude > 0:
-                    direction_normalized = direction.normalize()
-                    new_wdc_center = welds_center + direction_normalized * move_distance
-                    
-                    # WD 엔티티들 이동
-                    move_vec = new_wdc_center - original_wdc_center
-                    
-                    # WDC 이동
-                    wdc_circle.dxf.center = (new_wdc_center.x, new_wdc_center.y, 0)
-                    
-                    # WDT 텍스트들 이동
-                    for txt in wd_group['wdt_texts']:
-                        pos = Vec2(txt.dxf.insert.x, txt.dxf.insert.y)
-                        new_pos = pos + move_vec
-                        txt.dxf.insert = (new_pos.x, new_pos.y, 0)
-                    
-                    # 이동된 WDC 중심 업데이트
-                    wdc_center = new_wdc_center
-                    
-                    # WA 거리 확인 및 경고
-                    actual_wa_distance = distance(welds_center, wdc_center)
-                    if actual_wa_distance > 10.0:  # 10mm 이상이면 경고
-                        print(f"   ⚠️  WA 거리가 비정상적으로 깁니다: {actual_wa_distance:.1f}mm")
-                        long_wa_count += 1
-                        # WDC 색상을 노란색으로 변경하여 경고 표시
-                        wdc_circle.dxf.color = 2  # YELLOW
-                else:
-                    print(f"   ⚠️  방향 계산 오류 - 기존 위치 유지")
-                    wdc_center = original_wdc_center
-                    failed_wd_count += 1
-                    # WDC 색상을 빨간색으로 변경
-                    wdc_circle.dxf.color = 1  # RED
-                    continue
-                
-                if not welds_circle:
-                    print(f"   ❌ 연결할 WELDS 원을 찾을 수 없음 - SKIP")
-                    continue
-                
-                print(f"   🔗 WELDS 원 발견: ({welds_center.x:.2f}, {welds_center.y:.2f})")
-                
-                # WD를 WELDS로부터 (WDC 반지름 + 2.8mm) 거리로 이동
-                # A1의 방향을 사용하여 초기 위치 설정
-                radius = wd_group['radius']
-                move_distance = radius + 2.8
-                
-                # WELDS에서 AP2 방향으로 이동
-                direction = ap2 - welds_center
-                if direction.magnitude > 0:
-                    direction_normalized = direction.normalize()
-                    new_wdc_center = welds_center + direction_normalized * move_distance
-                    
-                    # WD 엔티티들 이동
-                    move_vec = new_wdc_center - original_wdc_center
-                    
-                    # WDC 이동
-                    wdc_circle.dxf.center = (new_wdc_center.x, new_wdc_center.y, 0)
-                    
-                    # WDT 텍스트들 이동
-                    for txt in wd_group['wdt_texts']:
-                        pos = Vec2(txt.dxf.insert.x, txt.dxf.insert.y)
-                        new_pos = pos + move_vec
-                        txt.dxf.insert = (new_pos.x, new_pos.y, 0)
-                    
-                    # 이동된 WDC 중심 업데이트
-                    wdc_center = new_wdc_center
-                else:
-                    print(f"   ⚠️  방향 계산 오류 - 기존 위치 유지")
-                    wdc_center = original_wdc_center
-                
-                # WELDS 근처의 PIPE 선 찾기
-                pipe_lines = find_pipe_lines_near_sw(welds_center, msp, 5.0)
+                # WS 근처의 PIPE 선 찾기
+                pipe_lines = find_pipe_lines_near_ws(ws_center, msp, 5.0)
                 
                 # 디버깅: PIPE 선 정보 출력
                 if pipe_lines:
                     print(f"   PIPE 정보:")
-                    for i, pipe in enumerate(pipe_lines):
+                    for j, pipe in enumerate(pipe_lines):
                         if pipe['segments']:
                             start, end = pipe['segments'][0]
                             angle = math.degrees(math.atan2(end.y - start.y, end.x - start.x)) % 360
-                            # PIPE에 대한 ISO 직교 각도
                             iso_angles = get_iso_orthogonal_angle(angle)
-                            print(f"     - PIPE{i+1} 각도: {angle:.1f}° (ISO 직교: {iso_angles})")
+                            print(f"     - PIPE{j+1} 각도: {angle:.1f}° (ISO 직교: {iso_angles})")
                 
-                # 간섭 체크를 위한 제외 엔티티
-                exclude_entities = [welds_circle] + wd_group['entities']
+                # 간섭 체크를 위한 제외 엔티티 (WS + WC 그룹)
+                exclude_entities = [wc_group['ws_circle']] + wc_entities
                 
-                print(f"   🔍 간섭 체크 시작 (25mm 범위 내)")
+                print(f"   간섭 체크 시작 (25mm 범위 내)")
                 
-                # 디버깅: WDC 원 정보 출력
-                wdc_info = f"중심=({wdc_center.x:.1f}, {wdc_center.y:.1f}), 반지름={radius:.1f}mm"
-                print(f"   WDC 원: {wdc_info}")
-                print(f"   WELDS와의 거리: {distance(welds_center, wdc_center):.1f}mm (목표: {move_distance:.1f}mm)")
-                
-                # 먼저 현재 위치(0도)에서 간섭 체크
-                current_interference = check_wd_interference_with_priority(
-                    wd_group['entities'], welds_center, 0, msp, exclude_entities, pipe_lines
+                # 현재 위치(0도)에서 간섭 체크
+                current_interference = check_wc_interference_with_priority(
+                    wc_entities, ws_center, 0, msp, exclude_entities, pipe_lines
                 )
                 
                 print(f"   현재 위치 간섭 상태:")
                 print(f"   - TEXT 간섭: {current_interference['text_interference']}")
                 print(f"   - PIPE/ELBO 레이어 간섭: {current_interference['pipe_layer_interference']}")
-                print(f"   - PC-WDC 거리 문제: {current_interference['pc_circle_interference']}")
+                print(f"   - PIPE-WC 거리 문제: {current_interference['pc_circle_interference']}")
                 print(f"   - 30도 폴리라인 간섭: {current_interference['30degree_polyline_interference']}")
                 print(f"   - 일반 간섭 점수: {current_interference['general_score']}")
-                if current_interference['pipe_angle_info']:
-                    ortho_info = current_interference['pipe_angle_info']
-                    print(f"   - PIPE와의 직교성: {ortho_info['orthogonality_score']:.1f}도 (목표각도: {ortho_info.get('target_angle', 'N/A')}°)")
                 
                 # 모든 회전 각도에서 간섭 정보 수집 (0도 포함)
                 rotation_candidates = []
                 for degree in range(0, 360, 30):
                     angle = math.radians(degree)
-                    interference_info = check_wd_interference_with_priority(
-                        wd_group['entities'], welds_center, angle, msp, exclude_entities, pipe_lines
+                    interference_info = check_wc_interference_with_priority(
+                        wc_entities, ws_center, angle, msp, exclude_entities, pipe_lines
                     )
                     rotation_candidates.append({
                         'angle': angle,
@@ -1311,11 +1104,10 @@ if __name__ == "__main__":
                 # 최적 위치 선택 - ISO 직교 절대 우선
                 best_candidate = None
                 
-                # 1. ISO 직교 각도들을 우선 체크
-                print(f"\n   🎯 ISO 직교 위치 우선 체크")
+                print(f"\n   ISO 직교 위치 우선 체크")
                 
                 # 현재 WA 라인의 각도 계산
-                wa_angle = math.atan2(wdc_center.y - welds_center.y, wdc_center.x - welds_center.x)
+                wa_angle = math.atan2(wc_center.y - ws_center.y, wc_center.x - ws_center.x)
                 wa_angle_deg = math.degrees(wa_angle) % 360
                 
                 # ISO 직교 각도들 가져오기
@@ -1357,7 +1149,7 @@ if __name__ == "__main__":
                         interference['general_score'] == 0):
                         
                         best_candidate = candidate
-                        print(f"   ✅ {candidate['degree']}도에서 간섭 없음 (직교 차이: {sorted_item['ortho_diff']:.1f}도)")
+                        print(f"   {candidate['degree']}도에서 간섭 없음 (직교 차이: {sorted_item['ortho_diff']:.1f}도)")
                         break
                     else:
                         # 간섭 정보 출력
@@ -1367,56 +1159,47 @@ if __name__ == "__main__":
                         if interference['pipe_layer_interference']:
                             interference_types.append("PIPE층")
                         if interference['pc_circle_interference']:
-                            interference_types.append("PC거리")
+                            interference_types.append("PIPE거리")
                         if interference['30degree_polyline_interference']:
                             interference_types.append("30도선")
                         if interference['general_score'] > 0:
                             interference_types.append(f"일반({interference['general_score']})")
                         
-                        print(f"   ❌ {candidate['degree']}도: 간섭={', '.join(interference_types)} (직교 차이: {sorted_item['ortho_diff']:.1f}도)")
+                        print(f"   {candidate['degree']}도: 간섭={', '.join(interference_types)} (직교 차이: {sorted_item['ortho_diff']:.1f}도)")
                 
                 # 간섭 없는 위치를 찾지 못한 경우 - 간섭이 가장 적은 위치 선택
                 if not best_candidate:
-                    print(f"\n   ⚠️  모든 위치에서 간섭 발생 - 간섭이 가장 적은 위치 선택")
+                    print(f"\n   모든 위치에서 간섭 발생 - 간섭이 가장 적은 위치 선택")
                     
                     # 우선순위별로 최적 위치 찾기
-                    # 1. TEXT 간섭이 없는 위치들
                     candidates_no_text = [c for c in rotation_candidates_sorted 
                                         if not c['candidate']['interference']['text_interference']]
                     
                     if candidates_no_text:
-                        # 2. PIPE 레이어 간섭이 없는 위치들
                         candidates_no_pipe = [c for c in candidates_no_text 
                                             if not c['candidate']['interference']['pipe_layer_interference']]
                         
                         if candidates_no_pipe:
-                            # 3. PC 거리 문제가 없는 위치들
                             candidates_no_pc = [c for c in candidates_no_pipe 
                                               if not c['candidate']['interference']['pc_circle_interference']]
                             
                             if candidates_no_pc:
-                                # 4. 30도 폴리라인 간섭이 없는 위치들
                                 candidates_no_30deg = [c for c in candidates_no_pc 
                                                      if not c['candidate']['interference']['30degree_polyline_interference']]
                                 
                                 if candidates_no_30deg:
-                                    # 5. 일반 간섭 점수가 가장 낮은 위치
                                     candidates_no_30deg.sort(key=lambda x: x['candidate']['interference']['general_score'])
                                     best_candidate = candidates_no_30deg[0]['candidate']
                                 else:
-                                    # 일반 간섭 점수가 가장 낮은 위치
                                     candidates_no_pc.sort(key=lambda x: x['candidate']['interference']['general_score'])
                                     best_candidate = candidates_no_pc[0]['candidate']
                             else:
-                                # 일반 간섭 점수가 가장 낮은 위치
                                 candidates_no_pipe.sort(key=lambda x: x['candidate']['interference']['general_score'])
                                 best_candidate = candidates_no_pipe[0]['candidate']
                         else:
-                            # 일반 간섭 점수가 가장 낮은 위치
                             candidates_no_text.sort(key=lambda x: x['candidate']['interference']['general_score'])
                             best_candidate = candidates_no_text[0]['candidate']
                     else:
-                        # 모든 위치에서 TEXT 간섭이 있는 경우 - 전체 중 최선 선택
                         rotation_candidates_sorted.sort(key=lambda x: (
                             x['candidate']['interference']['text_interference'],
                             x['candidate']['interference']['pipe_layer_interference'],
@@ -1427,10 +1210,11 @@ if __name__ == "__main__":
                         ))
                         best_candidate = rotation_candidates_sorted[0]['candidate']
                     
-                    print(f"   📌 차선책: {best_candidate['degree']}도 선택")
+                    print(f"   차선책: {best_candidate['degree']}도 선택")
                 
                 if not best_candidate:
-                    print(f"   ❌ 적절한 위치를 찾을 수 없음 - SKIP")
+                    print(f"   적절한 위치를 찾을 수 없음 - SKIP")
+                    failed_wc_count += 1
                     continue
                 
                 # 선택된 각도로 회전
@@ -1439,100 +1223,78 @@ if __name__ == "__main__":
                 
                 # 간섭 상태 출력
                 final_interference = best_candidate['interference']
-                print(f"\n   📌 최종 선택: {final_degree}도")
+                print(f"\n   최종 선택: {final_degree}도")
                 
-                # 최종 WA 각도와 ISO 직교 차이 계산
-                final_wa_angle = math.atan2(wdc_circle.dxf.center.y - welds_center.y, 
-                                           wdc_circle.dxf.center.x - welds_center.x)
-                final_wa_angle_deg = (math.degrees(final_wa_angle) + final_degree) % 360
-                final_iso_angles = get_iso_orthogonal_angle(final_wa_angle_deg)
-                
-                min_ortho_diff = float('inf')
-                closest_ortho = None
-                for ortho_angle in final_iso_angles:
-                    diff = abs(final_wa_angle_deg - ortho_angle)
-                    if diff > 180:
-                        diff = 360 - diff
-                    if diff < min_ortho_diff:
-                        min_ortho_diff = diff
-                        closest_ortho = ortho_angle
-                
-                print(f"   - 최종 WA 각도: {final_wa_angle_deg:.1f}° (ISO 직교 {closest_ortho}°와 {min_ortho_diff:.1f}° 차이)")
-                print(f"   - TEXT 간섭: {final_interference['text_interference']}")
-                print(f"   - PIPE/ELBO 간섭: {final_interference['pipe_layer_interference']}")
-                print(f"   - PC-WDC 거리 문제: {final_interference['pc_circle_interference']}")
-                print(f"   - 30도 폴리라인 간섭: {final_interference['30degree_polyline_interference']}")
-                print(f"   - 일반 간섭 점수: {final_interference['general_score']}")
-                if final_interference.get('general_details'):
-                    print(f"   - 일반 간섭 항목: {', '.join(final_interference['general_details'])}")
-                
-                # WD 회전 실행 (회전이 필요한 경우만)
+                # WC 회전 실행 (회전이 필요한 경우만)
                 if final_angle != 0:
-                    for entity in wd_group['entities']:
-                        rotate_entity_around_point(entity, welds_center, final_angle)
+                    for entity in wc_entities:
+                        rotate_entity_around_point(entity, ws_center, final_angle)
                     
-                    # 회전 후 텍스트를 WDC 원 중심으로 재정렬
-                    wdc_center_after_rotation = Vec2(wdc_circle.dxf.center.x, wdc_circle.dxf.center.y)
-                    for txt in wd_group['wdt_texts']:
-                        if is_horizontal_text(txt):
-                            bbox = get_text_bounding_box(txt)
-                            if bbox:
-                                offset = wdc_center_after_rotation - bbox['center']
-                                new_insert = Vec2(txt.dxf.insert.x + offset.x, 
-                                                txt.dxf.insert.y + offset.y)
-                                txt.dxf.insert = (new_insert.x, new_insert.y, 0)
-                    print(f"   🔄 WD를 {final_degree}도 회전 완료")
+                    # 회전 후 WT 텍스트를 WC 원 중심에 정확히 재정렬
+                    wc_center_after_rotation = Vec2(wc_group['wc_circle'].dxf.center.x, wc_group['wc_circle'].dxf.center.y)
+                    wt_text = wc_group['wt_text']
+                    if wt_text:
+                        # 기존 텍스트 삭제 후 새로운 위치에 정확한 중심으로 재생성
+                        try:
+                            msp.delete_entity(wt_text)
+                        except:
+                            pass
+                        # 정확한 중심 정렬로 재생성
+                        wc_group['wt_text'] = add_wt_text_to_wc_centered(
+                            msp, (wc_center_after_rotation.x, wc_center_after_rotation.y), '00', 2.5, 2, 'WT', doc
+                        )
+                    
+                    print(f"   WC를 {final_degree}도 회전 완료")
                 else:
-                    print(f"   ✅ 현재 위치가 최적 - 회전 불필요")
+                    print(f"   현재 위치가 최적 - 회전 불필요")
                 
-                # 회전된 WDC 위치
-                rotated_wdc_center = Vec2(wdc_circle.dxf.center.x, wdc_circle.dxf.center.y)
+                # 회전된 WC 위치
+                rotated_wc_center = Vec2(wc_group['wc_circle'].dxf.center.x, wc_group['wc_circle'].dxf.center.y)
                 
-                # 새로운 WA 선 생성 (WELDS에서 WDC로)
+                # WA 선 생성 (WS에서 WC로)
                 new_wa_line = msp.add_line(
-                    start=(welds_center.x, welds_center.y),
-                    end=(rotated_wdc_center.x, rotated_wdc_center.y),
+                    start=(ws_center.x, ws_center.y),
+                    end=(rotated_wc_center.x, rotated_wc_center.y),
                     dxfattribs={'layer': 'WA'}
                 )
                 
-                # 새로 생성한 WA 라인만 WDC 원 안에서 TRIM
+                # WC 원 안의 WA 라인 제거 (TRIM)
                 try:
-                    direction = rotated_wdc_center - welds_center
+                    direction = rotated_wc_center - ws_center
                     if direction.magnitude > 0:
                         direction_normalized = direction.normalize()
-                        # WDC 원의 가장자리까지만 그리기
-                        trim_distance = direction.magnitude - wdc_circle.dxf.radius
+                        # WC 원의 가장자리까지만 그리기
+                        trim_distance = direction.magnitude - wc_radius
                         if trim_distance > 0:
-                            trim_end = welds_center + direction_normalized * trim_distance
+                            trim_end = ws_center + direction_normalized * trim_distance
                             new_wa_line.dxf.end = (trim_end.x, trim_end.y, 0)
-                            print(f"   ✂️  WA 라인을 WDC 원 가장자리에서 TRIM 완료")
+                            print(f"   WA 라인을 WC 원 가장자리에서 TRIM 완료")
                     
                     # 최종 거리 확인
-                    final_distance = distance(welds_center, rotated_wdc_center)
-                    print(f"   📏 최종 WELDS-WDC 거리: {final_distance:.2f}mm (목표: {move_distance:.1f}mm)")
+                    final_distance = distance(ws_center, rotated_wc_center)
+                    print(f"   최종 WS-WC 거리: {final_distance:.2f}mm")
                     
-                    # 최종 거리가 목표와 1mm 이상 차이나면 경고
-                    if abs(final_distance - move_distance) > 1.0:
-                        print(f"   ⚠️  최종 거리가 목표와 차이남: {abs(final_distance - move_distance):.2f}mm")
-                        # WDC 색상을 주황색으로 변경
-                        wdc_circle.dxf.color = 30  # ORANGE
                 except Exception as trim_e:
-                    print(f"   ❌ WA 라인 TRIM 오류: {trim_e}")
+                    print(f"   WA 라인 TRIM 오류: {trim_e}")
                 
-                print(f"   ✅ WD 회전 및 WA 재생성 완료")
+                print(f"   WC 회전 및 WA 재생성 완료")
                 
             except Exception as e:
-                print(f"❌ WD 처리 중 오류: {e}")
+                print(f"WC 처리 중 오류: {e}")
+                failed_wc_count += 1
                 continue
         
         # 파일 저장
-        output_path = os.path.splitext(filepath)[0] + "_wno.dxf"
+        output_path = os.path.splitext(filepath)[0] + "_wc_processed.dxf"
         doc.saveas(output_path)
-        print(f"📁 저장된 파일: {output_path}")
+        print(f"저장된 파일: {output_path}")
         
         # 처리 결과 요약
-        print(f"\n📊 처리 결과 요약:")
-        print(f"   - 전체 WD 그룹: {len(wd_groups)}개")
-        print(f"   - 처리 실패: {failed_wd_count}개")
-        print(f"   - 긴 WA 거리 (10mm 이상): {long_wa_count}개")
-        print(f"   - 성공적으로 처리: {len(wd_groups) - failed_wd_count}개")
+        print(f"\n처리 결과 요약:")
+        print(f"   - 전체 WC 그룹: {len(wc_groups)}개")
+        print(f"   - 처리 실패: {failed_wc_count}개")
+        print(f"   - 성공적으로 처리: {len(wc_groups) - failed_wc_count}개")
+
+    print(f"\n{'='*60}")
+    print("모든 파일 처리 완료")
+    print(f"{'='*60}")

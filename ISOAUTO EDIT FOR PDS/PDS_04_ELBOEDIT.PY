@@ -110,10 +110,9 @@ def process_file(filepath):
         modified = False
         elbo_arcs = []
 
-        # 1. ELBO 레이어의 호(ARC) 찾기 (GREEN)
+        # 1. ELBO 레이어의 호(ARC) 찾기
         for e in msp:
             if is_elbo_arc(e):
-                e.dxf.color = 3  # GREEN
                 print_elbo_arc_info(e)
                 ep1, ep2 = get_arc_endpoints(e)
                 elbo_arcs.append((e, ep1, ep2))
@@ -179,7 +178,6 @@ def process_file(filepath):
                         else:
                             l1_pts[-1] = (inter[0], inter[1], 0, 0, 0)
                         set_poly_points(l1, l1_pts)
-                        l1.dxf.color = 3   # GREEN
                         if elbo_layer:
                             l1.dxf.layer = elbo_layer  # ELBO 레이어로 변경
                     else:  # LINE
@@ -188,7 +186,6 @@ def process_file(filepath):
                             set_line_points(l1, inter, e)
                         else:
                             set_line_points(l1, s, inter)
-                        l1.dxf.color = 3   # GREEN
                         if elbo_layer:
                             l1.dxf.layer = elbo_layer  # ELBO 레이어로 변경
 
@@ -199,7 +196,6 @@ def process_file(filepath):
                         else:
                             l2_pts[-1] = (inter[0], inter[1], 0, 0, 0)
                         set_poly_points(l2, l2_pts)
-                        l2.dxf.color = 7
                         if elbo_layer:
                             l2.dxf.layer = elbo_layer  # ELBO 레이어로 변경
                     else:  # LINE
@@ -208,7 +204,6 @@ def process_file(filepath):
                             set_line_points(l2, inter, e)
                         else:
                             set_line_points(l2, s, inter)
-                        l2.dxf.color = 7
                         if elbo_layer:
                             l2.dxf.layer = elbo_layer  # ELBO 레이어로 변경
 
@@ -227,18 +222,13 @@ def process_file(filepath):
                 if len(pts) >= 2:
                     p1 = (pts[0][0], pts[0][1])
                     p2 = (pts[1][0], pts[1][1])
-                    # 녹색선 (GREEN=3), 원본과 같은 레이어에 추가
-                    msp.add_line(p1, p2, dxfattribs={'color': 3, 'layer': pl.dxf.layer})
+                    # 원본과 같은 레이어에 추가 (색상 변경 없음)
+                    msp.add_line(p1, p2, dxfattribs={'layer': pl.dxf.layer})
                     # 원본 DP 삭제
                     msp.delete_entity(pl)
                     modified = True
                     layer_name = pl.dxf.layer if hasattr(pl, 'dxf') and hasattr(pl.dxf, 'layer') else "Unknown"
                     print(f"✔ PIPE/ELBO 레이어 변환: {layer_name}")
-
-        # PIPE 또는 ELBO를 포함하는 레이어 전체 GREEN 처리
-        for e in msp:
-            if hasattr(e, 'dxf') and hasattr(e.dxf, 'layer') and ("PIPE" in e.dxf.layer or "ELBO" in e.dxf.layer) and e.dxftype() in ["LINE", "LWPOLYLINE", "POLYLINE"]:
-                e.dxf.color = 3
 
         # 저장
         if modified:
