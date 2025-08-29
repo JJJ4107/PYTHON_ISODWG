@@ -1,9 +1,0 @@
-NO.  QTY    DESCRIPTION                    SIZE                   LENGTH       UNIT      TOTAL MAT'L      REMARK
-1    1      DUMMY PIPE                     DN150xS/40                  0        9.9        9.9 SA335-P22  BY PIPING
-2    1      END PLATE                      PL25x300x300                0       17.7       17.7 A387-22    -
-3    2      CHANNEL                        C150x75x6.5x10           2000       37.2       74.4 A36        -
-4    3      CHANNEL                        C150x75x6.5x10            225        4.2       12.6 A36        -
-5    2      CHANNEL                        C150x75x6.5x10           1300       24.2       48.4 A36        -
-6    2      STIFF. PLATE                   PL9x62x133                  0        0.6        1.2 A36        -
-
-TOTAL WEIGHT(Kg) : 164.2
