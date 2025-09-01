@@ -1,20 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-BOM FORM 자동화 (확장 버전)
-- 기존 기능 + 추가 요구사항 반영
-- H1/H2 Y값 차이(HL) 계산, FN 바로 아래 라인을 H3로 지정
-- HB, FN, FIH 처리
-- T2T: T1이 없거나 숫자가 아닌 행의 T2를 위 행 T2와 합치기 (FN까지만, 76.5mm 폭)
-- V2~V5 생성: V2(V1+11mm), V3(V2+T2~T3거리), V4(V3+T3~T4거리), V5(V4+T4~T5거리)
-- VV 라인 처리: MATLIST 15~25mm 수평선 처리
-- 'CUT' 이후 텍스트는 공차 없이 개별 열로 처리
-- T1~T5 거리에 비례하여 이동거리 조정 (기준: 170mm → 30mm)
-- ERECTION MATERIALS 출력: FN의 T3, T3에 'ERECTION' 포함, 또는 FX 기준
+BOM FORM 자동화 (최종 수정 버전)
+- T1-T2: 11mm, T2-T3: 91mm, T3-T4: 19mm, T4-T5: 19mm 간격 고정
+- T2T width_factor 최대 0.87 제한
+- 가장 위쪽 데이터 Y 좌표 기준 (헤더 제외)
+- MATLIST와 새로 생성된 요소만 이동/STRETCH
+- MATLIST 텍스트 스타일 ARIAL 적용
+- 기존 헤더 이동시 재생성 금지
+- FN 없을 때 HB/HN Y값으로 V 라인 생성
+- STRETCH 단계에서 헤더(PT/COMPONENT/SIZE/Q'TY/WEIGHT)도 이동
+- 최종 후처리: ERECTION MATERIALS 미출력 & (T1=='1') & (SIZE≤51) → FABRICATION MATERIALS를 ERECTION MATERIALS로 변경/출력
 """
 import os
 import sys
 import math
-import traceback
 import ezdxf
 
 # ─── BOMTEXT 유틸 ────────────────────────────────────────────────────────────
@@ -83,6 +82,13 @@ TARGET_LINE_LAYERS = {"MATLIST", "MATLINE"}  # 두 레이어 모두 대상
 
 # 추가 상수
 T2T_TARGET_WIDTH = 76.5  # T2T 텍스트 목표 폭 (mm)
+MAX_WIDTH_FACTOR = 0.87  # 최대 width_factor
+
+# === 고정 간격 상수 ===
+T1_T2_SPACING = 11.0   # T1 → T2: 11mm
+T2_T3_SPACING = 91.0   # T2 → T3: 91mm  
+T3_T4_SPACING = 19.0   # T3 → T4: 19mm (Q'TY)
+T4_T5_SPACING = 19.0   # T4 → T5: 19mm (WEIGHT)
 
 # ─── 유틸 ───────────────────────────────────────────────────────────────────
 def is_target_layer(ent):
@@ -274,15 +280,33 @@ def explode_block_inserts(msp):
                 pass
     return exploded
 
-# ─── 메인 처리 ───────────────────────────────────────────────────────────────
-def process_file(path):
-    doc = ezdxf.readfile(path)
-    msp = doc.modelspace()
+# ─── SIZE 값 추출 함수 ───────────────────────────────────────────────────────
+def extract_size_value(text):
+    """텍스트에서 SIZE 숫자값 추출"""
+    import re
+    m = re.search(r"(\d+(\.\d+)?)", text)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    return None
 
-    # 0) BLOCK → explode (BLOCK 내부 TEXT/MTEXT 처리 가능)
+# ─── 메인 처리 (최적화 버전) ───────────────────────────────────────────────
+def process(doc):
+    """
+    In-memory 처리 함수 - Document 객체를 받아서 처리
+    시간복잡도: O(n log n) where n = number of entities
+    """
+    msp = doc.modelspace()
+    
+    # 새로 생성된 요소 추적 - set 사용으로 O(1) lookup
+    new_entities = set()
+    
+    # 0) BLOCK → explode
     explode_block_inserts(msp)
 
-    # 1) BOMTEXT 적용(스캔 범위)
+    # 1) BOMTEXT 적용
     apply_arial_and_spacing(
         doc, msp,
         x_min=X_MIN, x_max=X_MAX,
@@ -292,7 +316,19 @@ def process_file(path):
         font_file=DEFAULT_FONT_FILE
     )
 
-    # 2) TEXT 수집(모델공간 내, BLOCK explode 후 포함)
+    # MATLIST 레이어 스타일 변경 - 단일 순회 O(n)
+    for e in msp:
+        if e.dxftype() in ("TEXT", "MTEXT"):
+            try:
+                if e.dxf.layer.upper() == "MATLIST":
+                    e.dxf.style = DEFAULT_STYLE_NAME
+                    if e.dxftype() == "TEXT" and hasattr(e.dxf, 'width'):
+                        if e.dxf.width > MAX_WIDTH_FACTOR:
+                            e.dxf.width = MAX_WIDTH_FACTOR
+            except Exception:
+                pass
+
+    # 2) TEXT 수집 - 단일 순회 O(n)
     items = []
     for e in msp:
         if e.dxftype() not in ("TEXT", "MTEXT"): continue
@@ -303,17 +339,14 @@ def process_file(path):
         items.append({"e": e, "x": xy[0], "y": xy[1], "s": s})
 
     if not items:
-        out = os.path.splitext(path)[0] + "_BOMFORM.DXF"
-        doc.saveas(out); return
+        return
 
-    # 3) 첫 행 판단 및 TTOL
+    # 3) 첫 행 판단 - O(n)
     y_max = max(it["y"] for it in items)
     first_row = [it for it in items if abs(it["y"] - y_max) <= ROW_TOL]
+    first_row_sorted = sorted(first_row, key=lambda t: t["x"])  # O(k log k), k << n
     
-    # 첫 행을 X 좌표로 정렬
-    first_row_sorted = sorted(first_row, key=lambda t: t["x"])
-    
-    # 'CUT' 포함 텍스트 찾기
+    # CUT 찾기 - O(k)
     cut_index = -1
     cut_x = None
     for i, item in enumerate(first_row_sorted):
@@ -322,28 +355,22 @@ def process_file(path):
             cut_x = item["x"]
             break
     
-    # TTOL 생성
+    # TTOL 생성 - O(k log k)
     TTOL_raw = []
-    
     if cut_index >= 0:
-        # CUT 이전: 기존 방식 (공차로 그룹화)
         before_cut = [it["x"] for it in first_row_sorted[:cut_index+1]]
         before_cut_grouped = []
         if before_cut:
             before_cut_grouped = dedup_sorted_positions(before_cut, tol=COL_DEDUP_TOL)
             TTOL_raw.extend(before_cut_grouped)
-        
-        # CUT 이후: 공차 없이 각각을 개별 열로
         after_cut = [it["x"] for it in first_row_sorted[cut_index+1:]]
         after_cut_unique = []
         if after_cut:
-            # 중복 제거만 하고 그룹화하지 않음
             for x in after_cut:
-                if not after_cut_unique or abs(x - after_cut_unique[-1]) > CUT_AFTER_TOL:  # 0.1mm 이상 차이나면 별개 열
+                if not after_cut_unique or abs(x - after_cut_unique[-1]) > CUT_AFTER_TOL:
                     after_cut_unique.append(x)
             TTOL_raw.extend(after_cut_unique)
     else:
-        # CUT가 없으면 기존 방식
         TTOL_raw = dedup_sorted_positions([it["x"] for it in first_row_sorted], tol=COL_DEDUP_TOL)
 
     if not TTOL_raw:
@@ -351,92 +378,113 @@ def process_file(path):
         TTOL_raw = dedup_sorted_positions([t["x"] for t in sorted_all[:5]], tol=COL_DEDUP_TOL)
 
     if not TTOL_raw:
-        out = os.path.splitext(path)[0] + "_BOMFORM.DXF"
-        doc.saveas(out); return
+        return
 
-    # 4) 열 이동량(TN 고정) 계산
+    # 4) 열 이동량 계산 - O(k)
     X_TN = max(TTOL_raw)
-    
-    # T1 값 미리 확인 (첫 행의 T1)
     t1_value_preview = None
-    first_row_preview = [it for it in items if abs(it["y"] - y_max) <= ROW_TOL]
+    first_row_preview = [it for it in first_row if abs(it["y"] - y_max) <= ROW_TOL]
     for it in first_row_preview:
         if len(TTOL_raw) > 0 and abs(it["x"] - TTOL_raw[0]) <= COL_DEDUP_TOL:
             t1_value_preview = get_text_value(it["e"])
             break
     
-    # T1과 T5의 거리를 기준으로 SHIFT_MAX 조정 (T1이 '1'인 경우)
-    SHIFT_BASE = 30.0  # 기본 이동거리 (170mm 기준)
-    DIST_BASE = 170.0  # 기준 거리 (T1~T5)
-    
-    # T1 값 확인
+    SHIFT_BASE = 30.0
+    DIST_BASE = 170.0
     should_adjust = (t1_value_preview == "1")
-    
-    # T1과 T5 거리 계산 (T5가 있고 T1이 '1'인 경우)
     if should_adjust and len(TTOL_raw) >= 5:
-        t1_x = TTOL_raw[0]
-        t5_x = TTOL_raw[4]
+        t1_x = TTOL_raw[0]; t5_x = TTOL_raw[4]
         actual_dist = abs(t5_x - t1_x)
-        # 비례하여 이동거리 조정
         SHIFT_MAX_ADJUSTED = SHIFT_BASE * (actual_dist / DIST_BASE)
     else:
-        SHIFT_MAX_ADJUSTED = SHIFT_MAX  # 기본값 사용
+        SHIFT_MAX_ADJUSTED = SHIFT_MAX
     
     dists = [abs(x - X_TN) for x in TTOL_raw]
     d_max = max(dists) if dists else 0.0
     shifts = [(0.0 if d_max <= 1e-9 else SHIFT_MAX_ADJUSTED * (d / d_max)) for d in dists]
     TTOL_new = [x + dx for x, dx in zip(TTOL_raw, shifts)]
 
-    # 5) 텍스트 배정/이동/레이어 + 'PT' 포함시 PTXT
+    # 고정 간격 적용 - O(1)
+    if len(TTOL_new) >= 1:
+        t1_x = TTOL_new[0]
+        if len(TTOL_new) >= 2:
+            TTOL_new[1] = t1_x + T1_T2_SPACING
+        if len(TTOL_new) >= 3:
+            TTOL_new[2] = t1_x + T1_T2_SPACING + T2_T3_SPACING
+        if len(TTOL_new) >= 4:
+            TTOL_new[3] = t1_x + T1_T2_SPACING + T2_T3_SPACING + T3_T4_SPACING
+        if len(TTOL_new) >= 5:
+            TTOL_new[4] = t1_x + T1_T2_SPACING + T2_T3_SPACING + T3_T4_SPACING + T4_T5_SPACING
+
+    # 5) 텍스트 배정/이동 - O(n)
     assigned = []
+    original_layers = {}
+    header_keywords = ["PT", "COMPONENT", "SIZE", "Q'TY", "WEIGHT"]
     
-    # 각 텍스트의 실제 위치에 대한 이동량 계산
-    # TTOL과 shifts를 이용해 보간 함수 생성
-    def get_shift_for_x(x_pos):
-        """주어진 X 위치에 대한 이동량을 계산 (선형 보간)"""
-        if not TTOL_raw:
-            return 0.0
-        
-        # X 위치가 TTOL 범위 밖인 경우
-        if x_pos <= TTOL_raw[0]:
-            return shifts[0]
-        if x_pos >= TTOL_raw[-1]:
-            return shifts[-1]
-        
-        # 선형 보간으로 이동량 계산
-        for i in range(len(TTOL_raw) - 1):
-            if TTOL_raw[i] <= x_pos <= TTOL_raw[i+1]:
-                # 두 TTOL 사이의 비율 계산
-                ratio = (x_pos - TTOL_raw[i]) / (TTOL_raw[i+1] - TTOL_raw[i])
-                # 이동량 보간
-                return shifts[i] + ratio * (shifts[i+1] - shifts[i])
-        
-        return 0.0
-    
+    # TOTAL WEIGHT Y 위치 찾기 - O(n)
+    total_weight_y = None
     for it in items:
-        # 텍스트의 실제 위치에 대한 이동량 계산
-        shift_amount = get_shift_for_x(it["x"])
+        if "TOTAL WEIGHT" in it["s"].upper():
+            total_weight_y = it["y"]
+            break
+    
+    # CUT Y 위치 찾기 - O(n)
+    cut_text_y = None
+    for it in items:
+        if abs(it["y"] - y_max) > ROW_TOL and "CUT" in it["s"].upper():
+            if cut_text_y is None or it["y"] > cut_text_y:
+                cut_text_y = it["y"]
+    
+    # 텍스트 이동 및 레이어 변경 - O(n)
+    for it in items:
+        original_layer = it["e"].dxf.layer.upper()
+        original_layers[it["e"]] = original_layer
+        is_header = any(keyword in it["s"].upper() for keyword in header_keywords)
         
-        # 텍스트 이동
-        move_text_entity(it["e"], shift_amount, 0.0)
+        has_total = "TOTAL" in it["s"].upper()
+        has_cut = False
+        if abs(it["y"] - y_max) > ROW_TOL:
+            has_cut = "CUT" in it["s"].upper()
         
-        # 가장 가까운 열 찾기 (레이어 배정용)
+        is_after_cut = False
+        if cut_text_y is not None:
+            is_after_cut = it["y"] < (cut_text_y - ROW_TOL)
+        
+        is_after_total_weight = False
+        if total_weight_y is not None:
+            is_after_total_weight = it["y"] < (total_weight_y - ROW_TOL)
+        
         i_col = nearest_index(it["x"], TTOL_raw)
-        if i_col is not None:
-            # 레이어 배정
-            try: 
-                it["e"].dxf.layer = f"T{i_col+1}"
-            except Exception: 
-                pass
-            
-            # 'PT' 포함시 PTXT 레이어
-            try:
-                if "PT" in it["s"].upper():
-                    it["e"].dxf.layer = "PTXT"
-            except Exception:
-                pass
         
-        # 이동 후 위치
+        if original_layer == "MATLIST" or is_header:
+            if has_total or has_cut or is_after_total_weight or is_after_cut:
+                if i_col is not None and i_col < len(shifts):
+                    shift_amount = shifts[i_col]
+                else:
+                    shift_amount = 0.0
+            else:
+                if i_col is not None and i_col < len(TTOL_new):
+                    new_x = TTOL_new[i_col]
+                    shift_amount = new_x - it["x"]
+                else:
+                    shift_amount = 0.0
+            
+            move_text_entity(it["e"], shift_amount, 0.0)
+            
+            if i_col is not None and original_layer == "MATLIST":
+                try: 
+                    it["e"].dxf.layer = f"T{i_col+1}"
+                except Exception: 
+                    pass
+                try:
+                    if "PT" in it["s"].upper():
+                        it["e"].dxf.layer = "PTXT"
+                except Exception:
+                    pass
+        else:
+            shift_amount = 0.0
+            i_col = None
+        
         xy_new = text_ref_xy(it["e"]) or (it["x"] + shift_amount, it["y"])
         
         assigned.append({
@@ -447,12 +495,28 @@ def process_file(path):
             "y1": xy_new[1],
             "s": it["s"], 
             "ent": it["e"],
-            "shift": shift_amount
+            "shift": shift_amount,
+            "original_layer": original_layer,
+            "has_total": has_total,
+            "has_cut": has_cut,
+            "after_total_weight": is_after_total_weight,
+            "after_cut": is_after_cut
         })
 
-    # ── 첫 행/TYPE1/머리글 좌표 계산 ────────────────────────────────────────
+    # 첫 행/TYPE1/머리글 계산
     first_row_assigned = [a for a in assigned if abs(a["y0"] - y_max) <= ROW_TOL]
-    # T1 값
+    
+    data_y_max = None
+    header_keywords_all = ["PT", "COMPONENT", "SIZE", "Q'TY", "WEIGHT", "FABRICATION", "ERECTION"]
+    for a in assigned:
+        text_upper = a["s"].upper()
+        is_header2 = any(keyword in text_upper for keyword in header_keywords_all)
+        if not is_header2:
+            if data_y_max is None or a["y0"] > data_y_max:
+                data_y_max = a["y0"]
+    if data_y_max is None:
+        data_y_max = y_max
+    
     t1_value = None
     t1_ent = None
     first_row_t1 = [a for a in first_row_assigned if a["col"] == 1]
@@ -460,35 +524,67 @@ def process_file(path):
         pick = sorted(first_row_t1, key=lambda r: r["x1"])[0]
         t1_value = pick["s"]; t1_ent = pick["ent"]
 
-    # 스타일/높이
     style, height = get_text_style_and_height(t1_ent or assigned[0]["ent"], DEFAULT_STYLE_NAME, 2.5)
 
     IS_TYPE1 = (t1_value == "PT")
     need_headers = (t1_value == "1") or IS_TYPE1
 
+    existing_headers_moved = False
     P_pos, C_pos = {}, {}
+    
+    header_x_positions = {}
+    if len(TTOL_new) >= 3:
+        pt_x   = TTOL_new[0]
+        comp_x = TTOL_new[1]
+        size_x = TTOL_new[2]
+        qty_x  = TTOL_new[3] if len(TTOL_new) >= 4 else size_x + T3_T4_SPACING
+        weight_x = TTOL_new[4] if len(TTOL_new) >= 5 else qty_x + T4_T5_SPACING
+        
+        header_x_positions = {
+            1: pt_x,
+            2: comp_x,
+            3: size_x,
+            4: qty_x,
+            5: weight_x
+        }
+    
     if need_headers:
-        y_hdr = y_max + HDR_DY
-        headers = ["PT", "COMPONENT", "SIZE", "Q'TY", "WEIGHT"]
-        for i, label in enumerate(headers, start=1):
-            if i <= len(TTOL_new):
-                x_hdr = TTOL_new[i-1]
-                create_text(msp, label, x_hdr, y_hdr, height, style, color=OUT_TEXT_COLOR)
-                P_pos[i] = (x_hdr, y_hdr)
+        for a in assigned:
+            if any(keyword == a["s"].upper() for keyword in ["PT", "COMPONENT", "SIZE", "Q'TY", "WEIGHT"]):
+                if a["shift"] > 0:
+                    existing_headers_moved = True
+                    break
+        if not existing_headers_moved:
+            y_hdr = data_y_max + HDR_DY
+            headers = ["PT", "COMPONENT", "SIZE", "Q'TY", "WEIGHT"]
+            for i, label in enumerate(headers, start=1):
+                if i in header_x_positions:
+                    x_hdr = header_x_positions[i]
+                    new_text = create_text(msp, label, x_hdr, y_hdr, height, style, color=OUT_TEXT_COLOR)
+                    if new_text:
+                        new_entities.add(new_text)
+                    P_pos[i] = (x_hdr, y_hdr)
+            
         # FABRICATION MATERIALS
         if 1 <= len(TTOL_new):
-            x_fab, y_fab = TTOL_new[0], y_max + FAB_DY
-            create_text(msp, "FABRICATION MATERIALS", x_fab, y_fab, height, style, color=OUT_TEXT_COLOR)
+            fab_exists = False
+            for a in assigned:
+                if "FABRICATION MATERIALS" in a["s"].upper():
+                    fab_exists = True
+                    break
+            if not fab_exists:
+                x_fab, y_fab = TTOL_new[0], data_y_max + FAB_DY
+                new_text = create_text(msp, "FABRICATION MATERIALS", x_fab, y_fab, height, style, color=OUT_TEXT_COLOR)
+                if new_text:
+                    new_entities.add(new_text)
 
-    # C1..C5 : 첫 행 각 컬럼 좌표
     for i in range(1, min(5, len(TTOL_new)) + 1):
         cand = [a for a in first_row_assigned if a["col"] == i]
         if cand:
             a = sorted(cand, key=lambda r: r["x1"])[0]
             C_pos[i] = (a["x1"], a["y1"])
 
-    # ── VA/HX 찾기 ──────────────────────────────────────────────────────────
-    # VA → VY
+    # VA/HX 찾기 - O(m) where m = number of lines
     vx1, vx2, vy1, vy2 = VA_RECT
     va_candidates = []
     for e in msp.query("LINE"):
@@ -502,7 +598,30 @@ def process_file(path):
         (x1,y1),(x2,y2) = line_endpoints(best)
         VY = min(y1, y2)
 
-    # HA → HX
+    # VB 라인 찾기
+    VB_line = None
+    VB_X = None
+    vb_search_x_min, vb_search_x_max = 810.0, 820.0
+    vb_min_length = 500.0
+    
+    for e in msp.query("LINE"):
+        if is_vertical(e):
+            pts = line_endpoints(e)
+            if pts:
+                (x1, y1), (x2, y2) = pts
+                x_avg = (x1 + x2) / 2.0
+                length = line_length(e)
+                if vb_search_x_min <= x_avg <= vb_search_x_max and length >= vb_min_length:
+                    if VB_line is None or length > line_length(VB_line):
+                        VB_line = e
+                        VB_X = x_avg
+    
+    if VB_line:
+        try:
+            VB_line.dxf.layer = "VB"
+        except Exception:
+            pass
+
     hx1, hx2, hy1, hy2 = HA_RECT
     ha_candidates = []
     for e in msp.query("LINE"):
@@ -514,9 +633,11 @@ def process_file(path):
             (x1,y1),(x2,y2) = line_endpoints(ent); return min(x1,x2)
         pick = sorted(ha_candidates, key=lambda ent: small_x(ent))[0]
         (x1,y1),(x2,y2) = line_endpoints(pick); HX = min(x1,x2)
+    
+    if VB_X is not None:
+        HX = VB_X
 
-    # ── V1/HN 그리기 ───────────────────────────────────────────────────────
-    # V1 끝점 Y = "가장 아래쪽 T1 의 Y - 3"
+    # V1/HN 그리기
     t1_all = [a for a in assigned if a["col"] == 1]
     if t1_all:
         y_last_t1 = min(a["y1"] for a in t1_all) - 3.0
@@ -532,55 +653,43 @@ def process_file(path):
 
     v1_line = msp.add_line((x_v1, y_top_v1), (x_v1, y_bot_v1), dxfattribs={"color": COLOR_WHITE, "layer": "V1"})
     hn_line = msp.add_line((x_v1, y_bot_v1), (HX, y_bot_v1), dxfattribs={"color": COLOR_WHITE, "layer": "HN"})
+    new_entities.add(v1_line)
+    new_entities.add(hn_line)
 
-    # ── ERECTION MATERIALS 처리 (모든 텍스트 처리 완료 후) ─────────────────
-    # T3에 'ERECTION' 포함 확인 및 FABRICATION 포함된 T3 찾기
+    # ERECTION MATERIALS
     erection_in_t3 = False
     fabrication_t3_y = None
-    
     for a in assigned:
         if a["col"] == 3:
             if "ERECTION" in a["s"].upper():
                 erection_in_t3 = True
             if "FABRICATION" in a["s"].upper():
                 fabrication_t3_y = a["y1"]
-    
-    # ERECTION MATERIALS 출력 (T3에 ERECTION이 포함된 경우만)
     if erection_in_t3 and fabrication_t3_y and len(TTOL_new) >= 1:
-        # FABRICATION이 포함된 T3의 Y값 - 5.5
-        erection_y = fabrication_t3_y + EREC_DY  # FABRICATION T3의 Y - 5.5
-        x_em = TTOL_new[0]  # T1의 X
-        create_text(msp, "ERECTION MATERIALS", x_em, erection_y, height, style, color=OUT_TEXT_COLOR)
+        erec_exists = any("ERECTION MATERIALS" in a["s"].upper() for a in assigned)
+        if not erec_exists:
+            erection_y = fabrication_t3_y + EREC_DY
+            x_em = TTOL_new[0]
+            new_text = create_text(msp, "ERECTION MATERIALS", x_em, erection_y, height, style, color=OUT_TEXT_COLOR)
+            if new_text:
+                new_entities.add(new_text)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # 추가 기능 구현을 위한 준비
-    # ══════════════════════════════════════════════════════════════════════════
-    
-    # FN 찾기 (H3 지정 및 추가 기능을 위해)
+    # FN/H 라인 처리 - 행별 그룹화 최적화 O(n log n)
     fn_row = None
     fn_y_extra = None
-    
-    # 모든 행별로 정리 (ROW_TOL 사용하여 그룹화)
     rows_by_y = {}
     assigned_sorted_by_y = sorted(assigned, key=lambda a: a["y1"], reverse=True)
-    
     for a in assigned_sorted_by_y:
-        # 기존 행 중에서 ROW_TOL 내에 있는 행 찾기
         placed = False
         for y_key in sorted(rows_by_y.keys(), reverse=True):
             if abs(a["y1"] - y_key) <= ROW_TOL:
                 rows_by_y[y_key].append(a)
                 placed = True
                 break
-        
-        # 적합한 행이 없으면 새 행 생성
         if not placed:
             rows_by_y[a["y1"]] = [a]
-    
-    # Y값 순으로 정렬하여 행 검사
     for y_key in sorted(rows_by_y.keys(), reverse=True):
         row = rows_by_y[y_key]
-        # T1~T5 중 'TOTAL' 포함 확인
         for a in row:
             if a["col"] <= 5 and "TOTAL" in a["s"].upper():
                 fn_row = row
@@ -589,14 +698,13 @@ def process_file(path):
         if fn_row:
             break
     
-    # ── 대상 레이어 라인 처리 (MATLIST, MATLINE) ───────────────────────────
-    # (1) 대상 레이어 LINE 색상=흰색
+    # 라인 색상 변경
     for e in msp.query("LINE"):
         if is_target_layer(e):
             try: e.dxf.color = COLOR_WHITE
             except Exception: pass
 
-    # (2) 수평 & 길이≥150mm → Y 큰 순으로 정렬, 레이어 H1,H2,...
+    # 수평 라인 처리 - O(m log m)
     hlines = []
     for e in msp.query("LINE"):
         if not is_target_layer(e): continue
@@ -608,12 +716,9 @@ def process_file(path):
         reverse=True
     )
     
-    # FN 바로 아래 라인을 H3로 지정
     h3_line = None
     h3_index = -1
-    
     if fn_y_extra and h_sorted:
-        # FN Y값보다 작은 첫 번째 라인을 H3로 지정
         for idx, h in enumerate(h_sorted):
             (x1, y1), (x2, y2) = line_endpoints(h)
             h_y = (y1 + y2) / 2.0
@@ -622,27 +727,20 @@ def process_file(path):
                 h3_index = idx
                 break
     
-    # H1, H2, H3... 레이어 할당
     for idx, h in enumerate(h_sorted):
         if h == h3_line:
-            # FN 아래 라인은 H3로 고정
             h.dxf.layer = "H3"
         elif idx < h3_index or h3_index == -1:
-            # H3 이전 라인들은 순서대로 H1, H2...
             h.dxf.layer = f"H{idx+1}"
         else:
-            # H3 이후 라인들은 H4, H5...
             h.dxf.layer = f"H{idx+2}"
 
-    # (3) 27mm 이동: **위치조건 없음** + **수평/수직 모두 허용**, 길이 기준만
-    moved_once = set()  # 엔티티 핸들로 중복 이동 방지
+    # 짧은 라인 이동
+    moved_once = set()
     def can_move(v):
         try: return v.dxf.handle not in moved_once
         except Exception: return True
-
     def pick_and_move_lines(max_count, rng):
-        """대상 레이어 라인(수평/수직 포함) 중 길이가 rng 안인 것에서
-           아직 이동 안 한 것 선택해 +X 27mm, 최대 max_count개."""
         picked = 0
         for v in msp.query("LINE"):
             if picked >= max_count: break
@@ -655,128 +753,81 @@ def process_file(path):
                     except Exception: pass
                     picked += 1
         return picked
-
-    # 이미 위에서 레이어가 할당되었으므로 27mm 이동만 처리
     for h in h_sorted:
-        moved_1 = pick_and_move_lines(2, V_SHORT1)  # 40~50mm
-        moved_2 = pick_and_move_lines(2, V_SHORT2)  # 8~10mm
+        pick_and_move_lines(2, V_SHORT1)
+        pick_and_move_lines(2, V_SHORT2)
 
-    # (4) 모든 Hn 수평선의 시작X=V1.X, 끝X=HX 로 정규화
+    # Hn 수평선 정규화
     for h in h_sorted:
         set_hline_endpoints(h, x_v1, HX)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # 추가 기능 구현
-    # ══════════════════════════════════════════════════════════════════════════
-    
-    # H1, H2, H3 찾기 및 HL 계산
+    # H1/H2/HB/FIH
     h1_line = h_sorted[0] if len(h_sorted) >= 1 else None
     h2_line = h_sorted[1] if len(h_sorted) >= 2 else None
-    # h3_line은 이미 위에서 FN 바로 아래로 지정됨
-    
     HB_line = None
     HL = 0
-    
     if h1_line and h2_line:
         (x1_h1, y1_h1), (x2_h1, y2_h1) = line_endpoints(h1_line)
         (x1_h2, y1_h2), (x2_h2, y2_h2) = line_endpoints(h2_line)
         h1_y = (y1_h1 + y2_h1) / 2.0
         h2_y = (y1_h2 + y2_h2) / 2.0
         HL = abs(h1_y - h2_y)
-        
-        # HB 생성 (H1을 +Y HL 방향으로 복사)
+        if HL >= 15.0:
+            HL = HL / 2.0
         HB_line = copy_line(msp, h1_line, dx=0, dy=HL, layer="HB", color=COLOR_WHITE)
-    
-    # FIH 계산 (H2를 -Y 방향으로 HL만큼 FN까지 복사)
+        if HB_line:
+            new_entities.add(HB_line)
     FIH_line = None
     if h2_line and fn_y_extra and HL > 0:
         (x1_h2, y1_h2), (x2_h2, y2_h2) = line_endpoints(h2_line)
         h2_y = (y1_h2 + y2_h2) / 2.0
-        
-        # 복사 횟수 계산
         num_copies = int((h2_y - fn_y_extra) / HL)
-        
-        # 복사 수행
         for i in range(1, num_copies + 1):
             copied_line = copy_line(msp, h2_line, dx=0, dy=-i*HL, layer=f"H{len(h_sorted)+i}", color=COLOR_WHITE)
+            if copied_line:
+                new_entities.add(copied_line)
             if i == num_copies:
                 FIH_line = copied_line
-    
-    # T2T 처리 (T1이 없거나 숫자가 아닌 행의 T2를 위 행의 T2와 합치기, FN까지만)
-    # rows_by_y는 이미 위에서 생성됨
+
+    # T2T 처리
     if len(rows_by_y) >= 2:
-        # Y값 기준으로 정렬된 키 리스트 (위에서 아래로)
         sorted_y_keys = sorted(rows_by_y.keys(), reverse=True)
-        
-        # FN 찾기 (이미 위에서 찾았지만 확인)
         fn_y_limit = fn_y_extra if fn_y_extra else min(rows_by_y.keys())
-        
-        # 처리할 T2T 목록
         rows_to_delete = []
         t2t_created = []
-        
-        # 각 행을 순차적으로 검사 (FN까지만)
-        for i in range(1, len(sorted_y_keys)):  # 두 번째 행부터 시작
+        for i in range(1, len(sorted_y_keys)):
             current_y = sorted_y_keys[i]
-            
-            # FN 이하는 처리하지 않음
             if current_y < fn_y_limit:
                 break
-                
             current_row = rows_by_y[current_y]
             upper_row = rows_by_y[sorted_y_keys[i - 1]]
-            
-            # 현재 행의 T1 확인
             current_t1 = None
             for a in current_row:
                 if a["col"] == 1:
-                    current_t1 = a
-                    break
-            
-            # T1이 없거나 숫자가 아닌 경우만 처리
+                    current_t1 = a; break
             should_merge = False
             if not current_t1:
-                should_merge = True  # T1이 없음
+                should_merge = True
             else:
-                # T1이 숫자인지 확인
                 try:
                     float(current_t1["s"])
                 except ValueError:
-                    should_merge = True  # T1이 숫자가 아님
-            
+                    should_merge = True
             if should_merge:
-                # 현재 행과 위 행의 T2 찾기
                 current_t2 = None
                 upper_t2 = None
-                
                 for a in current_row:
                     if a["col"] == 2:
-                        current_t2 = a
-                        break
-                
+                        current_t2 = a; break
                 for a in upper_row:
                     if a["col"] == 2:
-                        upper_t2 = a
-                        break
-                
-                # 두 T2가 모두 있으면 합치기
+                        upper_t2 = a; break
                 if current_t2 and upper_t2:
-                    # T2T 생성 (위 행 T2 + 현재 행 T2)
                     combined_text = upper_t2["s"] + " " + current_t2["s"]
-                    
-                    # 위 행의 위치에 출력
-                    t2_x = upper_t2["x1"]
-                    t2_y = upper_t2["y1"]
-                    
-                    # 기존 upper_t2 삭제
+                    t2_x = upper_t2["x1"]; t2_y = upper_t2["y1"]
                     rows_to_delete.append(upper_t2)
-                    
-                    # width_factor 계산 (78mm 목표)
-                    # 참조 코드와 동일한 방식: 높이 * 0.7 * 문자수
                     estimated_width = height * 0.7 * len(combined_text)
-                    required_width_factor = 78.0 / estimated_width
-                    
-                    # 텍스트 생성
+                    required_width_factor = min(T2T_TARGET_WIDTH / estimated_width, MAX_WIDTH_FACTOR)
                     t2t_entity = msp.add_text(
                         combined_text,
                         dxfattribs={
@@ -787,20 +838,16 @@ def process_file(path):
                         }
                     )
                     t2t_entity.dxf.insert = (t2_x, t2_y)
-                    
-                    # width 속성 직접 설정 (참조 코드와 동일)
                     try:
                         if hasattr(t2t_entity.dxf, 'width'):
                             t2t_entity.dxf.width = required_width_factor
                     except Exception:
                         pass
-                    
-                    # 현재 행의 모든 텍스트 삭제 대상에 추가
+                    if t2t_entity:
+                        new_entities.add(t2t_entity)
                     rows_to_delete.extend(current_row)
                     t2t_created.append(combined_text)
-        
-        # 원본 텍스트 삭제
-        deleted_entities = set()  # 중복 삭제 방지
+        deleted_entities = set()
         for item in rows_to_delete:
             if item["ent"] not in deleted_entities:
                 try:
@@ -813,61 +860,54 @@ def process_file(path):
                     except Exception:
                         pass
     
-    # V2~V5 생성 (TTOL 거리 기반)
-    v2_line = None
-    v3_line = None
-    v4_line = None
-    v5_line = None
-    
-    if HB_line and FIH_line:
-        # HB와 FIH의 Y값 가져오기
+    # V2~V5 생성
+    v2_line = None; v3_line = None; v4_line = None; v5_line = None
+    v_top_y = None; v_bot_y = None
+    if HB_line:
         (x1_hb, y1_hb), (x2_hb, y2_hb) = line_endpoints(HB_line)
+        v_top_y = (y1_hb + y2_hb) / 2.0
+    if FIH_line:
         (x1_fih, y1_fih), (x2_fih, y2_fih) = line_endpoints(FIH_line)
-        hb_y = (y1_hb + y2_hb) / 2.0
-        fih_y = (y1_fih + y2_fih) / 2.0
+        v_bot_y = (y1_fih + y2_fih) / 2.0
+    elif hn_line:
+        (x1_hn, y1_hn), (x2_hn, y2_hn) = line_endpoints(hn_line)
+        v_bot_y = (y1_hn + y2_hn) / 2.0
+    if v_top_y and v_bot_y:
+        v2_x = x_v1 + T1_T2_SPACING
+        v2_line = msp.add_line((v2_x, v_top_y), (v2_x, v_bot_y), dxfattribs={"color": COLOR_WHITE, "layer": "V2"})
+        if v2_line: new_entities.add(v2_line)
         
-        # V2 생성 (V1을 +X 11mm 복사, 시작점 Y=HB, 끝점 Y=FIH)
-        v2_x = x_v1 + 11.0
-        v2_line = msp.add_line((v2_x, hb_y), (v2_x, fih_y), dxfattribs={"color": COLOR_WHITE, "layer": "V2"})
+        v3_x = v2_x + T2_T3_SPACING
+        v3_line = msp.add_line((v3_x, v_top_y), (v3_x, v_bot_y), dxfattribs={"color": COLOR_WHITE, "layer": "V3"})
+        if v3_line: new_entities.add(v3_line)
         
-        # V3 생성 (V2에서 T2~T3 거리만큼 복사)
-        if len(TTOL_new) >= 3:
-            t2_t3_dist = TTOL_new[2] - TTOL_new[1]  # T3 - T2
-            v3_x = v2_x + t2_t3_dist
-            v3_line = msp.add_line((v3_x, hb_y), (v3_x, fih_y), dxfattribs={"color": COLOR_WHITE, "layer": "V3"})
+        if v3_line:
+            v4_x = v3_x + T3_T4_SPACING
+            v4_line = msp.add_line((v4_x, v_top_y), (v4_x, v_bot_y), dxfattribs={"color": COLOR_WHITE, "layer": "V4"})
+            if v4_line: new_entities.add(v4_line)
         
-        # V4 생성 (V3에서 T3~T4 거리만큼 복사)
-        if v3_line and len(TTOL_new) >= 4:
-            t3_t4_dist = TTOL_new[3] - TTOL_new[2]  # T4 - T3
-            v4_x = v3_x + t3_t4_dist
-            v4_line = msp.add_line((v4_x, hb_y), (v4_x, fih_y), dxfattribs={"color": COLOR_WHITE, "layer": "V4"})
-        
-        # V5 생성 (V4에서 T4~T5 거리만큼 복사)
-        if v4_line and len(TTOL_new) >= 5:
-            t4_t5_dist = TTOL_new[4] - TTOL_new[3]  # T5 - T4
-            v5_x = v4_x + t4_t5_dist
-            v5_line = msp.add_line((v5_x, hb_y), (v5_x, fih_y), dxfattribs={"color": COLOR_WHITE, "layer": "V5"})
+        if v4_line:
+            v5_x = v4_x + T4_T5_SPACING
+            v5_line = msp.add_line((v5_x, v_top_y), (v5_x, v_bot_y), dxfattribs={"color": COLOR_WHITE, "layer": "V5"})
+            if v5_line: new_entities.add(v5_line)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # VV 라인 처리 (MATLIST 레이어의 15~25mm 수평선)
-    # ══════════════════════════════════════════════════════════════════════════
+    # VV 라인 처리
+    hb_min_x = None
+    if HB_line:
+        (hb_x1, hb_y1), (hb_x2, hb_y2) = line_endpoints(HB_line)
+        hb_min_x = min(hb_x1, hb_x2)
     
-    # MATLIST 레이어의 15~25mm 수평선 찾기
     vv_lines = []
     for e in msp.query("LINE"):
         if e.dxf.layer.upper() == "MATLIST" and is_horizontal(e):
             length = line_length(e)
             if 15.0 <= length <= 25.0:
                 vv_lines.append(e)
-    
-    # Y값 기준으로 정렬 (위에서 아래로)
     vv_sorted = sorted(
         vv_lines,
         key=lambda ent: max(line_endpoints(ent)[0][1], line_endpoints(ent)[1][1]),
         reverse=True
     )
-    
-    # VV1, VV2, VV3... 할당
     vv1 = vv_sorted[0] if len(vv_sorted) >= 1 else None
     vv2 = vv_sorted[1] if len(vv_sorted) >= 2 else None
     vv3 = vv_sorted[2] if len(vv_sorted) >= 3 else None
@@ -875,217 +915,237 @@ def process_file(path):
     vv5 = vv_sorted[4] if len(vv_sorted) >= 5 else None
     vv6 = vv_sorted[5] if len(vv_sorted) >= 6 else None
     
-    # VV1~VV6 레이어 부여
-    vv_lines_list = [
-        (vv1, "VV1"),
-        (vv2, "VV2"),
-        (vv3, "VV3"),
-        (vv4, "VV4"),
-        (vv5, "VV5"),
-        (vv6, "VV6")
-    ]
-    
-    for vv_line, layer_name in vv_lines_list:
+    for vv_line, layer_name in [(vv1,"VV1"),(vv2,"VV2"),(vv3,"VV3"),(vv4,"VV4"),(vv5,"VV5"),(vv6,"VV6")]:
         if vv_line:
             try:
                 vv_line.dxf.layer = layer_name
             except Exception:
                 pass
     
-    # VV1 삭제 (레이어 부여 후)
     if vv1:
         try:
             msp.delete_entity(vv1)
         except Exception:
             pass
-    
-    # VV3 수정 (시작점=V1.X, 끝점=HB 끝점)
     if vv3 and HB_line:
         (hb_x1, hb_y1), (hb_x2, hb_y2) = line_endpoints(HB_line)
-        hb_end_x = max(hb_x1, hb_x2)  # HB의 끝점 X
-        hb_y = (hb_y1 + hb_y2) / 2.0  # HB의 Y
-        
-        # VV3의 Y값 가져오기
+        hb_end_x = max(hb_x1, hb_x2)
         (vv3_x1, vv3_y1), (vv3_x2, vv3_y2) = line_endpoints(vv3)
         vv3_y = (vv3_y1 + vv3_y2) / 2.0
-        
-        # VV3 수정
         set_hline_endpoints(vv3, x_v1, hb_end_x, vv3_y)
     
-    # H3는 이미 위에서 FN 바로 아래 라인으로 지정됨
+    if hb_min_x is not None:
+        for e in msp.query("LINE"):
+            layer = e.dxf.layer.upper()
+            if layer.startswith("VV") and is_horizontal(e):
+                vv_length = line_length(e)
+                if vv_length > 100.0:
+                    (vv_x1, vv_y1), (vv_x2, vv_y2) = line_endpoints(e)
+                    vv_y = (vv_y1 + vv_y2) / 2.0
+                    vv_max_x = max(vv_x1, vv_x2)
+                    set_hline_endpoints(e, hb_min_x, vv_max_x, vv_y)
     
     if h3_line and HB_line and vv3:
-        # HB에서 H3까지의 Y 거리 계산
         (h3_x1, h3_y1), (h3_x2, h3_y2) = line_endpoints(h3_line)
         h3_y = (h3_y1 + h3_y2) / 2.0
-        
         (hb_x1, hb_y1), (hb_x2, hb_y2) = line_endpoints(HB_line)
         hb_y = (hb_y1 + hb_y2) / 2.0
-        
-        copy_dy = h3_y - hb_y  # 복사할 Y 거리
-        
-        # V2~V5 복사
+        copy_dy = h3_y - hb_y
         v_lines = []
         if v2_line: v_lines.append(('V2', v2_line))
         if v3_line: v_lines.append(('V3', v3_line))
         if v4_line: v_lines.append(('V4', v4_line))
         if v5_line: v_lines.append(('V5', v5_line))
-        
-        # VV3의 Y값
         (vv3_x1, vv3_y1), (vv3_x2, vv3_y2) = line_endpoints(vv3)
         vv3_y = (vv3_y1 + vv3_y2) / 2.0
-        
         for name, v_line in v_lines:
-            # 복사
             copied_v = copy_line(msp, v_line, dx=0, dy=copy_dy, layer=f"{name}_COPY", color=COLOR_WHITE)
-            
             if copied_v:
-                # 끝점 Y를 VV3의 Y로 수정
+                new_entities.add(copied_v)
                 (cv_x1, cv_y1), (cv_x2, cv_y2) = line_endpoints(copied_v)
-                # 시작점은 그대로, 끝점 Y만 VV3로
-                copied_v.dxf.start = (cv_x1, cv_y1, 0.0)  # 시작점 유지
-                copied_v.dxf.end = (cv_x2, vv3_y, 0.0)    # 끝점 Y를 VV3로
+                copied_v.dxf.start = (cv_x1, cv_y1, 0.0)
+                copied_v.dxf.end = (cv_x2, vv3_y, 0.0)
     
-    # VV2, VV4, VV5를 +X 5mm 이동
-    if vv2:
-        move_line_x(vv2, 5.0)
-    
-    if vv4:
-        move_line_x(vv4, 5.0)
-    
-    if vv5:
-        move_line_x(vv5, 5.0)
+    if vv2: move_line_x(vv2, 5.0)
+    if vv4: move_line_x(vv4, 5.0)
+    if vv5: move_line_x(vv5, 5.0)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # V5와 H1 간의 거리 계산 및 STRETCH 처리
-    # ══════════════════════════════════════════════════════════════════════════
-    
+    # V5-H1 거리 기반 STRETCH
     if v5_line and h1_line and len(TTOL_new) >= 5:
-        # V5의 X 좌표
         (v5_x1, v5_y1), (v5_x2, v5_y2) = line_endpoints(v5_line)
-        v5_x = v5_x1  # V5는 수직선이므로 x1 = x2
-        
-        # H1의 끝점 X 좌표 (오른쪽 끝)
+        v5_x = v5_x1
         (h1_x1, h1_y1), (h1_x2, h1_y2) = line_endpoints(h1_line)
         h1_end_x = max(h1_x1, h1_x2)
-        
-        # FX 계산 (절대값 - 25mm)
         FX = abs(h1_end_x - v5_x) - 25.0
-        
-        if FX > 0:  # FX가 양수일 때만 STRETCH
+        if FX > 0:
             stretch_amount = FX
-            t5_x = TTOL_new[4]  # T5의 X 좌표 (이동 후)
-            
-            # V1의 Y 범위 (STRETCH 영역의 Y 범위)
+            t5_x = TTOL_new[4]
             stretch_y_min = min(y_top_v1, y_bot_v1)
             stretch_y_max = max(y_top_v1, y_bot_v1)
-            
-            # STRETCH X 범위 (V1 X - 5 ~ T5 X + 5)
             stretch_x_min = x_v1 - 5.0
             stretch_x_max = t5_x + 5.0
-            
-            # TEXT STRETCH (머리글 포함을 위해 Y 범위 확장)
-            stretch_count_text = 0
+
+            header_keywords3 = ["PT", "COMPONENT", "SIZE", "Q'TY", "WEIGHT"]
+
             for e in msp:
                 if e.dxftype() in ("TEXT", "MTEXT"):
+                    current_layer = e.dxf.layer.upper()
+                    orig_layer = original_layers.get(e, current_layer)
+                    text_value_raw = get_text_value(e)
+                    text_value = text_value_raw.upper()
+                    is_existing_header = False
+                    for keyword in header_keywords3:
+                        if keyword in text_value:
+                            is_existing_header = True
+                            break
                     xy = text_ref_xy(e)
-                    if xy:
-                        x, y = xy
-                        # Y 범위를 머리글까지 포함하도록 확장 (위로 30mm)
-                        extended_y_max = stretch_y_max + 30.0
-                        
-                        # X 범위 내이고, Y가 확장된 범위 내에 있으면 이동
-                        if (stretch_x_min <= x <= stretch_x_max) and (stretch_y_min <= y <= extended_y_max):
-                            # 텍스트 내용 확인 (FABRICATION, ERECTION, PT, COMPONENT 등)
-                            text_value = get_text_value(e).upper()
-                            if any(keyword in text_value for keyword in ["FABRICATION", "ERECTION", "PT", "COMPONENT", "SIZE", "Q'TY", "WEIGHT"]):
-                                move_text_entity(e, stretch_amount, 0.0)
-                                stretch_count_text += 1
-                            elif (stretch_y_min <= y <= stretch_y_max):  # 일반 텍스트는 원래 Y 범위 내에서만
-                                move_text_entity(e, stretch_amount, 0.0)
-                                stretch_count_text += 1
-            
-            # LINE STRETCH (H 라인 끝점 제외)
-            stretch_count_line = 0
-            h_line_layers = set()  # H 레이어 수집
+                    if not xy:
+                        continue
+                    x, y = xy
+                    if is_existing_header:
+                        if (stretch_x_min <= x <= stretch_x_max) and (stretch_y_min <= y <= (stretch_y_max + 30.0)):
+                            move_text_entity(e, stretch_amount, 0.0)
+                        continue
+                    is_matlist_origin = (orig_layer == "MATLIST")
+                    is_t_layer = (current_layer.startswith("T") and 
+                                  (current_layer[1:].isdigit() or 
+                                   current_layer == "T2T" or 
+                                   current_layer == "PTXT"))
+                    is_new = (e in new_entities)
+                    is_fab_erec = ("FABRICATION" in text_value or "ERECTION" in text_value)
+                    if is_matlist_origin or (is_t_layer and is_matlist_origin) or is_new or is_fab_erec:
+                        if (stretch_x_min <= x <= stretch_x_max) and (stretch_y_min <= y <= (stretch_y_max + 30.0)):
+                            move_text_entity(e, stretch_amount, 0.0)
+
+            # LINE STRETCH
+            h_line_layers = set()
+            v_line_layers = set()
+            vv_line_layers = set()
             for e in msp.query("LINE"):
                 layer = e.dxf.layer.upper()
                 if layer.startswith("H") and (layer[1:].isdigit() or layer in ["HB", "HN"]):
                     h_line_layers.add(layer)
-            
+                elif layer.startswith("V") and (layer[1:].isdigit() or layer.endswith("_COPY")):
+                    v_line_layers.add(layer)
+                elif layer.startswith("VV") and layer[2:].isdigit():
+                    vv_line_layers.add(layer)
             for e in msp.query("LINE"):
-                pts = line_endpoints(e)
-                if pts:
+                layer = e.dxf.layer.upper()
+                is_matlist = (layer == "MATLIST")
+                is_h_line = layer in h_line_layers
+                is_v_line = layer in v_line_layers
+                is_vv_line = layer in vv_line_layers
+                is_new = (e in new_entities)
+                
+                if is_vv_line and layer != "VV3":
+                    continue
+                    
+                if is_matlist or is_h_line or is_v_line or is_vv_line or is_new:
+                    pts = line_endpoints(e)
+                    if not pts: 
+                        continue
                     (lx1, ly1), (lx2, ly2) = pts
-                    layer = e.dxf.layer.upper()
-                    
-                    # H 계열 라인인지 확인
-                    is_h_line = layer in h_line_layers
-                    
-                    if is_h_line:
-                        # H 계열 라인은 시작점만 이동 (수평선이라고 가정)
+                    if is_h_line or layer == "VV3":
                         if is_horizontal(e):
-                            # 시작점(왼쪽 끝)이 STRETCH 범위에 있으면
                             left_x = min(lx1, lx2)
                             if (stretch_x_min <= left_x <= stretch_x_max):
-                                # 시작점만 이동하도록 재설정
                                 if lx1 < lx2:
                                     e.dxf.start = (lx1 + stretch_amount, ly1, 0.0)
                                 else:
                                     e.dxf.end = (lx2 + stretch_amount, ly2, 0.0)
-                                stretch_count_line += 1
                     else:
-                        # 일반 라인은 전체 이동
                         x_in_range = ((stretch_x_min <= lx1 <= stretch_x_max) or (stretch_x_min <= lx2 <= stretch_x_max))
                         y_in_range = ((stretch_y_min <= ly1 <= stretch_y_max) or (stretch_y_min <= ly2 <= stretch_y_max))
-                        
                         if x_in_range and y_in_range:
                             move_line_x(e, stretch_amount)
-                            stretch_count_line += 1
 
-    # ── TYPE1 추가 처리: C1..C5 → P1..P5 수평 이동 + 첫 행 삭제 ────────────
+    # TYPE1: C→P 이동
     if IS_TYPE1:
-        # 이동량 계산
         deltas = {}
         for i in range(1, 6):
-            if i in C_pos and i in P_pos:
-                deltas[i] = P_pos[i][0] - C_pos[i][0]
-        # 첫 행 헤더 엔티티 수집
-        header_entities = []
-        for a in first_row_assigned:
-            if 1 <= a["col"] <= 5:
-                header_entities.append(a["ent"])
-        # 데이터 이동(첫 행 제외)
+            if i in C_pos and i in header_x_positions:
+                deltas[i] = header_x_positions[i] - C_pos[i][0]
         for a in assigned:
             c = a["col"]
             if c in deltas:
-                if abs(a["y0"] - y_max) <= ROW_TOL and (1 <= c <= 5):
-                    continue  # 헤더는 나중에 삭제
                 move_text_entity(a["ent"], deltas[c], 0.0)
-        # 헤더 삭제
-        for ent in set(header_entities):
-            try:
-                ent.destroy()
-            except Exception:
-                try: msp.delete_entity(ent)
-                except Exception: pass
 
-    # 9) 저장
+    # 최종 후처리
+    def _has_erection_materials():
+        for e in msp:
+            if e.dxftype() in ("TEXT", "MTEXT"):
+                val = get_text_value(e).upper()
+                if "ERECTION MATERIALS" in val:
+                    return True
+        return False
+
+    def _get_first_row_size_value():
+        t3_candidates = [a for a in first_row_assigned if a["col"] == 3]
+        if not t3_candidates:
+            return None
+        t3_pick = sorted(t3_candidates, key=lambda r: r["x1"])[0]
+        return extract_size_value(t3_pick["s"])
+
+    erection_exists_final = _has_erection_materials()
+    size_numeric = _get_first_row_size_value()
+    
+    should_replace = False
+    if not erection_exists_final:
+        if t1_value == "1":
+            if size_numeric is not None and size_numeric <= 51.0:
+                should_replace = True
+        else:
+            should_replace = True
+    
+    if should_replace:
+        changed = 0
+        for e in msp:
+            if e.dxftype() in ("TEXT", "MTEXT"):
+                txt = get_text_value(e)
+                up = txt.upper()
+                if "FABRICATION MATERIALS" in up:
+                    new_text = up.replace("FABRICATION MATERIALS", "ERECTION MATERIALS")
+                    if e.dxftype() == "TEXT":
+                        try:
+                            e.dxf.text = new_text
+                            changed += 1
+                        except Exception:
+                            pass
+                    elif e.dxftype() == "MTEXT":
+                        try:
+                            e.text = new_text
+                            changed += 1
+                        except Exception:
+                            pass
+        
+        if changed == 0:
+            if len(TTOL_new) >= 1:
+                x_em = TTOL_new[0]
+                y_em = data_y_max + FAB_DY
+                new_text = create_text(msp, "ERECTION MATERIALS", x_em, y_em, height, style, color=OUT_TEXT_COLOR)
+                if new_text:
+                    new_entities.add(new_text)
+
+def process_file(path):
+    """파일 처리 및 저장"""
+    doc = ezdxf.readfile(path)
+    process(doc)
     out = os.path.splitext(path)[0] + "_BOMFORM.DXF"
     doc.saveas(out)
+    return out
 
-if __name__ == "__main__":
+def main():
+    """커맨드라인 엔트리포인트"""
     if len(sys.argv) < 2:
         sys.exit(1)
     
-    # 첫 번째 인자는 스크립트 이름이므로 제외
-    input_files = sys.argv[1:]
-    
-    for input_file in input_files:
-        if not input_file.lower().endswith('.dxf'):
+    for path in sys.argv[1:]:
+        if not os.path.exists(path):
             continue
-            
         try:
-            process_file(input_file)
-        except Exception as ex:
+            process_file(path)
+        except Exception:
             pass
+
+if __name__ == "__main__":
+    main()

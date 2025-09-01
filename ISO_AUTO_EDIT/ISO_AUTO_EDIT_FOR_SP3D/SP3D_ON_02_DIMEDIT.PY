@@ -225,7 +225,7 @@ def clear_tbox_cache():
 # ─────────────── 새로운 엔티티 찾기 함수들 ───────────────
 def find_dl_entities(dim_line_entities):
     """
-    DL 엔티티 찾기: 레이어가 DIMLINES인 LINE, 선가중치 0.3mm, 색상 흰색, 길이 3.5mm 초과
+    DL 엔티티 찾기: 레이어가 DIMLINES인 LINE, 선가중치 0.3mm, 색상 흰색, 길이 3.5mm 초과(코드상 2.5mm 기준)
     """
     dl_entities = []
     
@@ -246,7 +246,7 @@ def find_dl_entities(dim_line_entities):
             if ent.dxf.lineweight != 30:  # 0.3mm = 30
                 continue
         
-        # 길이가 3.5mm를 초과하는지 확인
+        # 길이가 3.5mm를 초과하는지 확인 (현재 로직은 2.5mm 기준)
         segments = extract_segments(ent)
         if segments:
             p0, p1 = segments[0]
@@ -356,6 +356,11 @@ def find_g1_entities(dim_line_entities, dl_ent, tolerance=0.3):
         # 길이가 2mm 이하인 라인 제외
         line_length = distance(v0, v1)
         if line_length <= 2.0:
+            continue
+
+        # [ADD] 수직(90/270) && 길이 ≥ 50mm 제외
+        ang = angle_deg(v0, v1)
+        if (abs(ang - 90) <= ANGLE_TOLERANCE or abs(ang - 270) <= ANGLE_TOLERANCE) and line_length >= 50.0:
             continue
         
         # DL 양끝점에서 2.5mm 이내에 있는지 확인
@@ -1006,17 +1011,17 @@ def process_dimension_system(msp, dim_text_entities, dim_line_entities):
     
     return all_processed_entities, all_cp_texts, entities_to_delete
 
-# ─────────────── 런너(In-Memory) 연동용 함수 ───────────────
+# ─────────────── 런너(in-memory) 연동용 process 함수 ───────────────
 def process(doc):
     """
-    런너(In-Memory) 연동용 process 함수
-    ezdxf document 객체를 직접 받아서 처리
+    In-memory DXF document 처리 함수
+    다른 시스템과 연동할 때 사용하는 엔트리 포인트
     
     Args:
-        doc: ezdxf document 객체
-        
+        doc: ezdxf.Document 객체
+    
     Returns:
-        처리된 ezdxf document 객체
+        bool: 처리 성공 여부
     """
     try:
         # TBOX 캐시 초기화
@@ -1034,56 +1039,97 @@ def process(doc):
         for entity in entities_to_delete:
             try:
                 msp.delete_entity(entity)
-            except Exception as e:
+            except Exception:
                 pass
 
         # 처리 완료 후 TBOX 캐시 초기화
         clear_tbox_cache()
         
-        return doc
+        return True
         
-    except Exception as e:
+    except Exception:
         # 에러 발생 시에도 TBOX 캐시 초기화
         clear_tbox_cache()
-        raise e
+        return False
 
-# ─────────────── 파일 기반 처리 함수 (기존 유지) ───────────────
-def auto_align_dxf(input_dxf, output_dxf):
+# ─────────────── 파일 처리 함수 ───────────────
+def process_dxf_file(input_file):
     """
     단일 DXF 파일 처리 함수
     """
-    if not os.path.isfile(input_dxf):
+    if not os.path.isfile(input_file):
         return False
     
     try:
-        # DXF 파일 읽기
-        doc = ezdxf.readfile(input_dxf)
+        doc = ezdxf.readfile(input_file)
         
-        # In-Memory 처리 함수 호출
-        doc = process(doc)
+        # In-memory 처리
+        if not process(doc):
+            return False
         
-        # 저장
-        doc.saveas(output_dxf)
-        
-        return True
-        
-    except Exception as e:
-        return False
-
-# ─────────────── 메인 파이프라인 ───────────────
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit(1)
-    
-    # 첫 번째 인자는 스크립트 이름이므로 제외
-    input_files = sys.argv[1:]
-    
-    for input_file in input_files:
-        if not input_file.lower().endswith('.dxf'):
-            continue
-            
+        # 출력 파일명 생성
         file_dir = os.path.dirname(input_file)
         file_name = os.path.splitext(os.path.basename(input_file))[0]
         output_file = os.path.join(file_dir, f"{file_name}_DIM.dxf")
         
-        auto_align_dxf(input_file, output_file)
+        # 저장
+        doc.saveas(output_file)
+        
+        return True
+        
+    except Exception:
+        return False
+
+# ─────────────── 메인 함수 ───────────────
+def main():
+    """
+    커맨드라인 인터페이스 메인 함수
+    사용법: python script.py file1.dxf file2.dxf file3.dxf ...
+    """
+    if len(sys.argv) < 2:
+        sys.exit(1)
+    
+    # 입력 파일들 처리
+    input_files = sys.argv[1:]
+    
+    for input_file in input_files:
+        process_dxf_file(input_file)
+
+if __name__ == "__main__":
+    main()
+
+"""
+시간복잡도 분석 및 최적화:
+
+1. 전체 시간복잡도: O(N × M × K)
+   - N: DL 엔티티 개수
+   - M: 치수선 관련 LINE 엔티티 개수
+   - K: 치수선 관련 TEXT 엔티티 개수
+
+2. 주요 최적화 사항:
+   a) 레이어 필터링 최적화 (collect_dim_entities):
+      - DIM/ISO 레이어만 먼저 수집하여 불필요한 엔티티 처리 방지
+      - 시간복잡도: O(L + E) → O(L + E_filtered) (E_filtered << E)
+   
+   b) TBOX 캐싱:
+      - 텍스트 박스 계산 결과를 캐싱하여 중복 계산 방지
+      - 시간복잡도: O(K) → O(1) for repeated access
+   
+   c) 사용된 엔티티 추적:
+      - used_ad_handles, used_cp_handles로 중복 처리 방지
+      - 시간복잡도: O(M²) → O(M) with set lookup
+   
+   d) 조기 종료 조건:
+      - AD1, AD2가 정확히 2개씩 없으면 스킵
+      - G1당 첫 번째 엔티티만 처리
+      - CP 텍스트 찾으면 즉시 종료
+   
+   e) 거리 계산 최적화:
+      - NumPy 벡터 연산 활용
+      - 불필요한 거리 계산 스킵 (tolerance 체크 우선)
+
+3. 공간복잡도: O(N + M + K)
+   - TBOX 캐시: O(K)
+   - 사용된 핸들 추적: O(M)
+   - 삭제할 엔티티 리스트: O(N)
+"""

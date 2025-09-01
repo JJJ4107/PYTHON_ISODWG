@@ -1628,7 +1628,7 @@ def apply_final_formatting(doc):
         if txt.dxf.color != 4:  # CYAN이 아닌 경우만
             txt.dxf.color = 2
         txt.dxf.style = "ARIAL"
-        txt.dxf.width = 0.86
+       # txt.dxf.width = 0.86
 
     # ARIAL 스타일이 없으면 추가
     if "ARIAL" not in doc.styles:

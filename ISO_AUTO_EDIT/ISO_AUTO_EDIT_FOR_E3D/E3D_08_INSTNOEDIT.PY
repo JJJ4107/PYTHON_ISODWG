@@ -74,6 +74,10 @@ class IntegratedDXFProcessor:
             if entity in self.used_entities:
                 continue
             
+            # PL5, WDNO 레이어 제외
+            if entity.dxf.layer in ["PL5", "WDNO"]:
+                continue
+            
             if hasattr(entity.dxf, 'color') and entity.dxf.color == 4:  # CYAN = 4
                 continue
                 
@@ -125,6 +129,10 @@ class IntegratedDXFProcessor:
         
         for entity in self.msp:
             if entity in self.used_entities:
+                continue
+            
+            # PL5, WDNO 레이어 제외
+            if entity.dxf.layer in ["PL5", "WDNO"]:
                 continue
                 
             if entity.dxftype() == "LINE":
@@ -180,6 +188,10 @@ class IntegratedDXFProcessor:
         
         for entity in self.msp:
             if entity in self.used_entities:
+                continue
+            
+            # PL5, WDNO 레이어 제외
+            if entity.dxf.layer in ["PL5", "WDNO"]:
                 continue
                 
             if entity.dxftype() in ["POLYLINE", "LWPOLYLINE"]:
@@ -249,6 +261,10 @@ class IntegratedDXFProcessor:
         
         for entity in self.msp:
             if entity in self.used_entities:
+                continue
+            
+            # PL5, WDNO 레이어 제외
+            if entity.dxf.layer in ["PL5", "WDNO"]:
                 continue
                 
             if entity.dxftype() in ["POLYLINE", "LWPOLYLINE"]:
@@ -360,6 +376,10 @@ class IntegratedDXFProcessor:
         
         for entity in self.msp:
             if entity in self.used_entities:
+                continue
+            
+            # PL5, WDNO 레이어 제외
+            if entity.dxf.layer in ["PL5", "WDNO"]:
                 continue
             
             if hasattr(entity.dxf, 'color') and entity.dxf.color == 4:  # CYAN = 4
@@ -505,7 +525,7 @@ class IntegratedDXFProcessor:
         return ftp
     
     def find_insttag_texts(self, instno_circle: DXFEntity) -> List[DXFEntity]:
-        """INSTNO 원 둘레에서 2.5mm 이내에 있는 조건에 맞는 TEXT 찾기"""
+        """INSTNO 원 둘레에서 2.5mm 이내에 있는 조건에 맞는 TEXT 찾기 (PIPE 텍스트 제외)"""
         insttag_texts = []
         
         center = Vec3(instno_circle.dxf.center)
@@ -520,6 +540,10 @@ class IntegratedDXFProcessor:
                 continue
             
             text_content = text_entity.dxf.text.strip()
+            
+            # PIPE 텍스트 제외 조건 추가
+            if 'PIPE' in text_content.upper():
+                continue
             
             if '<' in text_content or '>' in text_content or 'x' in text_content.lower():
                 continue
@@ -642,11 +666,15 @@ class IntegratedDXFProcessor:
         ig_polylines = []
         for entity in self.msp:
             if entity.dxftype() in ["POLYLINE", "LWPOLYLINE"]:
+                # PIPE로 시작하는 레이어는 제외
+                if entity.dxf.layer.upper().startswith("PIPE"):
+                    continue
+                    
                 if hasattr(entity.dxf, 'color') and entity.dxf.color == 1:  # RED = 1
                     entity.dxf.layer = "IG"
                     entity.dxf.color = 7  # WHITE = 7
                     ig_polylines.append(entity)
-                    print(f"\n  - Found IG polyline (RED), changed layer to 'IG' and color to WHITE")
+                    print(f"\n  - Found IG polyline (RED) from layer '{entity.dxf.layer}', changed to 'IG' and color to WHITE")
         
         if not ig_polylines:
             print("\n  - No IG polylines (RED) found")
@@ -663,7 +691,7 @@ class IntegratedDXFProcessor:
             instno_center = instno_info['center']
             
             insttag_texts = self.find_insttag_texts(instno)
-            print(f"    - Found {len(insttag_texts)} INSTTAG texts")
+            print(f"    - Found {len(insttag_texts)} INSTTAG texts (excluding PIPE texts)")
             
             tbox = instno_info.get('tbox')
             itag = instno_info.get('itag')
@@ -968,6 +996,10 @@ class IntegratedDXFProcessor:
             if entity in self.used_entities:
                 continue
             
+            # PL5, WDNO 레이어 제외
+            if entity.dxf.layer in ["PL5", "WDNO"]:
+                continue
+            
             if hasattr(entity.dxf, 'color') and entity.dxf.color == 4:  # CYAN = 4
                 continue
                 
@@ -1022,6 +1054,10 @@ class IntegratedDXFProcessor:
         
         for entity in self.msp:
             if entity in self.used_entities:
+                continue
+            
+            # PL5, WDNO 레이어 제외
+            if entity.dxf.layer in ["PL5", "WDNO"]:
                 continue
             
             layer_upper = entity.dxf.layer.upper()
@@ -1303,9 +1339,9 @@ class IntegratedDXFProcessor:
             # 7. TBOX와 ITAG를 FTP로 이동
             self.move_tbox_and_itag_to_ftp(tbox, itag, tpos, ftp)
             
-            # 8. INSTTAG 텍스트들 찾기
+            # 8. INSTTAG 텍스트들 찾기 (PIPE 텍스트 제외)
             insttag_texts = self.find_insttag_texts(instno)
-            print(f"  - Found {len(insttag_texts)} INSTTAG texts")
+            print(f"  - Found {len(insttag_texts)} INSTTAG texts (excluding PIPE texts)")
             
             # 9. INST 그룹 생성
             inst_entities = [instno] + insttag_texts

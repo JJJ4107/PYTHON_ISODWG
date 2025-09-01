@@ -1037,7 +1037,7 @@ def apply_final_formatting(doc):
         if txt.dxf.color != 4:
             txt.dxf.color = 2
         txt.dxf.style = "ARIAL"
-        txt.dxf.width = 0.86
+        # txt.dxf.width = 0.86
     if "ARIAL" not in doc.styles:
         doc.styles.new("ARIAL", dxfattribs={"font": "arial.ttf"})
 
